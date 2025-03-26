@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en"> <!-- data-theme attribute will be set by JS -->
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive BTC Candlestick Chart (Log Scale)</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <!-- Controls Wrapper -->
+    <div class="controls-wrapper">
+        <!-- Theme Switch -->
+        <div class="theme-switch-wrapper">
+            <label class="theme-switch" for="theme-checkbox">
+                <input type="checkbox" id="theme-checkbox" />
+                <div class="slider"></div>
+            </label>
+            <span>Dark Mode</span>
+        </div>
+        <!-- Log Scale Switch -->
+        <div class="log-scale-switch-wrapper">
+            <label class="theme-switch" for="log-scale-checkbox"> <!-- Reuse theme-switch class for style -->
+                <input type="checkbox" id="log-scale-checkbox" />
+                <div class="slider"></div>
+            </label>
+            <span>Log Scale</span>
+        </div>
+    </div>
+
+
+    <h1>Interactive BTC/USD Candlestick Chart</h1>
+    <p class="instructions">Scroll=Zoom | Drag Chart=Pan | Drag Axes=Scale | Dbl-Click=Reset</p>
+
+    <div class="chart-container" id="chart-container">
+        <div class="chart-wrapper">
+            <div class="grid-container" id="grid-container"></div>
+            <div class="chart-area" id="chart-area"></div>
+            <div class="y-axis-labels" id="y-axis-labels"></div>
+            <div class="x-axis-labels" id="x-axis-labels"></div>
+        </div>
+         <div id="chart-message">Loading data...</div>
+    </div>
+
+    <!-- Granularity Selection Buttons -->
+    <div class="granularity-controls" id="granularity-controls">
+        <span>Interval:</span>
+        <!-- data-granularity holds the value in seconds -->
+        <button data-granularity="300">5m</button>
+        <button data-granularity="900">15m</button>
+        <button data-granularity="3600" class="active">1h</button> <!-- Default active -->
+        <button data-granularity="21600">6h</button>
+        <button data-granularity="86400">1d</button>
+    </div>
+
+    <script type="module" src="js/main.js" defer></script>
+
+</body>
+</html>

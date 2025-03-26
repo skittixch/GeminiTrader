@@ -1,0 +1,361 @@
+/* --- General Setup & CSS Variables --- */
+:root {
+  /* Light Theme Defaults */
+  --bg-color: #f0f0f0;
+  --text-color: #333;
+  --subtle-text-color: #555;
+  --card-bg: #ffffff;
+  --border-color: #e0e0e0; /* Softer border */
+  --grid-color: #eeeeee; /* Lighter grid */
+  --axis-label-bg: rgba(255, 255, 255, 0.85);
+  --switch-bg: #ccc;
+  --switch-slider: #fff;
+  --switch-slider-checked: #26a69a; /* Match candle up */
+  --candle-up: #26a69a;
+  --candle-down: #ef5350;
+  --candle-wick: #555;
+  --shadow-color: rgba(0, 0, 0, 0.05);
+  --border-radius-sm: 4px;
+  --border-radius-md: 6px;
+}
+
+html[data-theme="dark"] {
+  /* Dark Theme Overrides */
+  --bg-color: #1e1e1e; /* Dark background */
+  --text-color: #e0e0e0; /* Light text */
+  --subtle-text-color: #aaaaaa;
+  --card-bg: #2a2a2a; /* Darker card */
+  --border-color: #444444; /* Dark border */
+  --grid-color: #383838; /* Dark grid */
+  --axis-label-bg: rgba(42, 42, 42, 0.85); /* Dark label bg */
+  --switch-bg: #555;
+  --switch-slider: #ccc;
+  --switch-slider-checked: #26a69a;
+  /* Candle colors often kept consistent, but wicks might change */
+  /* --candle-up: #26a69a; */
+  /* --candle-down: #ef5350; */
+  --candle-wick: #bbbbbb;
+  --shadow-color: rgba(0, 0, 0, 0.2);
+}
+
+body {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif; /* Modern font stack */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-height: 100vh;
+  background-color: var(--bg-color);
+  color: var(--text-color);
+  padding-top: 20px; /* More space at top */
+  margin: 0;
+  transition: background-color 0.3s ease, color 0.3s ease; /* Smooth theme transition */
+}
+
+/* --- Header & Instructions --- */
+h1 {
+  margin-bottom: 10px;
+  font-size: 1.6em;
+  font-weight: 600; /* Slightly bolder */
+  text-align: center;
+}
+
+p.instructions {
+  margin-top: 0;
+  margin-bottom: 20px; /* More space below instructions */
+  font-size: 0.9em;
+  color: var(--subtle-text-color);
+  text-align: center;
+}
+
+/* --- Controls Container --- */
+.controls-wrapper {
+  display: flex;
+  gap: 25px; /* Space between switches */
+  align-items: center;
+  position: absolute;
+  top: 15px;
+  right: 20px;
+  padding: 5px; /* Optional padding */
+}
+
+/* --- Theme Switch / Log Scale Switch --- */
+/* Wrapper for each switch + label */
+.theme-switch-wrapper,
+.log-scale-switch-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Switch visuals (reused) */
+.theme-switch {
+  position: relative;
+  display: inline-block;
+  width: 44px;
+  height: 24px;
+}
+.theme-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: var(--switch-bg);
+  transition: 0.4s;
+  border-radius: 24px; /* Fully rounded */
+}
+.slider:before {
+  position: absolute;
+  content: "";
+  height: 18px;
+  width: 18px;
+  left: 3px;
+  bottom: 3px;
+  background-color: var(--switch-slider);
+  transition: 0.4s;
+  border-radius: 50%;
+}
+input:checked + .slider {
+  background-color: var(--switch-slider-checked);
+}
+input:focus + .slider {
+  box-shadow: 0 0 1px var(--switch-slider-checked);
+}
+input:checked + .slider:before {
+  transform: translateX(20px);
+}
+
+/* Label text */
+.theme-switch-wrapper span,
+.log-scale-switch-wrapper span {
+  font-size: 0.85em;
+  color: var(--subtle-text-color);
+}
+
+/* --- Chart Layout --- */
+.chart-container {
+  width: 95%;
+  max-width: 1300px; /* Allow slightly wider */
+  height: 65vh; /* Relative height */
+  min-height: 400px;
+  max-height: 700px;
+  background-color: var(--card-bg);
+  border: 1px solid var(--border-color);
+  /* T, R(labels), B(labels), L */
+  padding: 15px 55px 35px 15px; /* Adjusted padding */
+  box-sizing: border-box;
+  position: relative;
+  overflow: hidden;
+  cursor: grab;
+  user-select: none;
+  display: flex;
+  border-radius: var(--border-radius-md); /* Rounded corners */
+  box-shadow: 0 2px 5px var(--shadow-color); /* Subtle shadow */
+  transition: background-color 0.3s ease, border-color 0.3s ease;
+}
+
+.chart-container.panning {
+  cursor: grabbing;
+}
+
+.chart-wrapper {
+  width: 100%;
+  height: 100%;
+  position: relative;
+}
+
+.chart-area {
+  width: 100%;
+  height: 100%;
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: flex;
+  justify-content: flex-start;
+  align-items: flex-end;
+}
+
+/* --- Grid & Axes --- */
+.grid-container {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 0;
+}
+.grid-line {
+  position: absolute;
+  background-color: var(--grid-color);
+}
+.grid-line.horizontal {
+  width: 100%;
+  height: 1px;
+  left: 0;
+}
+.grid-line.vertical {
+  width: 1px;
+  height: 100%;
+  top: 0;
+}
+
+/* Axis Label Containers */
+.y-axis-labels,
+.x-axis-labels {
+  position: absolute;
+  font-size: 11px; /* Slightly larger labels */
+  color: var(--subtle-text-color);
+  z-index: 10;
+  overflow: hidden;
+  background-color: var(--card-bg); /* Use card background */
+  transition: background-color 0.3s ease, border-color 0.3s ease;
+}
+
+.y-axis-labels {
+  top: 0;
+  right: -55px; /* Match padding */
+  width: 53px; /* Clickable width */
+  height: 100%;
+  cursor: ns-resize;
+  border-left: 1px solid var(--border-color); /* Use variable */
+  padding-left: 2px; /* Space before labels start */
+}
+
+.x-axis-labels {
+  bottom: -35px; /* Match padding */
+  left: 0;
+  width: 100%;
+  height: 33px; /* Clickable height */
+  cursor: ew-resize;
+  border-top: 1px solid var(--border-color); /* Use variable */
+  padding-top: 2px; /* Space before labels start */
+}
+
+/* Individual Axis Labels */
+.axis-label {
+  position: absolute;
+  padding: 1px 4px; /* Slightly more padding */
+  white-space: nowrap;
+  pointer-events: none;
+  background-color: transparent; /* Rely on container background */
+  border-radius: var(--border-radius-sm); /* Slight roundness */
+}
+.y-axis-label {
+  right: 5px;
+  transform: translateY(-50%);
+}
+.x-axis-label {
+  /* Style for TIME labels */
+  bottom: 5px;
+  transform: translateX(-50%); /* Center */
+  color: var(--subtle-text-color);
+}
+.x-axis-date-label {
+  /* Style for DATE labels */
+  bottom: 5px;
+  transform: translateX(-5%); /* Align near left */
+  color: var(--text-color);
+  font-weight: 500;
+}
+
+/* --- Candles --- */
+.candle {
+  height: 100%;
+  position: relative;
+  flex-shrink: 0;
+  display: flex;
+  justify-content: center;
+  box-sizing: border-box;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.wick {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 1px; /* Thinner wick */
+  background-color: var(--candle-wick);
+}
+
+.body {
+  position: absolute;
+  width: 80%;
+  left: 10%;
+  /* border: 1px solid var(--candle-wick); */ /* Removed border */
+  box-sizing: border-box;
+  border-radius: 1px; /* Very subtle rounding */
+}
+.color-up {
+  background-color: var(--candle-up);
+}
+.color-down {
+  background-color: var(--candle-down);
+}
+
+/* --- Messages --- */
+#chart-message {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: var(--subtle-text-color);
+  font-style: italic;
+  z-index: 20;
+  background-color: var(--axis-label-bg);
+  padding: 8px 15px;
+  border-radius: var(--border-radius-sm);
+  border: 1px solid var(--border-color);
+  user-select: text !important; /* Allow text selection */
+  cursor: text;
+}
+
+/* --- Granularity Controls --- */
+.granularity-controls {
+  margin-top: 20px; /* Space above the buttons */
+  display: flex;
+  gap: 10px; /* Space between buttons */
+  align-items: center;
+  flex-wrap: wrap; /* Allow buttons to wrap on smaller screens */
+  justify-content: center; /* Center buttons */
+}
+
+.granularity-controls span {
+  margin-right: 5px;
+  font-size: 0.9em;
+  color: var(--subtle-text-color);
+}
+
+.granularity-controls button {
+  padding: 6px 12px;
+  font-size: 0.85em;
+  background-color: var(--card-bg);
+  color: var(--subtle-text-color);
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius-md);
+  cursor: pointer;
+  transition: background-color 0.2s ease, color 0.2s ease,
+    border-color 0.2s ease;
+}
+
+.granularity-controls button:hover {
+  border-color: var(--text-color);
+  color: var(--text-color);
+}
+
+.granularity-controls button.active {
+  background-color: var(--switch-slider-checked); /* Use theme color */
+  color: var(--card-bg); /* White/contrasting text */
+  border-color: var(--switch-slider-checked);
+  font-weight: 500;
+}
+
+/* ... (rest of styles like axis labels, candles, message) ... */
