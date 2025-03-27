@@ -24,11 +24,11 @@ function safeLog(value) {
   return log(Math.max(MIN_LOG_VALUE, value));
 }
 
-// --- Tooltip Functions with Enhanced Logging & Direct Style Test ---
+// --- Tooltip Functions (Using Direct Style Manipulation from Version B) ---
 
 // Helper: Show Tooltip (with direct style manipulation test)
 function showTooltip(dataIndex, mouseX, mouseY) {
-  console.log(`%cshowTooltip called for index: ${dataIndex}`, "color: green"); // *** DEBUG ***
+  // console.log(`%cshowTooltip called for index: ${dataIndex}`, 'color: green'); // *** DEBUG ***
 
   // Check the DOM element RIGHT NOW
   if (!dom.chartTooltip) {
@@ -38,24 +38,16 @@ function showTooltip(dataIndex, mouseX, mouseY) {
     );
     return; // Stop if element doesn't exist
   }
-  // Log the element itself to inspect it in the console
-  console.log(
-    "%c  -> dom.chartTooltip element:",
-    "color: cyan",
-    dom.chartTooltip
-  ); // *** DEBUG ***
+  // console.log('%c  -> dom.chartTooltip element:', 'color: cyan', dom.chartTooltip); // *** DEBUG ***
 
   if (dataIndex < 0 || dataIndex >= state.fullData.length) {
-    console.log("%c  -> showTooltip aborted: Invalid index.", "color: orange"); // *** DEBUG ***
+    // console.log('%c  -> showTooltip aborted: Invalid index.', 'color: orange'); // *** DEBUG ***
     hideTooltip();
     return;
   }
   const candleData = state.fullData[dataIndex];
   if (!candleData || candleData.length < 6) {
-    console.log(
-      "%c  -> showTooltip aborted: Invalid candle data.",
-      "color: orange"
-    ); // *** DEBUG ***
+    // console.log('%c  -> showTooltip aborted: Invalid candle data.', 'color: orange'); // *** DEBUG ***
     hideTooltip();
     return;
   }
@@ -91,8 +83,7 @@ function showTooltip(dataIndex, mouseX, mouseY) {
 
   let tooltipY =
     mouseY + chartRect.top - chartContainerRect.top - tooltipElementHeight - 10; // Prefer above
-  if (tooltipY < 10) {
-    // If too close to top, position below
+  if (tooltipY < 10) { // Below if too high
     tooltipY = mouseY + chartRect.top - chartContainerRect.top + 20;
   }
 
@@ -101,76 +92,46 @@ function showTooltip(dataIndex, mouseX, mouseY) {
     chartContainerRect.width -
     (dom.yAxisLabelsContainer?.offsetWidth || 55) -
     10;
-  if (tooltipX + tooltipElementWidth > rightBoundary) {
-    // If off right edge
+  if (tooltipX + tooltipElementWidth > rightBoundary) { // Left if off edge
     tooltipX =
       mouseX +
       chartRect.left -
       chartContainerRect.left -
       tooltipElementWidth -
-      15; // Position left
+      15;
   }
-  if (tooltipX < 10) {
-    // If off left edge
+  if (tooltipX < 10) { // Clamp left
     tooltipX = 10;
   }
 
-  console.log(
-    `%c  -> Setting tooltip position: X=${tooltipX.toFixed(
-      1
-    )}, Y=${tooltipY.toFixed(1)}`,
-    "color: green"
-  ); // *** DEBUG ***
+  // console.log(`%c  -> Setting tooltip position: X=${tooltipX.toFixed(1)}, Y=${tooltipY.toFixed(1)}`, 'color: green'); // *** DEBUG ***
   dom.chartTooltip.style.left = `${tooltipX.toFixed(1)}px`;
   dom.chartTooltip.style.top = `${tooltipY.toFixed(1)}px`;
   dom.chartTooltip.style.display = "block"; // Ensure display is block before visibility/opacity changes
 
-  // Use requestAnimationFrame for smoother transition start (if using classes later)
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
-      // Double check the element again inside animation frame
-      if (!dom.chartTooltip) {
-        console.error(
-          "%c  -> FATAL inside rAF: dom.chartTooltip is null or undefined!",
-          "color: red; font-weight: bold;"
-        );
-        return;
-      }
+      if (!dom.chartTooltip) { return; } // Double check element
       try {
-        console.log("%c  -> Attempting to make visible...", "color: blue"); // *** DEBUG ***
-
-        // *** CURRENT TEST: Direct Style Manipulation ***
-        console.log("%c     -> Setting style.opacity = 1", "color: purple");
+        // *** USE Direct Style Manipulation ***
+        // console.log('%c     -> Setting style.opacity = 1', 'color: purple'); // DEBUG
         dom.chartTooltip.style.opacity = 1;
-        console.log(
-          '%c     -> Setting style.visibility = "visible"',
-          "color: purple"
-        );
+        // console.log('%c     -> Setting style.visibility = "visible"', 'color: purple'); // DEBUG
         dom.chartTooltip.style.visibility = "visible";
-
-        // *** Alternative: Class Manipulation (Keep commented out for now) ***
-        // console.log('%c     -> Adding "visible" class', 'color: purple');
-        // dom.chartTooltip.classList.add('visible');
-        // console.log('%c     -> Class list after add:', 'color: purple', dom.chartTooltip.classList); // Log class list AFTER adding
-
-        console.log("%c  -> ...Visibility attempt complete.", "color: blue"); // *** DEBUG ***
+        // console.log('%c  -> ...Visibility attempt complete.', 'color: blue'); // DEBUG
       } catch (error) {
-        console.error(
-          "%c  -> Error during visibility change:",
-          "color: red; font-weight: bold;",
-          error
-        ); // *** DEBUG ***
+        console.error("%c  -> Error during visibility change:", "color: red; font-weight: bold;", error ); // DEBUG
       }
     });
   });
 }
 
-// Helper: Hide Tooltip (needs to revert direct styles if used)
+// Helper: Hide Tooltip (needs to revert direct styles - from Version B)
 function hideTooltip() {
   const wasVisible =
     dom.chartTooltip &&
-    (dom.chartTooltip.style.opacity === "1" ||
-      dom.chartTooltip.classList.contains("visible"));
+    (dom.chartTooltip.style.opacity === "1" || // Check direct style
+      dom.chartTooltip.classList.contains("visible")); // Check class just in case
 
   if (dom.chartTooltip) {
     // Revert direct styles
@@ -179,29 +140,24 @@ function hideTooltip() {
     // Also remove class if it was ever added
     dom.chartTooltip.classList.remove("visible");
 
-    if (wasVisible) {
-      console.log("%chideTooltip called", "color: red"); // *** DEBUG ***
-    }
-    // Optional: Reset display after a delay - might not be needed if visibility handles it
-    // setTimeout(() => { if (dom.chartTooltip) dom.chartTooltip.style.display = 'none'; }, 200);
+    // if (wasVisible) { // DEBUG
+    //   console.log('%chideTooltip called', 'color: red'); // DEBUG
+    // }
   }
   hoveredCandleIndex = null; // Reset index regardless
 }
 
+
+// --- Tooltip Interaction Handlers (These should be fine from Version A) ---
+
 // Tooltip Mouse Move Handler
 function handleMouseMoveForTooltip(event) {
-  if (!dom.chartArea) {
-    console.warn("Tooltip mousemove: chartArea not found");
-    return;
-  }
+  if (!dom.chartArea) { console.warn("Tooltip mousemove: chartArea not found"); return; }
   if (state.isPanning || state.isDraggingXAxis || state.isDraggingYAxis) {
     if (hoveredCandleIndex !== null) {
       clearTimeout(tooltipShowTimeout);
       if (!tooltipHideTimeout) {
-        tooltipHideTimeout = setTimeout(() => {
-          hideTooltip();
-          tooltipHideTimeout = null;
-        }, config.TOOLTIP_HIDE_DELAY);
+        tooltipHideTimeout = setTimeout(() => { hideTooltip(); tooltipHideTimeout = null; }, config.TOOLTIP_HIDE_DELAY);
       }
     }
     return;
@@ -214,81 +170,57 @@ function handleMouseMoveForTooltip(event) {
   const chartHeight = chartRect.height; // Use height from rect
   const visibleCount = state.visibleEndIndex - state.visibleStartIndex;
 
-  if (
-    chartWidth <= 0 ||
-    chartHeight <= 0 ||
-    visibleCount <= 0 ||
-    !state.fullData.length
-  ) {
-    hideTooltip();
-    return;
+  if (chartWidth <= 0 || chartHeight <= 0 || visibleCount <= 0 || !state.fullData.length ) {
+    hideTooltip(); return;
   }
 
   const candleTotalWidth = chartWidth / visibleCount;
   const currentSlotIndex = Math.floor(mouseX / candleTotalWidth);
   const currentDataIndex = state.visibleStartIndex + currentSlotIndex;
 
-  if (
-    mouseX >= 0 &&
-    mouseX <= chartWidth &&
-    mouseY >= 0 &&
-    mouseY <= chartHeight &&
-    currentDataIndex >= 0 &&
-    currentDataIndex < state.fullData.length
-  ) {
+  if ( mouseX >= 0 && mouseX <= chartWidth && mouseY >= 0 && mouseY <= chartHeight &&
+       currentDataIndex >= 0 && currentDataIndex < state.fullData.length )
+  {
     if (currentDataIndex !== hoveredCandleIndex) {
-      // Moved to a new candle
-      clearTimeout(tooltipShowTimeout);
-      clearTimeout(tooltipHideTimeout);
+      clearTimeout(tooltipShowTimeout); clearTimeout(tooltipHideTimeout);
       tooltipHideTimeout = null;
       hideTooltip(); // Hide previous immediately
 
       hoveredCandleIndex = currentDataIndex;
       tooltipShowTimeout = setTimeout(() => {
-        console.log(
-          `%cExecuting showTooltip timeout for index: ${hoveredCandleIndex}`,
-          "color: blue"
-        ); // *** DEBUG ***
+        // console.log(`%cExecuting showTooltip timeout for index: ${hoveredCandleIndex}`, 'color: blue'); // DEBUG
         showTooltip(hoveredCandleIndex, mouseX, mouseY);
         tooltipShowTimeout = null;
       }, config.TOOLTIP_SHOW_DELAY);
     } else {
-      // Still hovering same candle, clear any pending hide
-      clearTimeout(tooltipHideTimeout);
+      clearTimeout(tooltipHideTimeout); // Still on same candle, clear hide timeout
       tooltipHideTimeout = null;
     }
   } else {
     // Cursor outside valid area
-    clearTimeout(tooltipShowTimeout);
-    tooltipShowTimeout = null;
+    clearTimeout(tooltipShowTimeout); tooltipShowTimeout = null;
     hoveredCandleIndex = null;
 
     // Start hide timeout only if not already hiding and tooltip is currently visible
-    if (
-      !tooltipHideTimeout &&
-      dom.chartTooltip &&
-      (dom.chartTooltip.style.visibility === "visible" ||
-        dom.chartTooltip.classList.contains("visible"))
-    ) {
-      tooltipHideTimeout = setTimeout(() => {
-        hideTooltip();
-        tooltipHideTimeout = null;
-      }, config.TOOLTIP_HIDE_DELAY);
+    if ( !tooltipHideTimeout && dom.chartTooltip &&
+         (dom.chartTooltip.style.visibility === "visible" || // Check direct style
+          dom.chartTooltip.classList.contains("visible")) ) // Check class
+    {
+      tooltipHideTimeout = setTimeout(() => { hideTooltip(); tooltipHideTimeout = null; }, config.TOOLTIP_HIDE_DELAY);
     }
   }
 }
 
 // Tooltip Mouse Leave Handler for the specific chart area
 function handleMouseLeaveChartArea(event) {
-  console.log("%cMouse left chartArea", "color: orange"); // *** DEBUG ***
-  clearTimeout(tooltipShowTimeout);
-  tooltipShowTimeout = null;
-  clearTimeout(tooltipHideTimeout);
-  tooltipHideTimeout = null;
+  // console.log('%cMouse left chartArea', 'color: orange'); // DEBUG
+  clearTimeout(tooltipShowTimeout); tooltipShowTimeout = null;
+  clearTimeout(tooltipHideTimeout); tooltipHideTimeout = null;
   hideTooltip(); // Hide immediately
 }
 
-// --- Existing Interaction Handlers ---
+
+// --- Chart Interaction Handlers (Should be fine from Version A) ---
 export function handleZoom(event) {
   event.preventDefault();
   const chartRect = dom.chartArea.getBoundingClientRect();
@@ -314,9 +246,7 @@ export function handleZoom(event) {
       newState.minVisiblePrice = Math.max(MIN_LOG_VALUE, exp(newLogMin));
       newState.maxVisiblePrice = exp(newLogMax);
       if (newState.maxVisiblePrice / newState.minVisiblePrice < 1.001) {
-        const midPrice = Math.sqrt(
-          newState.minVisiblePrice * newState.maxVisiblePrice
-        );
+        const midPrice = Math.sqrt(newState.minVisiblePrice * newState.maxVisiblePrice);
         newState.minVisiblePrice = midPrice / 1.0005;
         newState.maxVisiblePrice = midPrice * 1.0005;
       }
@@ -342,21 +272,15 @@ export function handleZoom(event) {
   // X-Axis Zoom
   const currentVisibleCount = state.visibleEndIndex - state.visibleStartIndex;
   if (currentVisibleCount > 0) {
-    const indexAtCursor =
-      state.visibleStartIndex + (mouseX / chartWidth) * currentVisibleCount;
+    const indexAtCursor = state.visibleStartIndex + (mouseX / chartWidth) * currentVisibleCount;
     const zoomAmountX = 1 + zoomDirection * config.ZOOM_FACTOR_X;
     let newVisibleCount = Math.round(currentVisibleCount * zoomAmountX);
-    newVisibleCount = Math.max(
-      config.MIN_VISIBLE_CANDLES,
-      Math.min(newVisibleCount, state.fullData.length * 5)
-    );
-    let newStartIndex = Math.round(
-      indexAtCursor - (mouseX / chartWidth) * newVisibleCount
-    );
-    newStartIndex = Math.max(0, Math.min(newStartIndex, state.fullData.length)); // Clamp start index
+    newVisibleCount = Math.max(config.MIN_VISIBLE_CANDLES, Math.min(newVisibleCount, state.fullData.length * 5));
+    let newStartIndex = Math.round(indexAtCursor - (mouseX / chartWidth) * newVisibleCount);
+    newStartIndex = Math.max(0, Math.min(newStartIndex, state.fullData.length));
     let newEndIndex = newStartIndex + newVisibleCount;
-    newEndIndex = Math.min(newEndIndex, state.fullData.length); // Clamp end index
-    newStartIndex = Math.max(0, newEndIndex - newVisibleCount); // Recalculate start based on clamped end
+    newEndIndex = Math.min(newEndIndex, state.fullData.length);
+    newStartIndex = Math.max(0, newEndIndex - newVisibleCount);
     newState.visibleStartIndex = newStartIndex;
     newState.visibleEndIndex = newEndIndex;
   }
@@ -365,8 +289,7 @@ export function handleZoom(event) {
 }
 
 export function handleMouseMove(event) {
-  if (!state.isPanning && !state.isDraggingYAxis && !state.isDraggingXAxis)
-    return;
+  if (!state.isPanning && !state.isDraggingYAxis && !state.isDraggingXAxis) return;
   const now = Date.now();
   if (now - state.lastDrawTime < config.MOUSE_MOVE_THROTTLE) return;
   let needsRedraw = false;
@@ -378,53 +301,34 @@ export function handleMouseMove(event) {
   if (state.isDraggingYAxis) {
     const deltaY = event.clientY - state.panStartY;
     if (!chartHeight) return;
-    // Log Scale
     if (state.isLogScale) {
       const logMinStart = safeLog(state.panStartMinPrice);
       const logMaxStart = safeLog(state.panStartMaxPrice);
       const logRangeStart = logMaxStart - logMinStart;
       if (logRangeStart > 0 && !isNaN(logRangeStart)) {
         const midLogPrice = (logMaxStart + logMinStart) / 2;
-        const scaleFactor = Math.pow(
-          2,
-          (deltaY / chartHeight) * config.Y_AXIS_DRAG_SENSITIVITY
-        );
+        const scaleFactor = Math.pow(2, (deltaY / chartHeight) * config.Y_AXIS_DRAG_SENSITIVITY);
         let newLogRange = logRangeStart * scaleFactor;
         if (exp(newLogRange) < 1.001) newLogRange = log(1.001);
         const newLogMin = midLogPrice - newLogRange / 2;
         const newLogMax = midLogPrice + newLogRange / 2;
         const newMin = Math.max(MIN_LOG_VALUE, exp(newLogMin));
         const newMax = exp(newLogMax);
-        if (
-          Math.abs(newMin - state.minVisiblePrice) > 1e-9 ||
-          Math.abs(newMax - state.maxVisiblePrice) > 1e-9
-        ) {
-          newState.minVisiblePrice = newMin;
-          newState.maxVisiblePrice = newMax;
-          needsRedraw = true;
+        if ( Math.abs(newMin - state.minVisiblePrice) > 1e-9 || Math.abs(newMax - state.maxVisiblePrice) > 1e-9 ) {
+          newState.minVisiblePrice = newMin; newState.maxVisiblePrice = newMax; needsRedraw = true;
         }
       }
-    }
-    // Linear Scale
-    else {
+    } else {
       const initialRange = state.panStartMaxPrice - state.panStartMinPrice;
       if (initialRange > 0) {
         const midPrice = (state.panStartMaxPrice + state.panStartMinPrice) / 2;
-        const scaleFactor = Math.pow(
-          2,
-          (deltaY / chartHeight) * config.Y_AXIS_DRAG_SENSITIVITY
-        );
+        const scaleFactor = Math.pow(2, (deltaY / chartHeight) * config.Y_AXIS_DRAG_SENSITIVITY);
         let newRange = initialRange * scaleFactor;
         newRange = Math.max(config.MIN_PRICE_RANGE_SPAN, newRange);
         const newMin = Math.max(0, midPrice - newRange / 2);
         const newMax = midPrice + newRange / 2;
-        if (
-          Math.abs(newMin - state.minVisiblePrice) > 1e-9 ||
-          Math.abs(newMax - state.maxVisiblePrice) > 1e-9
-        ) {
-          newState.minVisiblePrice = newMin;
-          newState.maxVisiblePrice = newMax;
-          needsRedraw = true;
+        if ( Math.abs(newMin - state.minVisiblePrice) > 1e-9 || Math.abs(newMax - state.maxVisiblePrice) > 1e-9 ) {
+          newState.minVisiblePrice = newMin; newState.maxVisiblePrice = newMax; needsRedraw = true;
         }
       }
     }
@@ -433,29 +337,17 @@ export function handleMouseMove(event) {
   else if (state.isDraggingXAxis) {
     const deltaX = event.clientX - state.panStartX;
     if (!chartWidth || state.panStartVisibleCount <= 0) return;
-    const centerIndex =
-      state.panStartVisibleIndex + state.panStartVisibleCount / 2;
-    const scaleFactor = Math.pow(
-      2,
-      (deltaX / chartWidth) * config.X_AXIS_DRAG_SENSITIVITY
-    );
+    const centerIndex = state.panStartVisibleIndex + state.panStartVisibleCount / 2;
+    const scaleFactor = Math.pow(2, (deltaX / chartWidth) * config.X_AXIS_DRAG_SENSITIVITY);
     let newVisibleCount = Math.round(state.panStartVisibleCount * scaleFactor);
-    newVisibleCount = Math.max(
-      config.MIN_VISIBLE_CANDLES,
-      Math.min(newVisibleCount, state.fullData.length * 5)
-    );
+    newVisibleCount = Math.max(config.MIN_VISIBLE_CANDLES, Math.min(newVisibleCount, state.fullData.length * 5));
     let newStartIndex = Math.round(centerIndex - newVisibleCount / 2);
     newStartIndex = Math.max(0, Math.min(newStartIndex, state.fullData.length));
     let newEndIndex = newStartIndex + newVisibleCount;
     newEndIndex = Math.min(newEndIndex, state.fullData.length);
     newStartIndex = Math.max(0, newEndIndex - newVisibleCount);
-    if (
-      newStartIndex !== state.visibleStartIndex ||
-      newEndIndex !== state.visibleEndIndex
-    ) {
-      newState.visibleStartIndex = newStartIndex;
-      newState.visibleEndIndex = newEndIndex;
-      needsRedraw = true;
+    if ( newStartIndex !== state.visibleStartIndex || newEndIndex !== state.visibleEndIndex ) {
+      newState.visibleStartIndex = newStartIndex; newState.visibleEndIndex = newEndIndex; needsRedraw = true;
     }
   }
   // Chart Panning
@@ -463,59 +355,38 @@ export function handleMouseMove(event) {
     const deltaX = event.clientX - state.panStartX;
     const deltaY = event.clientY - state.panStartY;
     if (!chartWidth || !chartHeight) return;
-    let changedX = false;
-    let changedY = false;
-    // X Pan
+    let changedX = false; let changedY = false;
     if (state.panStartVisibleCount > 0) {
       const indexDelta = (deltaX / chartWidth) * state.panStartVisibleCount;
-      let newStartIndex = state.panStartVisibleIndex - Math.round(indexDelta); // Don't clamp here, allow panning beyond data
+      let newStartIndex = state.panStartVisibleIndex - Math.round(indexDelta);
       if (newStartIndex !== state.visibleStartIndex) {
-        newState.visibleStartIndex = newStartIndex;
-        newState.visibleEndIndex = newStartIndex + state.panStartVisibleCount;
-        changedX = true;
+        newState.visibleStartIndex = newStartIndex; newState.visibleEndIndex = newStartIndex + state.panStartVisibleCount; changedX = true;
       }
     }
-    // Y Pan (Log)
     if (state.isLogScale) {
-      const logMinStart = safeLog(state.panStartMinPrice);
-      const logMaxStart = safeLog(state.panStartMaxPrice);
+      const logMinStart = safeLog(state.panStartMinPrice); const logMaxStart = safeLog(state.panStartMaxPrice);
       const logRangeStart = logMaxStart - logMinStart;
       if (logRangeStart > 0 && !isNaN(logRangeStart)) {
         const logDelta = (deltaY / chartHeight) * logRangeStart;
-        const newLogMin = logMinStart + logDelta;
-        const newLogMax = logMaxStart + logDelta;
-        const newMin = Math.max(MIN_LOG_VALUE, exp(newLogMin));
-        const newMax = exp(newLogMax);
-        if (
-          Math.abs(newMin - state.minVisiblePrice) > 1e-9 ||
-          Math.abs(newMax - state.maxVisiblePrice) > 1e-9
-        ) {
-          newState.minVisiblePrice = newMin;
-          newState.maxVisiblePrice = newMax;
-          changedY = true;
+        const newLogMin = logMinStart + logDelta; const newLogMax = logMaxStart + logDelta;
+        const newMin = Math.max(MIN_LOG_VALUE, exp(newLogMin)); const newMax = exp(newLogMax);
+        if ( Math.abs(newMin - state.minVisiblePrice) > 1e-9 || Math.abs(newMax - state.maxVisiblePrice) > 1e-9 ) {
+          newState.minVisiblePrice = newMin; newState.maxVisiblePrice = newMax; changedY = true;
         }
       }
-    }
-    // Y Pan (Linear)
-    else {
+    } else {
       const initialPriceRange = state.panStartMaxPrice - state.panStartMinPrice;
       if (initialPriceRange > 0) {
         const priceDelta = (deltaY / chartHeight) * initialPriceRange;
-        const newMinPrice = state.panStartMinPrice + priceDelta;
-        const newMaxPrice = state.panStartMaxPrice + priceDelta;
-        if (
-          Math.abs(newMinPrice - state.minVisiblePrice) > 1e-9 ||
-          Math.abs(newMaxPrice - state.maxVisiblePrice) > 1e-9
-        ) {
-          newState.minVisiblePrice = Math.max(0, newMinPrice);
-          newState.maxVisiblePrice = newMaxPrice;
-          changedY = true;
+        const newMinPrice = state.panStartMinPrice + priceDelta; const newMaxPrice = state.panStartMaxPrice + priceDelta;
+        if ( Math.abs(newMinPrice - state.minVisiblePrice) > 1e-9 || Math.abs(newMaxPrice - state.maxVisiblePrice) > 1e-9 ) {
+          newState.minVisiblePrice = Math.max(0, newMinPrice); newState.maxVisiblePrice = newMaxPrice; changedY = true;
         }
       }
     }
     needsRedraw = changedX || changedY;
   }
-  // Trigger Redraw if needed
+  // Trigger Redraw
   if (needsRedraw) {
     updateState({ ...newState, lastDrawTime: now });
     requestAnimationFrame(redrawChart);
@@ -523,22 +394,12 @@ export function handleMouseMove(event) {
 }
 
 export function handleMouseDownChart(event) {
-  // Only pan if clicking directly on chart area, not controls within it potentially
-  if (
-    event.target !== dom.chartArea &&
-    event.target !== dom.chartWrapper &&
-    event.target !== dom.chartContainer
-  )
-    return;
+  if ( event.target !== dom.chartArea && event.target !== dom.chartWrapper && event.target !== dom.chartContainer && !event.target.classList.contains("candle") ) return;
   updateState({
-    isPanning: true,
-    isDraggingYAxis: false,
-    isDraggingXAxis: false,
-    panStartX: event.clientX,
-    panStartY: event.clientY,
+    isPanning: true, isDraggingYAxis: false, isDraggingXAxis: false,
+    panStartX: event.clientX, panStartY: event.clientY,
     panStartVisibleIndex: state.visibleStartIndex,
-    panStartMinPrice: state.minVisiblePrice,
-    panStartMaxPrice: state.maxVisiblePrice,
+    panStartMinPrice: state.minVisiblePrice, panStartMaxPrice: state.maxVisiblePrice,
     panStartVisibleCount: state.visibleEndIndex - state.visibleStartIndex,
   });
   if (dom.chartContainer) dom.chartContainer.classList.add("panning");
@@ -547,21 +408,16 @@ export function handleMouseDownChart(event) {
 export function handleMouseDownYAxis(event) {
   event.stopPropagation();
   updateState({
-    isDraggingYAxis: true,
-    isPanning: false,
-    isDraggingXAxis: false,
+    isDraggingYAxis: true, isPanning: false, isDraggingXAxis: false,
     panStartY: event.clientY,
-    panStartMinPrice: state.minVisiblePrice,
-    panStartMaxPrice: state.maxVisiblePrice,
+    panStartMinPrice: state.minVisiblePrice, panStartMaxPrice: state.maxVisiblePrice,
   });
 }
 
 export function handleMouseDownXAxis(event) {
   event.stopPropagation();
   updateState({
-    isDraggingXAxis: true,
-    isPanning: false,
-    isDraggingYAxis: false,
+    isDraggingXAxis: true, isPanning: false, isDraggingYAxis: false,
     panStartX: event.clientX,
     panStartVisibleIndex: state.visibleStartIndex,
     panStartVisibleCount: state.visibleEndIndex - state.visibleStartIndex,
@@ -570,11 +426,7 @@ export function handleMouseDownXAxis(event) {
 
 export function handleMouseUpOrLeave(event) {
   if (state.isPanning || state.isDraggingYAxis || state.isDraggingXAxis) {
-    updateState({
-      isPanning: false,
-      isDraggingYAxis: false,
-      isDraggingXAxis: false,
-    });
+    updateState({ isPanning: false, isDraggingYAxis: false, isDraggingXAxis: false });
     if (dom.chartContainer) dom.chartContainer.classList.remove("panning");
   }
 }
@@ -582,82 +434,69 @@ export function handleMouseUpOrLeave(event) {
 let resizeTimeout;
 export function handleResize() {
   clearTimeout(resizeTimeout);
-  resizeTimeout = setTimeout(() => {
-    requestAnimationFrame(redrawChart);
-  }, config.DEBOUNCE_DELAY);
+  resizeTimeout = setTimeout(() => { requestAnimationFrame(redrawChart); }, config.DEBOUNCE_DELAY);
 }
 
+// --- CORRECTED Double Click Handler (Reset to Now - from Version A) ---
 export function handleDoubleClick(event) {
-  if (!state.fullData.length || !dom.chartArea) return;
-  const chartRect = dom.chartArea.getBoundingClientRect();
-  const mouseX = event.clientX - chartRect.left;
-  const chartWidth = dom.chartArea.offsetWidth;
-  if (!chartWidth) return;
+  // No longer need mouse position for this "reset to recent" action
+  if (!state.fullData.length || !dom.chartArea) return; // Check if data exists
 
-  // Find index under cursor
-  const currentVisibleCount = state.visibleEndIndex - state.visibleStartIndex;
-  const fractionalIndex =
-    state.visibleStartIndex + (mouseX / chartWidth) * currentVisibleCount;
-  let targetIndex = Math.round(fractionalIndex);
-  targetIndex = Math.max(0, Math.min(targetIndex, state.fullData.length - 1));
+  // --- Calculate new view range based on MOST RECENT data ---
+  const totalDataCount = state.fullData.length;
+  let newVisibleCount = Math.min(config.DEFAULT_RESET_CANDLE_COUNT, totalDataCount);
+  let newEndIndex = totalDataCount; // Always end at the last data point
+  let newStartIndex = Math.max(0, newEndIndex - newVisibleCount); // Calculate start based on end
 
-  // Calculate new view range centered on targetIndex
-  let newVisibleCount = Math.min(
-    config.DEFAULT_RESET_CANDLE_COUNT,
-    state.fullData.length
-  );
-  let newStartIndex = Math.round(targetIndex - newVisibleCount / 2);
-  newStartIndex = Math.max(
-    0,
-    Math.min(newStartIndex, state.fullData.length - newVisibleCount)
-  ); // Clamp start
-  let newEndIndex = Math.min(
-    state.fullData.length,
-    newStartIndex + newVisibleCount
-  ); // Clamp end
-  newStartIndex = Math.max(0, newEndIndex - newVisibleCount); // Re-clamp start based on end
+  // If data is very short, recalculate visible count based on actual indices
+  newVisibleCount = newEndIndex - newStartIndex;
+  // --- End of new view range calculation ---
 
-  // Calculate Y range for the new view
-  let newMin = Infinity,
-    newMax = -Infinity;
+  // Calculate Y range for the new view (the most recent candles)
+  let newMin = Infinity, newMax = -Infinity;
   for (let i = newStartIndex; i < newEndIndex; i++) {
-    if (!state.fullData[i] || state.fullData[i].length < 5) continue;
+    if (!state.fullData[i] || state.fullData[i].length < 5) continue; // Ensure candle data is valid
     newMin = Math.min(newMin, state.fullData[i][1]); // low
     newMax = Math.max(newMax, state.fullData[i][2]); // high
   }
-  if (newMin === Infinity) {
-    newMin = 0;
-    newMax = 1;
-  } // Fallback
+  // Handle cases where no valid min/max found
+  if (newMin === Infinity || newMax === -Infinity) {
+    console.warn("Could not determine price range for reset view, using default.");
+    newMin = 0; newMax = state.lastTickerPrice ? state.lastTickerPrice * 1.1 : 1;
+  }
 
-  // Add padding
-  const padding = Math.max(
-    config.MIN_PRICE_RANGE_SPAN * 0.1,
-    (newMax - newMin) * config.Y_AXIS_PRICE_PADDING_FACTOR
-  );
-  let newMinPrice = Math.max(0, newMin - padding);
+  // Add padding to the calculated range
+  const padding = Math.max(config.MIN_PRICE_RANGE_SPAN * 0.1, (newMax - newMin) * config.Y_AXIS_PRICE_PADDING_FACTOR);
+  let newMinPrice = Math.max(0, newMin - padding); // Ensure min price is not negative
   let newMaxPrice = newMax + padding;
-  // Ensure minimum span
+
+  // Ensure minimum price range span
   if (newMaxPrice - newMinPrice < config.MIN_PRICE_RANGE_SPAN) {
     const mid = (newMaxPrice + newMinPrice) / 2;
     newMinPrice = mid - config.MIN_PRICE_RANGE_SPAN / 2;
     newMaxPrice = mid + config.MIN_PRICE_RANGE_SPAN / 2;
+    newMinPrice = Math.max(0, newMinPrice); // Re-check non-negativity
   }
 
-  // Update state and reset toggles
+  // console.log(`Resetting view to show indices [${newStartIndex}, ${newEndIndex})`); // Optional log
+
+  // Update state with the new view range and reset toggles
   updateState({
-    visibleStartIndex: newStartIndex,
-    visibleEndIndex: newEndIndex,
-    minVisiblePrice: newMinPrice,
-    maxVisiblePrice: newMaxPrice,
+    visibleStartIndex: newStartIndex, visibleEndIndex: newEndIndex,
+    minVisiblePrice: newMinPrice, maxVisiblePrice: newMaxPrice,
     isLogScale: false, // Reset log scale
     is12HourFormat: false, // Reset time format
   });
+
+  // Visually reset the toggles in the UI
   if (dom.logScaleToggle) dom.logScaleToggle.checked = false;
   if (dom.timeFormatToggle) dom.timeFormatToggle.checked = false;
 
+  // Request redraw with the new state
   requestAnimationFrame(redrawChart);
 }
+// --- End of CORRECTED Double Click Handler ---
+
 
 export function handleLogScaleToggle() {
   const isChecked = dom.logScaleToggle.checked;
@@ -675,48 +514,36 @@ export function handleTimeFormatToggle() {
 
 // Function to attach all interaction listeners
 export function attachInteractionListeners() {
-  console.log("Attaching interaction listeners..."); // *** DEBUG ***
+  // console.log("Attaching interaction listeners..."); // DEBUG
 
-  if (
-    !dom.chartContainer ||
-    !dom.yAxisLabelsContainer ||
-    !dom.xAxisLabelsContainer ||
-    !dom.chartArea
-  ) {
-    console.error(
-      "Cannot attach listeners: One or more required DOM elements are missing."
-    );
-    return;
+  if (!dom.chartContainer || !dom.yAxisLabelsContainer || !dom.xAxisLabelsContainer || !dom.chartArea) {
+    console.error("Cannot attach listeners: One or more required DOM elements are missing."); return;
   }
 
-  // Chart container listeners (Wheel, Drag Start, Double Click)
+  // Chart container listeners
   dom.chartContainer.addEventListener("wheel", handleZoom, { passive: false });
   dom.chartContainer.addEventListener("mousedown", handleMouseDownChart);
   dom.chartContainer.addEventListener("dblclick", handleDoubleClick);
 
-  // Axis drag start listeners
+  // Axis drag listeners
   dom.yAxisLabelsContainer.addEventListener("mousedown", handleMouseDownYAxis);
   dom.xAxisLabelsContainer.addEventListener("mousedown", handleMouseDownXAxis);
 
-  // Window listeners (Global Drag Move, Drag End, Resize)
+  // Window listeners
   window.addEventListener("mousemove", handleMouseMove);
   window.addEventListener("mouseup", handleMouseUpOrLeave);
   window.addEventListener("resize", handleResize);
 
-  // *** Tooltip listeners specifically on the chart drawing area ***
+  // Tooltip listeners
   dom.chartArea.addEventListener("mousemove", handleMouseMoveForTooltip);
-  console.log("Attached mousemove listener to chartArea for tooltip."); // *** DEBUG ***
+  // console.log("Attached mousemove listener to chartArea for tooltip."); // DEBUG
   dom.chartArea.addEventListener("mouseleave", handleMouseLeaveChartArea);
-  console.log("Attached mouseleave listener to chartArea for tooltip."); // *** DEBUG ***
+  // console.log("Attached mouseleave listener to chartArea for tooltip."); // DEBUG
 
   // Toggle listeners
-  if (dom.logScaleToggle) {
-    dom.logScaleToggle.addEventListener("change", handleLogScaleToggle);
-  }
-  if (dom.timeFormatToggle) {
-    dom.timeFormatToggle.addEventListener("change", handleTimeFormatToggle);
-  }
+  if (dom.logScaleToggle) { dom.logScaleToggle.addEventListener("change", handleLogScaleToggle); }
+  if (dom.timeFormatToggle) { dom.timeFormatToggle.addEventListener("change", handleTimeFormatToggle); }
 
   // Granularity listener is attached in main.js
-  console.log("Interaction listeners attached."); // *** DEBUG ***
+  // console.log("Interaction listeners attached."); // DEBUG
 }

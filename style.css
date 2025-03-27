@@ -325,22 +325,26 @@ html[data-theme="dark"] .current-price-label {
   font-size: 11px;
   line-height: 1.4;
   white-space: pre; /* Keep 'pre' for line breaks */
-  pointer-events: none; /* Should not interfere with mouse events */
+  pointer-events: none; /* Keep this to prevent blocking chart interactions */
   box-shadow: 0 2px 5px var(--shadow-color);
 
-  /* --- Adjustments --- */
-  z-index: 100; /* Increased z-index significantly */
-  opacity: 0;
-  visibility: hidden; /* Start hidden */
-  transition: opacity 0.2s ease-in-out, visibility 0s linear 0.2s; /* Original: visibility delay */
+  /* --- Core Visibility/Positioning --- */
+  z-index: 100; /* Ensure it's above other chart elements */
+  opacity: 0; /* Start fully transparent */
+  visibility: hidden; /* Start hidden (blocks pointer events when hidden) */
   top: 10px;
-  left: 10px; /* Initial placeholder - will be overridden */
+  left: 10px; /* Initial placeholder position */
+
+  /* --- Transition --- */
+  /* Transition opacity smoothly. Delay hiding visibility until fade-out is complete. */
+  transition: opacity 0.2s ease-in-out, visibility 0s linear 0.2s;
 }
 
 .chart-tooltip.visible {
-  opacity: 1;
-  visibility: visible; /* Become visible */
-  transition: opacity 0.2s ease-in-out; /* Fade in smoothly, visibility changes instantly */
+  opacity: 1; /* Fade In */
+  visibility: visible; /* Make it visible */
+  /* When visible, make visibility change instant, only transition opacity */
+  transition: opacity 0.2s ease-in-out;
 }
 
 .chart-tooltip .label {
@@ -350,8 +354,7 @@ html[data-theme="dark"] .current-price-label {
 }
 .chart-tooltip .value {
   font-weight: 500;
-}
-/* --- Candles --- */
+} /* --- Candles --- */
 .candle {
   height: 100%;
   position: relative;
