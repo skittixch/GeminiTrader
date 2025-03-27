@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Interactive BTC Candlestick Chart (Crosshair)</title> <!-- Updated title -->
+    <title>Interactive BTC Candlestick Chart</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -34,12 +34,21 @@
              </label>
              <span>AM/PM</span>
         </div>
-    </div>
 
+        <!-- Wrapper for Top-Left Info Indicators -->
+        <div class="top-left-info">
+            <!-- API Status Indicator -->
+            <div class="status-indicator">
+                API Status: <span id="api-status-indicator">Checking...</span>
+            </div>
+            <!-- Balance display moved to bottom pane -->
+        </div>
+    </div>
 
     <h1>Interactive BTC/USD Candlestick Chart</h1>
     <p class="instructions">Scroll=Zoom | Drag Chart=Pan | Drag Axes=Scale | Dbl-Click=Reset | Hover=Info/Crosshair</p>
 
+    <!-- Chart Container -->
     <div class="chart-container" id="chart-container">
         <div class="chart-wrapper">
             <div class="grid-container" id="grid-container"></div>
@@ -48,16 +57,9 @@
             <div class="x-axis-labels" id="x-axis-labels"></div>
             <div class="current-price-line" id="current-price-line" style="display: none;"></div>
             <div class="current-price-label" id="current-price-label" style="display: none;">-</div>
-
-            <!-- *** START: Crosshair Elements (Renamed for Horizontal) *** -->
             <div class="crosshair-line-x" id="crosshair-line-x" style="display: none;"></div>
             <div class="crosshair-label-y" id="crosshair-label-y" style="display: none;">-</div>
-            <!-- *** END: Crosshair Elements *** -->
-
-            <!-- Tooltip Element -->
-            <div class="chart-tooltip" id="chart-tooltip" style="display: none; opacity: 0;">
-                <!-- Content will be set by JavaScript -->
-            </div>
+            <div class="chart-tooltip" id="chart-tooltip" style="display: none; opacity: 0;"></div>
         </div>
          <div id="chart-message">Loading data...</div>
     </div>
@@ -72,7 +74,25 @@
         <button data-granularity="86400">1d</button>
     </div>
 
-    <!-- Load the main script as a module -->
+    <!-- *** START: Balance Pane *** -->
+    <div class="balance-pane" id="balance-pane">
+        <div class="balance-header">
+            <h2>Account Balances</h2>
+            <!-- <button id="refresh-balances-btn" title="Refresh Balances">🔄</button> -->
+        </div>
+        <div class="balance-content">
+            <ul class="balance-list" id="balance-list">
+                <li class="loading">Loading balances...</li>
+            </ul>
+            <div class="balance-total" id="balance-total">
+                <span>Approx. Total (USD):</span>
+                <span id="total-usd-value">--.--</span>
+                <small id="total-usd-partial-notice" style="display: none;"> (Partial)</small>
+            </div>
+        </div>
+    </div>
+    <!-- *** END: Balance Pane *** -->
+
     <script type="module" src="js/main.js" defer></script>
 
 </body>
