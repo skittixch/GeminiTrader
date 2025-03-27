@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en"> <!-- data-theme attribute will be set by JS -->
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Interactive BTC Candlestick Chart (Time Format)</title>
+    <title>Interactive BTC Candlestick Chart (Tooltip)</title> <!-- Updated title -->
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -16,7 +16,7 @@
                 <input type="checkbox" id="theme-checkbox" />
                 <div class="slider"></div>
             </label>
-            <span>Dark</span> <!-- Shortened label -->
+            <span>Dark</span>
         </div>
         <!-- Log Scale Switch -->
         <div class="log-scale-switch-wrapper">
@@ -24,22 +24,22 @@
                 <input type="checkbox" id="log-scale-checkbox" />
                 <div class="slider"></div>
             </label>
-            <span>Log</span> <!-- Shortened label -->
+            <span>Log</span>
         </div>
-        <!-- *** NEW: Time Format Switch *** -->
+        <!-- Time Format Switch -->
         <div class="time-format-switch-wrapper">
              <label class="theme-switch" for="time-format-checkbox">
-                 <input type="checkbox" id="time-format-checkbox" /> <!-- Default unchecked = 24hr -->
+                 <input type="checkbox" id="time-format-checkbox" />
                  <div class="slider"></div>
              </label>
-             <span>AM/PM</span> <!-- Label indicates state when CHECKED -->
+             <span>AM/PM</span>
         </div>
-        <!-- *** END NEW *** -->
     </div>
 
 
     <h1>Interactive BTC/USD Candlestick Chart</h1>
-    <p class="instructions">Scroll=Zoom | Drag Chart=Pan | Drag Axes=Scale | Dbl-Click=Reset</p>
+    <!-- Updated instructions -->
+    <p class="instructions">Scroll=Zoom | Drag Chart=Pan | Drag Axes=Scale | Dbl-Click=Reset | Hover=Info</p>
 
     <div class="chart-container" id="chart-container">
         <div class="chart-wrapper">
@@ -49,6 +49,13 @@
             <div class="x-axis-labels" id="x-axis-labels"></div>
             <div class="current-price-line" id="current-price-line" style="display: none;"></div>
             <div class="current-price-label" id="current-price-label" style="display: none;">-</div>
+
+            <!-- *** ADDED: Tooltip Element *** -->
+            <div class="chart-tooltip" id="chart-tooltip" style="display: none; opacity: 0;">
+                <!-- Content will be set by JavaScript -->
+            </div>
+            <!-- *** END Tooltip Element *** -->
+
         </div>
          <div id="chart-message">Loading data...</div>
     </div>
@@ -63,6 +70,7 @@
         <button data-granularity="86400">1d</button>
     </div>
 
+    <!-- Load the main script as a module -->
     <script type="module" src="js/main.js" defer></script>
 
 </body>

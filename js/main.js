@@ -126,7 +126,7 @@ function fetchAndRedraw(granularitySeconds) {
           `Loaded ${data.length} data points for ${granularitySeconds}s interval FROM SERVER.`
         );
 
-        // Debugging data order check (can be removed if confident)
+        // Debugging data order check
         if (data.length > 0) {
           const firstTimestamp = data[0][0];
           const lastTimestamp = data[data.length - 1][0];
@@ -136,7 +136,7 @@ function fetchAndRedraw(granularitySeconds) {
             console.warn(
               "  DEBUG (main.js): Data RECEIVED newest-first. Reversing."
             );
-            initializeChart(data.slice().reverse());
+            initializeChart(data.slice().reverse()); // Reverse if needed
           } else {
             console.log(
               "  DEBUG (main.js): Data RECEIVED oldest-first. Passing directly."

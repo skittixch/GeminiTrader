@@ -101,22 +101,22 @@ function connectWebSocket() {
             if (lastCandle[4] !== price) {
               lastCandle[4] = price;
               changed = true;
-            }
+            } // Close
             if (price > lastCandle[2]) {
               lastCandle[2] = price;
               changed = true;
-            }
+            } // High
             if (price < lastCandle[1]) {
               lastCandle[1] = price;
               changed = true;
-            }
+            } // Low
             if (changed && !redrawTimeout) {
               redrawTimeout = setTimeout(() => {
                 requestAnimationFrame(redrawChart);
                 redrawTimeout = null;
               }, REDRAW_THROTTLE_MS);
             }
-          }
+          } // else: Rollover or old data handled implicitly
         }
       } else if (message.type === "subscriptions") {
         console.log("WS Subscriptions:", message.channels);

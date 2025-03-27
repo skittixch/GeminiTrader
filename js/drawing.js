@@ -79,7 +79,7 @@ export function redrawChart() {
 
   try {
     // Draw Grid & Axes
-    // --- Y-Axis ---
+    // Y-Axis
     const yTickDensity = Math.max(3, Math.round(chartHeight / 40));
     const displayRange = linearPriceRange > 0 ? linearPriceRange : 1;
     const yTicks = calculateNiceStep(displayRange, yTickDensity);
@@ -118,7 +118,7 @@ export function redrawChart() {
       if (price + yTicks <= price) break;
     }
 
-    // --- X-Axis ---
+    // X-Axis
     const xTickDensity = Math.max(3, Math.round(chartWidth / 70));
     const xTicks = Math.max(1, calculateNiceStep(visibleCount, xTickDensity));
     const checkMargin = Math.ceil(visibleCount * 0.1);
@@ -138,15 +138,13 @@ export function redrawChart() {
         const currentDateString = currentJsDate.toDateString();
         const relativeSlotIndex = dataIndex - state.visibleStartIndex;
         const xPosCentered =
-          relativeSlotIndex * candleTotalWidth + candleTotalWidth / 2; // Center for both now
-        const xLinePosition = relativeSlotIndex * candleTotalWidth; // Line starts at beginning of slot
+          relativeSlotIndex * candleTotalWidth + candleTotalWidth / 2; // Center for labels
+        const xLinePosition = relativeSlotIndex * candleTotalWidth; // Line starts at beginning
 
-        // --- Date Rollover Check (for Date Label AND Vertical Line) ---
         if (
           previousDateString === null ||
           currentDateString !== previousDateString
         ) {
-          // Add Vertical Day Separator Line
           if (
             dataIndex > 0 &&
             xLinePosition >= 0 &&
@@ -155,30 +153,28 @@ export function redrawChart() {
             const separatorLine = document.createElement("div");
             separatorLine.className = "day-separator-line";
             separatorLine.style.left = `${xLinePosition.toFixed(1)}px`;
-            dom.gridContainer.appendChild(separatorLine); // Append to grid container
+            dom.gridContainer.appendChild(separatorLine);
           }
-          // Date Label
           const dateLabel = document.createElement("div");
-          dateLabel.className = "axis-label x-axis-date-label"; // Lower position class
+          dateLabel.className = "axis-label x-axis-date-label";
           dateLabel.textContent = formatDate(timestamp);
-          dateLabel.style.left = `${xPosCentered.toFixed(1)}px`; // Use centered position
+          dateLabel.style.left = `${xPosCentered.toFixed(1)}px`;
           dom.xAxisLabelsContainer.appendChild(dateLabel);
         }
         previousDateString = currentDateString;
 
-        // --- Regular Time Label Check ---
         const isTick = (dataIndex + Math.floor(xTicks / 4)) % xTicks === 0;
         const shouldHaveTimeLabel =
           isTick || (xTicks === 1 && dataIndex % 5 === 0);
         if (shouldHaveTimeLabel) {
           const timeLabel = document.createElement("div");
-          timeLabel.className = "axis-label x-axis-label"; // Higher position class
+          timeLabel.className = "axis-label x-axis-label";
           timeLabel.textContent = formatTimestamp(timestamp);
-          timeLabel.style.left = `${xPosCentered.toFixed(1)}px`; // Use centered position
+          timeLabel.style.left = `${xPosCentered.toFixed(1)}px`;
           dom.xAxisLabelsContainer.appendChild(timeLabel);
         }
       } else {
-        previousDateString = null; // Reset date tracking if out of bounds
+        previousDateString = null;
       }
     }
   } catch (e) {
@@ -235,13 +231,13 @@ export function redrawChart() {
     dom.chartMessage.style.display = "block";
   }
 
-  // --- Update Live Price Indicator Position ---
+  // --- Update Live Price Indicator Position on Full Redraw ---
   let priceForIndicator = state.lastTickerPrice;
   if (priceForIndicator === null && state.fullData.length > 0) {
     const lastCandle = state.fullData[state.fullData.length - 1];
     if (lastCandle && lastCandle.length >= 5) {
       priceForIndicator = lastCandle[4];
-    }
+    } // Fallback to close
   }
   if (priceForIndicator !== null) {
     updateLivePriceIndicatorUI(priceForIndicator, chartHeight);

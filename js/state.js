@@ -9,7 +9,7 @@ const chartState = {
   maxVisiblePrice: 1,
   isLogScale: false,
   currentGranularity: config.DEFAULT_GRANULARITY,
-  is12HourFormat: false, // *** ADDED: Default to 24-hour format ***
+  is12HourFormat: false, // Default to 24-hour format
   isPanning: false,
   isDraggingYAxis: false,
   isDraggingXAxis: false,
@@ -20,7 +20,9 @@ const chartState = {
   panStartMinPrice: 0,
   panStartMaxPrice: 0,
   lastDrawTime: 0,
-  lastTickerPrice: null,
+  lastTickerPrice: null, // Store last known ticker price
+  // Tooltip specific state (though managed within interactions.js for now)
+  // hoveredCandleIndex: null,
 };
 
 export function updateState(newState) {

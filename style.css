@@ -314,6 +314,43 @@ html[data-theme="dark"] .current-price-label {
   color: var(--bg-color);
 }
 
+/* --- Tooltip Styles --- */
+.chart-tooltip {
+  position: absolute;
+  background-color: var(--axis-label-bg);
+  color: var(--text-color);
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius-md);
+  padding: 8px 12px;
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: pre; /* Keep 'pre' for line breaks */
+  pointer-events: none; /* Should not interfere with mouse events */
+  box-shadow: 0 2px 5px var(--shadow-color);
+
+  /* --- Adjustments --- */
+  z-index: 100; /* Increased z-index significantly */
+  opacity: 0;
+  visibility: hidden; /* Start hidden */
+  transition: opacity 0.2s ease-in-out, visibility 0s linear 0.2s; /* Original: visibility delay */
+  top: 10px;
+  left: 10px; /* Initial placeholder - will be overridden */
+}
+
+.chart-tooltip.visible {
+  opacity: 1;
+  visibility: visible; /* Become visible */
+  transition: opacity 0.2s ease-in-out; /* Fade in smoothly, visibility changes instantly */
+}
+
+.chart-tooltip .label {
+  color: var(--subtle-text-color);
+  display: inline-block;
+  width: 40px;
+}
+.chart-tooltip .value {
+  font-weight: 500;
+}
 /* --- Candles --- */
 .candle {
   height: 100%;
