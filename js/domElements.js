@@ -1,6 +1,5 @@
 // js/domElements.js
 
-// Centralized DOM element references
 export const chartContainer = document.getElementById("chart-container");
 export const chartWrapper = chartContainer?.querySelector(".chart-wrapper");
 export const chartArea = document.getElementById("chart-area");
@@ -13,17 +12,15 @@ export const logScaleToggle = document.getElementById("log-scale-checkbox");
 export const granularityControls = document.getElementById(
   "granularity-controls"
 );
-// Live Price Elements
 export const currentPriceLine = document.getElementById("current-price-line");
 export const currentPriceLabel = document.getElementById("current-price-label");
-// Time Format Toggle
 export const timeFormatToggle = document.getElementById("time-format-checkbox");
-// Tooltip Element
 export const chartTooltip = document.getElementById("chart-tooltip");
+// Crosshair Elements
+export const crosshairLineX = document.getElementById("crosshair-line-x"); // Updated name
+export const crosshairLabelY = document.getElementById("crosshair-label-y");
 
-// Basic check for essential elements
 export function checkElements() {
-  // Ensure all needed elements are found
   if (
     !chartContainer ||
     !chartWrapper ||
@@ -38,7 +35,9 @@ export function checkElements() {
     !currentPriceLine ||
     !currentPriceLabel ||
     !timeFormatToggle ||
-    !chartTooltip /* Check added */
+    !chartTooltip ||
+    !crosshairLineX ||
+    !crosshairLabelY /* Updated check */
   ) {
     console.error(
       "Chart initialization failed: Essential DOM elements missing."

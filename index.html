@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Interactive BTC Candlestick Chart (Tooltip)</title> <!-- Updated title -->
+    <title>Interactive BTC Candlestick Chart (Crosshair)</title> <!-- Updated title -->
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -38,8 +38,7 @@
 
 
     <h1>Interactive BTC/USD Candlestick Chart</h1>
-    <!-- Updated instructions -->
-    <p class="instructions">Scroll=Zoom | Drag Chart=Pan | Drag Axes=Scale | Dbl-Click=Reset | Hover=Info</p>
+    <p class="instructions">Scroll=Zoom | Drag Chart=Pan | Drag Axes=Scale | Dbl-Click=Reset | Hover=Info/Crosshair</p>
 
     <div class="chart-container" id="chart-container">
         <div class="chart-wrapper">
@@ -50,12 +49,15 @@
             <div class="current-price-line" id="current-price-line" style="display: none;"></div>
             <div class="current-price-label" id="current-price-label" style="display: none;">-</div>
 
-            <!-- *** ADDED: Tooltip Element *** -->
+            <!-- *** START: Crosshair Elements (Renamed for Horizontal) *** -->
+            <div class="crosshair-line-x" id="crosshair-line-x" style="display: none;"></div>
+            <div class="crosshair-label-y" id="crosshair-label-y" style="display: none;">-</div>
+            <!-- *** END: Crosshair Elements *** -->
+
+            <!-- Tooltip Element -->
             <div class="chart-tooltip" id="chart-tooltip" style="display: none; opacity: 0;">
                 <!-- Content will be set by JavaScript -->
             </div>
-            <!-- *** END Tooltip Element *** -->
-
         </div>
          <div id="chart-message">Loading data...</div>
     </div>
