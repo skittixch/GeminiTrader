@@ -5,14 +5,20 @@ import state, { updateState } from "./state.js";
 import * as config from "./config.js";
 import { initializeTheme } from "./theme.js";
 import { redrawChart } from "./drawing.js";
-import { attachInteractionListeners } from "./interactions.js";
+import { attachInteractionListeners } from "./interactions.js"; // Import the attach function
+import {
+  initializeWebSocket,
+  closeWebSocket,
+  updateWebSocketSubscription,
+} from "./liveUpdate.js";
 
 /**
  * Initializes the chart state based on loaded data.
  * @param {Array} data - The chart data (MUST be chronological, oldest first).
  */
 function initializeChart(data) {
-  updateState({ fullData: data }); // Store potentially reversed data
+  // console.log("DEBUG (main.js): initializeChart called with data length:", data.length);
+  updateState({ fullData: data }); // Store data assumed to be oldest first
 
   if (!state.fullData.length) {
     dom.chartMessage.textContent = `No data returned for ${config.DEFAULT_PRODUCT_ID} at ${state.currentGranularity}s interval.`;
@@ -25,20 +31,19 @@ function initializeChart(data) {
     config.DEFAULT_RESET_CANDLE_COUNT,
     state.fullData.length
   );
-  // Start index is calculated from the end of the chronological array
   const initialStartIndex = Math.max(
     0,
     state.fullData.length - initialVisibleCount
   );
-  const initialEndIndex = state.fullData.length; // End at the actual end of data
+  const initialEndIndex = state.fullData.length;
 
-  // Calculate initial Y range based on the initial visible slice
+  // Calculate initial Y range
   let initialMin = Infinity,
     initialMax = -Infinity;
   for (let i = initialStartIndex; i < initialEndIndex; i++) {
     if (!state.fullData[i] || state.fullData[i].length < 5) continue;
-    initialMin = Math.min(initialMin, state.fullData[i][1]); // low (index 1)
-    initialMax = Math.max(initialMax, state.fullData[i][2]); // high (index 2)
+    initialMin = Math.min(initialMin, state.fullData[i][1]); // low
+    initialMax = Math.max(initialMax, state.fullData[i][2]); // high
   }
   if (initialMin === Infinity) {
     initialMin = 0;
@@ -57,34 +62,38 @@ function initializeChart(data) {
     initialMaxPrice = mid + config.MIN_PRICE_RANGE_SPAN / 2;
   }
 
-  // Set initial state
+  // Set initial state (load log scale and time format prefs)
   const savedLogPref = localStorage.getItem("logScalePref") === "true";
+  const savedTimeFormatPref = localStorage.getItem("timeFormatPref") === "true"; // Load time pref
+
   updateState({
     visibleStartIndex: initialStartIndex,
     visibleEndIndex: initialEndIndex,
     minVisiblePrice: initialMinPrice,
     maxVisiblePrice: initialMaxPrice,
     isLogScale: savedLogPref,
+    is12HourFormat: savedTimeFormatPref, // Set initial state
   });
-  if (dom.logScaleToggle && savedLogPref) {
-    dom.logScaleToggle.checked = true;
-  }
 
-  // Listeners attached once in DOMContentLoaded
-  // attachInteractionListeners();
+  // Sync checkboxes to loaded state
+  if (dom.logScaleToggle) dom.logScaleToggle.checked = savedLogPref;
+  if (dom.timeFormatToggle) dom.timeFormatToggle.checked = savedTimeFormatPref; // Sync time checkbox
+
+  // Initialize or update WebSocket AFTER data is loaded
+  updateWebSocketSubscription(config.DEFAULT_PRODUCT_ID);
 
   dom.chartMessage.style.display = "none";
   requestAnimationFrame(redrawChart);
+  // console.log("DEBUG (main.js): Initial redraw requested.");
 }
 
 /**
- * Fetches data for a specific granularity and redraws the chart.
+ * Fetches data for a specific granularity and re-initializes the chart.
  * @param {number} granularitySeconds - The desired granularity in seconds.
  */
 function fetchAndRedraw(granularitySeconds) {
   updateState({ currentGranularity: granularitySeconds });
 
-  // Fetch latest ~300 candles by omitting start/end
   const apiUrl = `http://localhost:5000/api/candles?granularity=${granularitySeconds}&product_id=${config.DEFAULT_PRODUCT_ID}`;
 
   console.log(
@@ -92,6 +101,8 @@ function fetchAndRedraw(granularitySeconds) {
   );
   dom.chartMessage.textContent = `Loading ${granularitySeconds}s data...`;
   dom.chartMessage.style.display = "block";
+
+  closeWebSocket(); // Close WS before fetch
 
   fetch(apiUrl)
     .then((response) => {
@@ -115,40 +126,28 @@ function fetchAndRedraw(granularitySeconds) {
           `Loaded ${data.length} data points for ${granularitySeconds}s interval FROM SERVER.`
         );
 
-        // *** DEBUGGING: Check received data order ***
+        // Debugging data order check (can be removed if confident)
         if (data.length > 0) {
           const firstTimestamp = data[0][0];
           const lastTimestamp = data[data.length - 1][0];
-          console.log(
-            `  DEBUG (main.js): First candle time RECEIVED: ${firstTimestamp} (${new Date(
-              firstTimestamp * 1000
-            ).toISOString()})`
-          );
-          console.log(
-            `  DEBUG (main.js): Last candle time RECEIVED:  ${lastTimestamp} (${new Date(
-              lastTimestamp * 1000
-            ).toISOString()})`
-          );
-
-          // Decide whether to reverse based on the received order
+          // console.log(`  DEBUG (main.js): First TS RECEIVED: ${firstTimestamp}`);
+          // console.log(`  DEBUG (main.js): Last TS RECEIVED:  ${lastTimestamp}`);
           if (firstTimestamp > lastTimestamp) {
             console.warn(
-              "  DEBUG (main.js): Data RECEIVED is newest-first. Reversing before init."
+              "  DEBUG (main.js): Data RECEIVED newest-first. Reversing."
             );
-            initializeChart(data.slice().reverse()); // Reverse if received newest-first
+            initializeChart(data.slice().reverse());
           } else {
             console.log(
-              "  DEBUG (main.js): Data RECEIVED is oldest-first. Passing directly."
+              "  DEBUG (main.js): Data RECEIVED oldest-first. Passing directly."
             );
-            initializeChart(data); // Pass directly if received oldest-first
+            initializeChart(data); // Use data directly
           }
         } else {
-          // Handle empty data case
-          console.log("API returned an empty array.");
-          initializeChart([]); // Initialize with empty array
+          initializeChart([]);
         }
-        // *** END DEBUGGING ***
       } else {
+        console.error("Received data is not an array:", data);
         throw new Error("API response was not an array.");
       }
     })
@@ -161,13 +160,11 @@ function fetchAndRedraw(granularitySeconds) {
 
 // --- Main Execution ---
 document.addEventListener("DOMContentLoaded", () => {
-  if (!dom.checkElements()) return; // Check elements exist
+  if (!dom.checkElements()) return;
+  initializeTheme();
+  attachInteractionListeners(); // Attach ALL listeners ONCE
 
-  initializeTheme(); // Set theme
-
-  attachInteractionListeners(); // Attach all interaction listeners ONCE
-
-  // Add listener for granularity buttons
+  // Granularity Button Listener
   if (dom.granularityControls) {
     dom.granularityControls.addEventListener("click", (event) => {
       if (event.target.tagName === "BUTTON") {
@@ -180,11 +177,10 @@ document.addEventListener("DOMContentLoaded", () => {
             dom.granularityControls.querySelector("button.active");
           if (currentActive) currentActive.classList.remove("active");
           event.target.classList.add("active");
-          fetchAndRedraw(newGranularity); // Fetch new data
+          fetchAndRedraw(newGranularity);
         }
       }
     });
-    // Ensure initial active button matches default state
     const initialActiveButton = dom.granularityControls.querySelector(
       `button[data-granularity="${state.currentGranularity}"]`
     );
@@ -201,4 +197,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Initial data fetch on page load
   fetchAndRedraw(state.currentGranularity);
+
+  // Optional: Clean up WebSocket on page unload
+  window.addEventListener("beforeunload", () => {
+    closeWebSocket();
+  });
 });

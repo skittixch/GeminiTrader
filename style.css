@@ -17,6 +17,8 @@
   --shadow-color: rgba(0, 0, 0, 0.05);
   --border-radius-sm: 4px;
   --border-radius-md: 6px;
+  --current-price-color: #2962ff; /* Example: distinct blue */
+  --current-price-text-color: #ffffff;
 }
 
 html[data-theme="dark"] {
@@ -31,11 +33,10 @@ html[data-theme="dark"] {
   --switch-bg: #555;
   --switch-slider: #ccc;
   --switch-slider-checked: #26a69a;
-  /* Candle colors often kept consistent, but wicks might change */
-  /* --candle-up: #26a69a; */
-  /* --candle-down: #ef5350; */
   --candle-wick: #bbbbbb;
   --shadow-color: rgba(0, 0, 0, 0.2);
+  --current-price-color: #448aff; /* Lighter blue for dark mode */
+  --current-price-text-color: #1e1e1e; /* Dark text on light blue label */
 }
 
 body {
@@ -47,22 +48,21 @@ body {
   min-height: 100vh;
   background-color: var(--bg-color);
   color: var(--text-color);
-  padding-top: 20px; /* More space at top */
+  padding-top: 20px;
   margin: 0;
-  transition: background-color 0.3s ease, color 0.3s ease; /* Smooth theme transition */
+  transition: background-color 0.3s ease, color 0.3s ease;
 }
 
 /* --- Header & Instructions --- */
 h1 {
   margin-bottom: 10px;
   font-size: 1.6em;
-  font-weight: 600; /* Slightly bolder */
+  font-weight: 600;
   text-align: center;
 }
-
 p.instructions {
   margin-top: 0;
-  margin-bottom: 20px; /* More space below instructions */
+  margin-bottom: 20px;
   font-size: 0.9em;
   color: var(--subtle-text-color);
   text-align: center;
@@ -71,24 +71,26 @@ p.instructions {
 /* --- Controls Container --- */
 .controls-wrapper {
   display: flex;
-  gap: 25px; /* Space between switches */
+  flex-wrap: wrap; /* Allow wrapping if too many controls */
+  gap: 20px; /* Adjusted gap */
   align-items: center;
   position: absolute;
-  top: 15px;
-  right: 20px;
-  padding: 5px; /* Optional padding */
+  top: 10px;
+  right: 15px;
+  padding: 5px;
 }
 
-/* --- Theme Switch / Log Scale Switch --- */
+/* --- Theme Switch / Log Scale Switch / Time Format Switch --- */
 /* Wrapper for each switch + label */
 .theme-switch-wrapper,
-.log-scale-switch-wrapper {
+.log-scale-switch-wrapper,
+.time-format-switch-wrapper {
+  /* Added new wrapper */
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px; /* Slightly smaller gap */
 }
 
-/* Switch visuals (reused) */
 .theme-switch {
   position: relative;
   display: inline-block;
@@ -109,7 +111,7 @@ p.instructions {
   bottom: 0;
   background-color: var(--switch-bg);
   transition: 0.4s;
-  border-radius: 24px; /* Fully rounded */
+  border-radius: 24px;
 }
 .slider:before {
   position: absolute;
@@ -134,43 +136,42 @@ input:checked + .slider:before {
 
 /* Label text */
 .theme-switch-wrapper span,
-.log-scale-switch-wrapper span {
-  font-size: 0.85em;
+.log-scale-switch-wrapper span,
+.time-format-switch-wrapper span {
+  /* Added new wrapper */
+  font-size: 0.8em;
   color: var(--subtle-text-color);
+  white-space: nowrap;
 }
 
 /* --- Chart Layout --- */
 .chart-container {
   width: 95%;
-  max-width: 1300px; /* Allow slightly wider */
-  height: 65vh; /* Relative height */
+  max-width: 1300px;
+  height: 65vh;
   min-height: 400px;
   max-height: 700px;
   background-color: var(--card-bg);
   border: 1px solid var(--border-color);
-  /* T, R(labels), B(labels), L */
-  padding: 15px 55px 35px 15px; /* Adjusted padding */
+  padding: 15px 55px 45px 15px; /* Increased bottom padding */
   box-sizing: border-box;
   position: relative;
   overflow: hidden;
   cursor: grab;
   user-select: none;
   display: flex;
-  border-radius: var(--border-radius-md); /* Rounded corners */
-  box-shadow: 0 2px 5px var(--shadow-color); /* Subtle shadow */
+  border-radius: var(--border-radius-md);
+  box-shadow: 0 2px 5px var(--shadow-color);
   transition: background-color 0.3s ease, border-color 0.3s ease;
 }
-
 .chart-container.panning {
   cursor: grabbing;
 }
-
 .chart-wrapper {
   width: 100%;
   height: 100%;
   position: relative;
 }
-
 .chart-area {
   width: 100%;
   height: 100%;
@@ -201,69 +202,116 @@ input:checked + .slider:before {
   height: 1px;
   left: 0;
 }
-.grid-line.vertical {
-  width: 1px;
-  height: 100%;
-  top: 0;
-}
+/* Removed vertical grid line styling - using day separators instead */
+/* .grid-line.vertical { width: 1px; height: 100%; top: 0; } */
 
-/* Axis Label Containers */
 .y-axis-labels,
 .x-axis-labels {
   position: absolute;
-  font-size: 11px; /* Slightly larger labels */
+  font-size: 11px;
   color: var(--subtle-text-color);
   z-index: 10;
   overflow: hidden;
-  background-color: var(--card-bg); /* Use card background */
+  background-color: var(--card-bg);
   transition: background-color 0.3s ease, border-color 0.3s ease;
 }
-
 .y-axis-labels {
   top: 0;
-  right: -55px; /* Match padding */
-  width: 53px; /* Clickable width */
+  right: -55px;
+  width: 53px;
   height: 100%;
   cursor: ns-resize;
-  border-left: 1px solid var(--border-color); /* Use variable */
-  padding-left: 2px; /* Space before labels start */
+  border-left: 1px solid var(--border-color);
+  padding-left: 2px;
 }
-
 .x-axis-labels {
-  bottom: -35px; /* Match padding */
+  bottom: -45px; /* Match increased bottom padding */
   left: 0;
   width: 100%;
-  height: 33px; /* Clickable height */
+  height: 43px; /* Increased height for two rows */
   cursor: ew-resize;
-  border-top: 1px solid var(--border-color); /* Use variable */
-  padding-top: 2px; /* Space before labels start */
+  border-top: 1px solid var(--border-color);
+  padding-top: 2px;
 }
-
-/* Individual Axis Labels */
 .axis-label {
   position: absolute;
-  padding: 1px 4px; /* Slightly more padding */
+  padding: 1px 4px;
   white-space: nowrap;
   pointer-events: none;
-  background-color: transparent; /* Rely on container background */
-  border-radius: var(--border-radius-sm); /* Slight roundness */
+  border-radius: var(--border-radius-sm);
+  z-index: 11;
 }
 .y-axis-label {
   right: 5px;
   transform: translateY(-50%);
-}
+  background-color: var(--axis-label-bg);
+} /* Give Y label background */
+
+/* UPDATED X-Axis Label Positioning */
 .x-axis-label {
   /* Style for TIME labels */
-  bottom: 5px;
+  bottom: 20px; /* Position higher */
   transform: translateX(-50%); /* Center */
   color: var(--subtle-text-color);
+  background-color: transparent; /* No background */
 }
 .x-axis-date-label {
   /* Style for DATE labels */
-  bottom: 5px;
-  transform: translateX(-5%); /* Align near left */
+  bottom: 5px; /* Position lower */
+  transform: translateX(-50%); /* Center */
   color: var(--text-color);
   font-weight: 500;
+  background-color: var(--card-bg); /* Opaque background */
+  padding: 1px 6px;
+  z-index: 12; /* Above time labels */
+  border: 1px solid var(--border-color);
+}
+
+/* NEW: Vertical Day Separator Line Style */
+.day-separator-line {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  width: 1px;
+  border-left: 1px dashed var(--border-color); /* Dashed line */
+  opacity: 0.6; /* Slightly more subtle */
+  pointer-events: none;
+  z-index: 0; /* Behind candles */
+  /* left position set by JS */
+}
+
+/* --- Current Price Indicator Styles --- */
+.current-price-line {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  height: 1px;
+  background-color: var(--current-price-color);
+  opacity: 0.75;
+  pointer-events: none;
+  z-index: 15;
+  transition: top 0.1s linear;
+}
+.current-price-label {
+  position: absolute;
+  right: -55px;
+  width: 53px;
+  padding: 1px 4px;
+  font-size: 11px;
+  font-weight: 500;
+  text-align: center;
+  background-color: var(--current-price-color);
+  color: var(--current-price-text-color);
+  pointer-events: none;
+  z-index: 20;
+  border-radius: var(--border-radius-sm);
+  box-sizing: border-box;
+  transform: translateY(-50%);
+  transition: top 0.1s linear;
+  white-space: nowrap;
+}
+html[data-theme="dark"] .current-price-label {
+  color: var(--bg-color);
 }
 
 /* --- Candles --- */
@@ -277,22 +325,19 @@ input:checked + .slider:before {
   z-index: 1;
   pointer-events: none;
 }
-
 .wick {
   position: absolute;
   left: 50%;
   transform: translateX(-50%);
-  width: 1px; /* Thinner wick */
+  width: 1px;
   background-color: var(--candle-wick);
 }
-
 .body {
   position: absolute;
   width: 80%;
   left: 10%;
-  /* border: 1px solid var(--candle-wick); */ /* Removed border */
   box-sizing: border-box;
-  border-radius: 1px; /* Very subtle rounding */
+  border-radius: 1px;
 }
 .color-up {
   background-color: var(--candle-up);
@@ -314,26 +359,24 @@ input:checked + .slider:before {
   padding: 8px 15px;
   border-radius: var(--border-radius-sm);
   border: 1px solid var(--border-color);
-  user-select: text !important; /* Allow text selection */
+  user-select: text !important;
   cursor: text;
 }
 
 /* --- Granularity Controls --- */
 .granularity-controls {
-  margin-top: 20px; /* Space above the buttons */
+  margin-top: 20px;
   display: flex;
-  gap: 10px; /* Space between buttons */
+  gap: 10px;
   align-items: center;
-  flex-wrap: wrap; /* Allow buttons to wrap on smaller screens */
-  justify-content: center; /* Center buttons */
+  flex-wrap: wrap;
+  justify-content: center;
 }
-
 .granularity-controls span {
   margin-right: 5px;
   font-size: 0.9em;
   color: var(--subtle-text-color);
 }
-
 .granularity-controls button {
   padding: 6px 12px;
   font-size: 0.85em;
@@ -345,17 +388,13 @@ input:checked + .slider:before {
   transition: background-color 0.2s ease, color 0.2s ease,
     border-color 0.2s ease;
 }
-
 .granularity-controls button:hover {
   border-color: var(--text-color);
   color: var(--text-color);
 }
-
 .granularity-controls button.active {
-  background-color: var(--switch-slider-checked); /* Use theme color */
-  color: var(--card-bg); /* White/contrasting text */
+  background-color: var(--switch-slider-checked);
+  color: var(--card-bg);
   border-color: var(--switch-slider-checked);
   font-weight: 500;
 }
-
-/* ... (rest of styles like axis labels, candles, message) ... */

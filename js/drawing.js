@@ -3,41 +3,46 @@
 import * as config from "./config.js";
 import state from "./state.js";
 import * as dom from "./domElements.js";
-import { calculateNiceStep, formatTimestamp, formatDate } from "./utils.js";
+import {
+  calculateNiceStep,
+  formatTimestamp,
+  formatDate,
+  getYCoordinate,
+} from "./utils.js";
 
-const MIN_LOG_VALUE = 1e-9;
-
-function getYCoordinate(price, chartHeight) {
-  if (isNaN(price) || isNaN(chartHeight) || chartHeight <= 0) return null;
-  const safeMinVisiblePrice = Math.max(MIN_LOG_VALUE, state.minVisiblePrice);
-  const safeMaxVisiblePrice = Math.max(
-    safeMinVisiblePrice + MIN_LOG_VALUE,
-    state.maxVisiblePrice
-  );
-  const safePrice = Math.max(MIN_LOG_VALUE, price);
-
-  if (state.isLogScale) {
-    const logMin = Math.log(safeMinVisiblePrice);
-    const logMax = Math.log(safeMaxVisiblePrice);
-    const logPrice = Math.log(safePrice);
-    const logRange = logMax - logMin;
-    if (logRange <= 0 || isNaN(logRange)) {
-      return chartHeight / 2;
-    }
-    const logScaleY = chartHeight / logRange;
-    const yPos = chartHeight - (logPrice - logMin) * logScaleY;
-    return isNaN(yPos) ? null : yPos;
+/**
+ * Updates the position and text of the live price indicator UI elements.
+ * @param {number} price - The current price to display.
+ * @param {number} chartHeight - Current chart height.
+ */
+function updateLivePriceIndicatorUI(price, chartHeight) {
+  if (
+    !dom.currentPriceLabel ||
+    !dom.currentPriceLine ||
+    isNaN(price) ||
+    !chartHeight
+  ) {
+    if (dom.currentPriceLabel) dom.currentPriceLabel.style.display = "none";
+    if (dom.currentPriceLine) dom.currentPriceLine.style.display = "none";
+    return;
+  }
+  const y = getYCoordinate(price, chartHeight); // Use shared utility
+  if (y !== null && !isNaN(y)) {
+    const decimals = price < 1 ? 4 : price < 100 ? 2 : price < 10000 ? 1 : 0;
+    dom.currentPriceLabel.textContent = price.toFixed(decimals);
+    dom.currentPriceLabel.style.top = `${y.toFixed(1)}px`;
+    dom.currentPriceLine.style.top = `${y.toFixed(1)}px`;
+    dom.currentPriceLabel.style.display = "block";
+    dom.currentPriceLine.style.display = "block";
   } else {
-    const priceRange = safeMaxVisiblePrice - safeMinVisiblePrice;
-    if (priceRange <= 0 || isNaN(priceRange)) {
-      return chartHeight / 2;
-    }
-    const scaleY = chartHeight / priceRange;
-    const yPos = chartHeight - (price - safeMinVisiblePrice) * scaleY;
-    return isNaN(yPos) ? null : yPos;
+    dom.currentPriceLabel.style.display = "none";
+    dom.currentPriceLine.style.display = "none";
   }
 }
 
+/**
+ * Clears and redraws the entire chart area (candles, grid, axes).
+ */
 export function redrawChart() {
   if (
     !state.fullData ||
@@ -74,6 +79,7 @@ export function redrawChart() {
 
   try {
     // Draw Grid & Axes
+    // --- Y-Axis ---
     const yTickDensity = Math.max(3, Math.round(chartHeight / 40));
     const displayRange = linearPriceRange > 0 ? linearPriceRange : 1;
     const yTicks = calculateNiceStep(displayRange, yTickDensity);
@@ -112,6 +118,7 @@ export function redrawChart() {
       if (price + yTicks <= price) break;
     }
 
+    // --- X-Axis ---
     const xTickDensity = Math.max(3, Math.round(chartWidth / 70));
     const xTicks = Math.max(1, calculateNiceStep(visibleCount, xTickDensity));
     const checkMargin = Math.ceil(visibleCount * 0.1);
@@ -129,41 +136,49 @@ export function redrawChart() {
         const timestamp = candleData[0];
         const currentJsDate = new Date(timestamp * 1000);
         const currentDateString = currentJsDate.toDateString();
-        const relativeSlotIndex = dataIndex - state.visibleStartIndex; // Slot position relative to viewport start
-        const x = relativeSlotIndex * candleTotalWidth + candleTotalWidth / 2; // Center for time label
-        const xDatePosition =
-          relativeSlotIndex * candleTotalWidth + candleMargin; // Near left for date label
+        const relativeSlotIndex = dataIndex - state.visibleStartIndex;
+        const xPosCentered =
+          relativeSlotIndex * candleTotalWidth + candleTotalWidth / 2; // Center for both now
+        const xLinePosition = relativeSlotIndex * candleTotalWidth; // Line starts at beginning of slot
 
+        // --- Date Rollover Check (for Date Label AND Vertical Line) ---
         if (
           previousDateString === null ||
           currentDateString !== previousDateString
         ) {
+          // Add Vertical Day Separator Line
+          if (
+            dataIndex > 0 &&
+            xLinePosition >= 0 &&
+            xLinePosition <= chartWidth
+          ) {
+            const separatorLine = document.createElement("div");
+            separatorLine.className = "day-separator-line";
+            separatorLine.style.left = `${xLinePosition.toFixed(1)}px`;
+            dom.gridContainer.appendChild(separatorLine); // Append to grid container
+          }
+          // Date Label
           const dateLabel = document.createElement("div");
-          dateLabel.className = "axis-label x-axis-date-label";
+          dateLabel.className = "axis-label x-axis-date-label"; // Lower position class
           dateLabel.textContent = formatDate(timestamp);
-          dateLabel.style.left = `${xDatePosition.toFixed(1)}px`;
+          dateLabel.style.left = `${xPosCentered.toFixed(1)}px`; // Use centered position
           dom.xAxisLabelsContainer.appendChild(dateLabel);
         }
         previousDateString = currentDateString;
 
+        // --- Regular Time Label Check ---
         const isTick = (dataIndex + Math.floor(xTicks / 4)) % xTicks === 0;
         const shouldHaveTimeLabel =
           isTick || (xTicks === 1 && dataIndex % 5 === 0);
-        const minutesPastMidnight =
-          currentJsDate.getHours() * 60 + currentJsDate.getMinutes();
-        const defaultGranularitySeconds = config.DEFAULT_GRANULARITY || 3600;
-        const isNearMidnight =
-          minutesPastMidnight < defaultGranularitySeconds / 60;
-
-        if (shouldHaveTimeLabel && !isNearMidnight) {
+        if (shouldHaveTimeLabel) {
           const timeLabel = document.createElement("div");
-          timeLabel.className = "axis-label x-axis-label";
+          timeLabel.className = "axis-label x-axis-label"; // Higher position class
           timeLabel.textContent = formatTimestamp(timestamp);
-          timeLabel.style.left = `${x.toFixed(1)}px`;
+          timeLabel.style.left = `${xPosCentered.toFixed(1)}px`; // Use centered position
           dom.xAxisLabelsContainer.appendChild(timeLabel);
         }
       } else {
-        previousDateString = null;
+        previousDateString = null; // Reset date tracking if out of bounds
       }
     }
   } catch (e) {
@@ -219,4 +234,19 @@ export function redrawChart() {
     dom.chartMessage.textContent = "Error drawing candles.";
     dom.chartMessage.style.display = "block";
   }
-}
+
+  // --- Update Live Price Indicator Position ---
+  let priceForIndicator = state.lastTickerPrice;
+  if (priceForIndicator === null && state.fullData.length > 0) {
+    const lastCandle = state.fullData[state.fullData.length - 1];
+    if (lastCandle && lastCandle.length >= 5) {
+      priceForIndicator = lastCandle[4];
+    }
+  }
+  if (priceForIndicator !== null) {
+    updateLivePriceIndicatorUI(priceForIndicator, chartHeight);
+  } else {
+    if (dom.currentPriceLabel) dom.currentPriceLabel.style.display = "none";
+    if (dom.currentPriceLine) dom.currentPriceLine.style.display = "none";
+  }
+} // End of redrawChart function

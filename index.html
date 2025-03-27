@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="en"> <!-- data-theme attribute will be set by JS -->
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Interactive BTC Candlestick Chart (Log Scale)</title>
+    <title>Interactive BTC Candlestick Chart (Time Format)</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -16,16 +16,25 @@
                 <input type="checkbox" id="theme-checkbox" />
                 <div class="slider"></div>
             </label>
-            <span>Dark Mode</span>
+            <span>Dark</span> <!-- Shortened label -->
         </div>
         <!-- Log Scale Switch -->
         <div class="log-scale-switch-wrapper">
-            <label class="theme-switch" for="log-scale-checkbox"> <!-- Reuse theme-switch class for style -->
+            <label class="theme-switch" for="log-scale-checkbox">
                 <input type="checkbox" id="log-scale-checkbox" />
                 <div class="slider"></div>
             </label>
-            <span>Log Scale</span>
+            <span>Log</span> <!-- Shortened label -->
         </div>
+        <!-- *** NEW: Time Format Switch *** -->
+        <div class="time-format-switch-wrapper">
+             <label class="theme-switch" for="time-format-checkbox">
+                 <input type="checkbox" id="time-format-checkbox" /> <!-- Default unchecked = 24hr -->
+                 <div class="slider"></div>
+             </label>
+             <span>AM/PM</span> <!-- Label indicates state when CHECKED -->
+        </div>
+        <!-- *** END NEW *** -->
     </div>
 
 
@@ -38,6 +47,8 @@
             <div class="chart-area" id="chart-area"></div>
             <div class="y-axis-labels" id="y-axis-labels"></div>
             <div class="x-axis-labels" id="x-axis-labels"></div>
+            <div class="current-price-line" id="current-price-line" style="display: none;"></div>
+            <div class="current-price-label" id="current-price-label" style="display: none;">-</div>
         </div>
          <div id="chart-message">Loading data...</div>
     </div>
@@ -45,10 +56,9 @@
     <!-- Granularity Selection Buttons -->
     <div class="granularity-controls" id="granularity-controls">
         <span>Interval:</span>
-        <!-- data-granularity holds the value in seconds -->
         <button data-granularity="300">5m</button>
         <button data-granularity="900">15m</button>
-        <button data-granularity="3600" class="active">1h</button> <!-- Default active -->
+        <button data-granularity="3600" class="active">1h</button>
         <button data-granularity="21600">6h</button>
         <button data-granularity="86400">1d</button>
     </div>
