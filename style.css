@@ -5,43 +5,43 @@
   --text-color: #333;
   --subtle-text-color: #555;
   --card-bg: #ffffff;
-  --border-color: #e0e0e0; /* Softer border */
-  --grid-color: #eeeeee; /* Lighter grid */
+  --border-color: #e0e0e0;
+  --grid-color: #eeeeee;
   --axis-label-bg: rgba(255, 255, 255, 0.85);
   --switch-bg: #ccc;
   --switch-slider: #fff;
-  --switch-slider-checked: #26a69a; /* Match candle up */
+  --switch-slider-checked: #26a69a;
   --candle-up: #26a69a;
   --candle-down: #ef5350;
   --candle-wick: #555;
   --shadow-color: rgba(0, 0, 0, 0.05);
   --border-radius-sm: 4px;
   --border-radius-md: 6px;
-  --current-price-color: #2962ff; /* Example: distinct blue */
+  --current-price-color: #2962ff;
   --current-price-text-color: #ffffff;
 }
 
 html[data-theme="dark"] {
   /* Dark Theme Overrides */
-  --bg-color: #1e1e1e; /* Dark background */
-  --text-color: #e0e0e0; /* Light text */
+  --bg-color: #1e1e1e;
+  --text-color: #e0e0e0;
   --subtle-text-color: #aaaaaa;
-  --card-bg: #2a2a2a; /* Darker card */
-  --border-color: #444444; /* Dark border */
-  --grid-color: #383838; /* Dark grid */
-  --axis-label-bg: rgba(42, 42, 42, 0.85); /* Dark label bg */
+  --card-bg: #2a2a2a;
+  --border-color: #444444;
+  --grid-color: #383838;
+  --axis-label-bg: rgba(42, 42, 42, 0.85);
   --switch-bg: #555;
   --switch-slider: #ccc;
   --switch-slider-checked: #26a69a;
   --candle-wick: #bbbbbb;
   --shadow-color: rgba(0, 0, 0, 0.2);
-  --current-price-color: #448aff; /* Lighter blue for dark mode */
-  --current-price-text-color: #1e1e1e; /* Dark text on light blue label */
+  --current-price-color: #448aff;
+  --current-price-text-color: #1e1e1e;
 }
 
 body {
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-    Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif; /* Modern font stack */
+    Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -71,8 +71,8 @@ p.instructions {
 /* --- Controls Container --- */
 .controls-wrapper {
   display: flex;
-  flex-wrap: wrap; /* Allow wrapping if too many controls */
-  gap: 20px; /* Adjusted gap */
+  flex-wrap: wrap;
+  gap: 20px;
   align-items: center;
   position: absolute;
   top: 10px;
@@ -81,16 +81,13 @@ p.instructions {
 }
 
 /* --- Theme Switch / Log Scale Switch / Time Format Switch --- */
-/* Wrapper for each switch + label */
 .theme-switch-wrapper,
 .log-scale-switch-wrapper,
 .time-format-switch-wrapper {
-  /* Added new wrapper */
   display: flex;
   align-items: center;
-  gap: 6px; /* Slightly smaller gap */
+  gap: 6px;
 }
-
 .theme-switch {
   position: relative;
   display: inline-block;
@@ -133,12 +130,9 @@ input:focus + .slider {
 input:checked + .slider:before {
   transform: translateX(20px);
 }
-
-/* Label text */
 .theme-switch-wrapper span,
 .log-scale-switch-wrapper span,
 .time-format-switch-wrapper span {
-  /* Added new wrapper */
   font-size: 0.8em;
   color: var(--subtle-text-color);
   white-space: nowrap;
@@ -153,7 +147,7 @@ input:checked + .slider:before {
   max-height: 700px;
   background-color: var(--card-bg);
   border: 1px solid var(--border-color);
-  padding: 15px 55px 45px 15px; /* Increased bottom padding */
+  padding: 15px 55px 45px 15px;
   box-sizing: border-box;
   position: relative;
   overflow: hidden;
@@ -178,9 +172,11 @@ input:checked + .slider:before {
   position: absolute;
   top: 0;
   left: 0;
-  display: flex;
-  justify-content: flex-start;
-  align-items: flex-end;
+  /* display: flex; */ /* REMOVE or comment out flex properties */
+  /* justify-content: flex-start; */
+  /* align-items: flex-end; */
+  cursor: default;
+  overflow: hidden; /* Hide parts of candles drawn outside bounds */
 }
 
 /* --- Grid & Axes --- */
@@ -202,9 +198,6 @@ input:checked + .slider:before {
   height: 1px;
   left: 0;
 }
-/* Removed vertical grid line styling - using day separators instead */
-/* .grid-line.vertical { width: 1px; height: 100%; top: 0; } */
-
 .y-axis-labels,
 .x-axis-labels {
   position: absolute;
@@ -225,10 +218,10 @@ input:checked + .slider:before {
   padding-left: 2px;
 }
 .x-axis-labels {
-  bottom: -45px; /* Match increased bottom padding */
+  bottom: -45px;
   left: 0;
   width: 100%;
-  height: 43px; /* Increased height for two rows */
+  height: 43px;
   cursor: ew-resize;
   border-top: 1px solid var(--border-color);
   padding-top: 2px;
@@ -245,39 +238,32 @@ input:checked + .slider:before {
   right: 5px;
   transform: translateY(-50%);
   background-color: var(--axis-label-bg);
-} /* Give Y label background */
-
-/* UPDATED X-Axis Label Positioning */
+}
 .x-axis-label {
-  /* Style for TIME labels */
-  bottom: 20px; /* Position higher */
-  transform: translateX(-50%); /* Center */
+  bottom: 20px;
+  transform: translateX(-50%);
   color: var(--subtle-text-color);
-  background-color: transparent; /* No background */
+  background-color: transparent;
 }
 .x-axis-date-label {
-  /* Style for DATE labels */
-  bottom: 5px; /* Position lower */
-  transform: translateX(-50%); /* Center */
+  bottom: 5px;
+  transform: translateX(-50%);
   color: var(--text-color);
   font-weight: 500;
-  background-color: var(--card-bg); /* Opaque background */
+  background-color: var(--card-bg);
   padding: 1px 6px;
-  z-index: 12; /* Above time labels */
+  z-index: 12;
   border: 1px solid var(--border-color);
 }
-
-/* NEW: Vertical Day Separator Line Style */
 .day-separator-line {
   position: absolute;
   top: 0;
   height: 100%;
   width: 1px;
-  border-left: 1px dashed var(--border-color); /* Dashed line */
-  opacity: 0.6; /* Slightly more subtle */
+  border-left: 1px dashed var(--border-color);
+  opacity: 0.6;
   pointer-events: none;
-  z-index: 0; /* Behind candles */
-  /* left position set by JS */
+  z-index: 0;
 }
 
 /* --- Current Price Indicator Styles --- */
@@ -314,47 +300,39 @@ html[data-theme="dark"] .current-price-label {
   color: var(--bg-color);
 }
 
-/* --- Tooltip Styles --- */
-.chart-tooltip {
+/* --- Crosshair Styles --- */
+.crosshair-line-x {
+  /* Horizontal line */
   position: absolute;
-  background-color: var(--axis-label-bg);
-  color: var(--text-color);
-  border: 1px solid var(--border-color);
-  border-radius: var(--border-radius-md);
-  padding: 8px 12px;
+  left: 0;
+  right: 0;
+  height: 1px;
+  border-top: 1px dashed var(--subtle-text-color);
+  pointer-events: none;
+  z-index: 20;
+  opacity: 0.7;
+}
+
+.crosshair-label-y {
+  /* Y-axis price label */
+  position: absolute;
+  right: -55px;
+  width: 53px;
+  padding: 1px 4px;
   font-size: 11px;
-  line-height: 1.4;
-  white-space: pre; /* Keep 'pre' for line breaks */
-  pointer-events: none; /* Keep this to prevent blocking chart interactions */
-  box-shadow: 0 2px 5px var(--shadow-color);
-
-  /* --- Core Visibility/Positioning --- */
-  z-index: 100; /* Ensure it's above other chart elements */
-  opacity: 0; /* Start fully transparent */
-  visibility: hidden; /* Start hidden (blocks pointer events when hidden) */
-  top: 10px;
-  left: 10px; /* Initial placeholder position */
-
-  /* --- Transition --- */
-  /* Transition opacity smoothly. Delay hiding visibility until fade-out is complete. */
-  transition: opacity 0.2s ease-in-out, visibility 0s linear 0.2s;
-}
-
-.chart-tooltip.visible {
-  opacity: 1; /* Fade In */
-  visibility: visible; /* Make it visible */
-  /* When visible, make visibility change instant, only transition opacity */
-  transition: opacity 0.2s ease-in-out;
-}
-
-.chart-tooltip .label {
-  color: var(--subtle-text-color);
-  display: inline-block;
-  width: 40px;
-}
-.chart-tooltip .value {
   font-weight: 500;
-} /* --- Candles --- */
+  text-align: center;
+  background-color: var(--subtle-text-color);
+  color: var(--card-bg);
+  pointer-events: none;
+  z-index: 21;
+  border-radius: var(--border-radius-sm);
+  box-sizing: border-box;
+  transform: translateY(-50%);
+  white-space: nowrap;
+}
+
+/* --- Candles --- */
 .candle {
   height: 100%;
   position: relative;
@@ -362,8 +340,7 @@ html[data-theme="dark"] .current-price-label {
   display: flex;
   justify-content: center;
   box-sizing: border-box;
-  z-index: 1;
-  pointer-events: none;
+  z-index: 1; /* pointer-events: none; */
 }
 .wick {
   position: absolute;
@@ -394,7 +371,7 @@ html[data-theme="dark"] .current-price-label {
   transform: translate(-50%, -50%);
   color: var(--subtle-text-color);
   font-style: italic;
-  z-index: 20;
+  z-index: 25;
   background-color: var(--axis-label-bg);
   padding: 8px 15px;
   border-radius: var(--border-radius-sm);
@@ -436,5 +413,39 @@ html[data-theme="dark"] .current-price-label {
   background-color: var(--switch-slider-checked);
   color: var(--card-bg);
   border-color: var(--switch-slider-checked);
+  font-weight: 500;
+}
+
+/* --- Tooltip Styles --- */
+.chart-tooltip {
+  position: absolute;
+  background-color: var(--axis-label-bg);
+  color: var(--text-color);
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius-md);
+  padding: 8px 12px;
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: pre;
+  pointer-events: none;
+  box-shadow: 0 2px 5px var(--shadow-color);
+  z-index: 100; /* Ensure tooltip is definitely on top */
+  opacity: 0;
+  visibility: hidden;
+  top: 10px;
+  left: 10px;
+  transition: opacity 0.2s ease-in-out, visibility 0s linear 0.2s;
+}
+.chart-tooltip.visible {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 0.2s ease-in-out;
+}
+.chart-tooltip .label {
+  color: var(--subtle-text-color);
+  display: inline-block;
+  width: 40px;
+}
+.chart-tooltip .value {
   font-weight: 500;
 }
