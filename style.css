@@ -1,6 +1,5 @@
 /* --- General Setup & CSS Variables --- */
 :root {
-  /* Light Theme Defaults */
   --bg-color: #f0f0f0;
   --text-color: #333;
   --subtle-text-color: #555;
@@ -20,9 +19,7 @@
   --current-price-color: #2962ff;
   --current-price-text-color: #ffffff;
 }
-
 html[data-theme="dark"] {
-  /* Dark Theme Overrides */
   --bg-color: #1e1e1e;
   --text-color: #e0e0e0;
   --subtle-text-color: #aaaaaa;
@@ -32,13 +29,11 @@ html[data-theme="dark"] {
   --axis-label-bg: rgba(42, 42, 42, 0.85);
   --switch-bg: #555;
   --switch-slider: #ccc;
-  --switch-slider-checked: #26a69a;
   --candle-wick: #bbbbbb;
   --shadow-color: rgba(0, 0, 0, 0.2);
   --current-price-color: #448aff;
   --current-price-text-color: #1e1e1e;
 }
-
 body {
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
     Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif;
@@ -48,12 +43,11 @@ body {
   min-height: 100vh;
   background-color: var(--bg-color);
   color: var(--text-color);
-  padding-top: 20px;
+  padding-top: 60px; /* Space for fixed top-left */
+  padding-bottom: 25vh; /* Space for fixed bottom balance pane */
   margin: 0;
   transition: background-color 0.3s ease, color 0.3s ease;
 }
-
-/* --- Header & Instructions --- */
 h1 {
   margin-bottom: 10px;
   font-size: 1.6em;
@@ -67,8 +61,6 @@ p.instructions {
   color: var(--subtle-text-color);
   text-align: center;
 }
-
-/* --- Controls Container --- */
 .controls-wrapper {
   display: flex;
   flex-wrap: wrap;
@@ -78,9 +70,8 @@ p.instructions {
   top: 10px;
   right: 15px;
   padding: 5px;
+  z-index: 110;
 }
-
-/* --- Theme Switch / Log Scale Switch / Time Format Switch --- */
 .theme-switch-wrapper,
 .log-scale-switch-wrapper,
 .time-format-switch-wrapper {
@@ -137,8 +128,35 @@ input:checked + .slider:before {
   color: var(--subtle-text-color);
   white-space: nowrap;
 }
-
-/* --- Chart Layout --- */
+.top-left-info {
+  position: fixed;
+  top: 0;
+  left: 0;
+  margin: 10px;
+  z-index: 115;
+  background-color: var(--axis-label-bg);
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius-sm);
+  padding: 5px 8px;
+  box-shadow: 0 1px 3px var(--shadow-color);
+}
+.status-indicator {
+  font-size: 0.8em;
+  color: var(--subtle-text-color);
+  white-space: nowrap;
+}
+#api-status-indicator {
+  font-weight: bold;
+}
+#api-status-indicator.loaded {
+  color: var(--candle-up);
+}
+#api-status-indicator.error {
+  color: var(--candle-down);
+}
+#api-status-indicator.loading {
+  font-style: italic;
+}
 .chart-container {
   width: 95%;
   max-width: 1300px;
@@ -172,14 +190,9 @@ input:checked + .slider:before {
   position: absolute;
   top: 0;
   left: 0;
-  /* display: flex; */ /* REMOVE or comment out flex properties */
-  /* justify-content: flex-start; */
-  /* align-items: flex-end; */
   cursor: default;
-  overflow: hidden; /* Hide parts of candles drawn outside bounds */
+  overflow: hidden;
 }
-
-/* --- Grid & Axes --- */
 .grid-container {
   position: absolute;
   top: 0;
@@ -265,8 +278,6 @@ input:checked + .slider:before {
   pointer-events: none;
   z-index: 0;
 }
-
-/* --- Current Price Indicator Styles --- */
 .current-price-line {
   position: absolute;
   left: 0;
@@ -299,10 +310,7 @@ input:checked + .slider:before {
 html[data-theme="dark"] .current-price-label {
   color: var(--bg-color);
 }
-
-/* --- Crosshair Styles --- */
 .crosshair-line-x {
-  /* Horizontal line */
   position: absolute;
   left: 0;
   right: 0;
@@ -312,9 +320,7 @@ html[data-theme="dark"] .current-price-label {
   z-index: 20;
   opacity: 0.7;
 }
-
 .crosshair-label-y {
-  /* Y-axis price label */
   position: absolute;
   right: -55px;
   width: 53px;
@@ -331,16 +337,10 @@ html[data-theme="dark"] .current-price-label {
   transform: translateY(-50%);
   white-space: nowrap;
 }
-
-/* --- Candles --- */
 .candle {
-  height: 100%;
-  position: relative;
-  flex-shrink: 0;
-  display: flex;
-  justify-content: center;
+  position: absolute;
   box-sizing: border-box;
-  z-index: 1; /* pointer-events: none; */
+  z-index: 1;
 }
 .wick {
   position: absolute;
@@ -362,8 +362,6 @@ html[data-theme="dark"] .current-price-label {
 .color-down {
   background-color: var(--candle-down);
 }
-
-/* --- Messages --- */
 #chart-message {
   position: absolute;
   top: 50%;
@@ -379,8 +377,6 @@ html[data-theme="dark"] .current-price-label {
   user-select: text !important;
   cursor: text;
 }
-
-/* --- Granularity Controls --- */
 .granularity-controls {
   margin-top: 20px;
   display: flex;
@@ -415,8 +411,6 @@ html[data-theme="dark"] .current-price-label {
   border-color: var(--switch-slider-checked);
   font-weight: 500;
 }
-
-/* --- Tooltip Styles --- */
 .chart-tooltip {
   position: absolute;
   background-color: var(--axis-label-bg);
@@ -429,7 +423,7 @@ html[data-theme="dark"] .current-price-label {
   white-space: pre;
   pointer-events: none;
   box-shadow: 0 2px 5px var(--shadow-color);
-  z-index: 100; /* Ensure tooltip is definitely on top */
+  z-index: 100;
   opacity: 0;
   visibility: hidden;
   top: 10px;
@@ -448,4 +442,106 @@ html[data-theme="dark"] .current-price-label {
 }
 .chart-tooltip .value {
   font-weight: 500;
+}
+.balance-pane {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  max-height: 25vh;
+  background-color: var(--card-bg);
+  border-top: 1px solid var(--border-color);
+  box-shadow: 0 -2px 5px var(--shadow-color);
+  z-index: 120;
+  display: flex;
+  flex-direction: column;
+  transition: background-color 0.3s ease, border-color 0.3s ease;
+}
+.balance-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 5px 15px;
+  border-bottom: 1px solid var(--border-color);
+  flex-shrink: 0;
+}
+.balance-header h2 {
+  margin: 0;
+  font-size: 1em;
+  font-weight: 600;
+}
+.balance-content {
+  display: flex;
+  overflow: hidden;
+  flex-grow: 1;
+}
+.balance-list {
+  list-style: none;
+  margin: 0;
+  padding: 10px 15px;
+  overflow-y: auto;
+  flex-grow: 1;
+  font-size: 0.85em;
+}
+.balance-list li {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--grid-color);
+}
+.balance-list li:last-child {
+  border-bottom: none;
+}
+.balance-list li span {
+  padding: 0 5px;
+}
+.balance-list li .asset-code {
+  font-weight: 600;
+  min-width: 50px;
+  flex-basis: 50px;
+}
+.balance-list li .asset-qty {
+  text-align: right;
+  flex-grow: 1;
+  margin-right: 15px;
+  font-family: monospace;
+}
+.balance-list li .asset-value {
+  min-width: 90px;
+  flex-basis: 90px;
+  text-align: right;
+  color: var(--subtle-text-color);
+  font-family: monospace;
+}
+.balance-list li.loading,
+.balance-list li.error {
+  justify-content: center;
+  color: var(--subtle-text-color);
+  font-style: italic;
+  border-bottom: none;
+}
+.balance-total {
+  flex-shrink: 0;
+  width: 200px;
+  padding: 10px 15px;
+  border-left: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: flex-end;
+  font-size: 0.9em;
+}
+.balance-total span:first-child {
+  color: var(--subtle-text-color);
+  margin-bottom: 5px;
+}
+#total-usd-value {
+  font-size: 1.2em;
+  font-weight: 600;
+  font-family: monospace;
+}
+#total-usd-partial-notice {
+  font-size: 0.8em;
+  color: var(--subtle-text-color);
+  font-style: italic;
 }

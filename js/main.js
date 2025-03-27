@@ -5,28 +5,53 @@ import state, { updateState } from "./state.js";
 import * as config from "./config.js";
 import { initializeTheme } from "./theme.js";
 import { redrawChart } from "./drawing.js";
-import { attachInteractionListeners } from "./interactions.js"; // Import the attach function
+import { attachInteractionListeners } from "./interactions.js";
 import {
   initializeWebSocket,
   closeWebSocket,
   updateWebSocketSubscription,
 } from "./liveUpdate.js";
+// Import the balance initialization function from the new module
+import { initializeBalances } from "./balance.js";
+// Utilities are likely still needed by other parts, keep the import if so
+// import { formatCurrency, formatQuantity } from './utils.js';
 
-/**
- * Initializes the chart state based on loaded data.
- * @param {Array} data - The chart data (MUST be chronological, oldest first).
- */
+// --- Status Indicator ---
+function updateApiStatusIndicator(loaded, message = null) {
+  if (!dom.apiStatusIndicator) return;
+  dom.apiStatusIndicator.className = loaded ? "loaded" : "error";
+  dom.apiStatusIndicator.textContent = message || (loaded ? "Loaded" : "Error");
+}
+function checkApiStatus() {
+  if (!dom.apiStatusIndicator) return;
+  dom.apiStatusIndicator.textContent = "Checking...";
+  dom.apiStatusIndicator.className = "loading";
+  fetch("http://localhost:5000/api/status")
+    .then((response) => {
+      if (!response.ok) throw new Error(`HTTP error ${response.status}`);
+      return response.json();
+    })
+    .then((data) => {
+      updateApiStatusIndicator(data.credentials_loaded);
+    })
+    .catch((error) => {
+      console.error("Error checking API status:", error);
+      updateApiStatusIndicator(false, "Unavailable");
+    });
+}
+
+// --- Balance Pane functions moved to balance.js ---
+// REMOVED: fetchTickerPrice, updateBalancePaneUI, fetchAccountDataAndPrices
+
+// --- Initialize Chart, Fetch/Redraw Chart Data functions ---
+// These functions remain unchanged for now
 function initializeChart(data) {
-  // console.log("DEBUG (main.js): initializeChart called with data length:", data.length);
-  updateState({ fullData: data }); // Store data assumed to be oldest first
-
+  updateState({ fullData: data });
   if (!state.fullData.length) {
-    dom.chartMessage.textContent = `No data returned for ${config.DEFAULT_PRODUCT_ID} at ${state.currentGranularity}s interval.`;
+    dom.chartMessage.textContent = `No data returned.`;
     dom.chartMessage.style.display = "block";
     return;
   }
-
-  // Calculate initial view (show the most recent data on the right)
   const initialVisibleCount = Math.min(
     config.DEFAULT_RESET_CANDLE_COUNT,
     state.fullData.length
@@ -36,20 +61,17 @@ function initializeChart(data) {
     state.fullData.length - initialVisibleCount
   );
   const initialEndIndex = state.fullData.length;
-
-  // Calculate initial Y range
   let initialMin = Infinity,
     initialMax = -Infinity;
   for (let i = initialStartIndex; i < initialEndIndex; i++) {
     if (!state.fullData[i] || state.fullData[i].length < 5) continue;
-    initialMin = Math.min(initialMin, state.fullData[i][1]); // low
-    initialMax = Math.max(initialMax, state.fullData[i][2]); // high
+    initialMin = Math.min(initialMin, state.fullData[i][1]);
+    initialMax = Math.max(initialMax, state.fullData[i][2]);
   }
   if (initialMin === Infinity) {
     initialMin = 0;
     initialMax = 1;
-  } // Fallback
-
+  }
   const padding = Math.max(
     config.MIN_PRICE_RANGE_SPAN * 0.1,
     (initialMax - initialMin) * config.Y_AXIS_PRICE_PADDING_FACTOR
@@ -60,50 +82,34 @@ function initializeChart(data) {
     const mid = (initialMaxPrice + initialMinPrice) / 2;
     initialMinPrice = mid - config.MIN_PRICE_RANGE_SPAN / 2;
     initialMaxPrice = mid + config.MIN_PRICE_RANGE_SPAN / 2;
+    initialMinPrice = Math.max(0, initialMinPrice);
   }
-
-  // Set initial state (load log scale and time format prefs)
   const savedLogPref = localStorage.getItem("logScalePref") === "true";
-  const savedTimeFormatPref = localStorage.getItem("timeFormatPref") === "true"; // Load time pref
-
+  const savedTimeFormatPref = localStorage.getItem("timeFormatPref") === "true";
   updateState({
     visibleStartIndex: initialStartIndex,
     visibleEndIndex: initialEndIndex,
     minVisiblePrice: initialMinPrice,
     maxVisiblePrice: initialMaxPrice,
     isLogScale: savedLogPref,
-    is12HourFormat: savedTimeFormatPref, // Set initial state
+    is12HourFormat: savedTimeFormatPref,
   });
-
-  // Sync checkboxes to loaded state
   if (dom.logScaleToggle) dom.logScaleToggle.checked = savedLogPref;
-  if (dom.timeFormatToggle) dom.timeFormatToggle.checked = savedTimeFormatPref; // Sync time checkbox
-
-  // Initialize or update WebSocket AFTER data is loaded
+  if (dom.timeFormatToggle) dom.timeFormatToggle.checked = savedTimeFormatPref;
   updateWebSocketSubscription(config.DEFAULT_PRODUCT_ID);
-
   dom.chartMessage.style.display = "none";
   requestAnimationFrame(redrawChart);
-  // console.log("DEBUG (main.js): Initial redraw requested.");
 }
-
-/**
- * Fetches data for a specific granularity and re-initializes the chart.
- * @param {number} granularitySeconds - The desired granularity in seconds.
- */
 function fetchAndRedraw(granularitySeconds) {
   updateState({ currentGranularity: granularitySeconds });
-
-  const apiUrl = `http://localhost:5000/api/candles?granularity=${granularitySeconds}&product_id=${config.DEFAULT_PRODUCT_ID}`;
-
+  const currentProductID = config.DEFAULT_PRODUCT_ID;
+  const apiUrl = `http://localhost:5000/api/candles?granularity=${granularitySeconds}&product_id=${currentProductID}`;
   console.log(
-    `Fetching chart data for ${granularitySeconds}s interval from: ${apiUrl}`
+    `Fetching chart data for ${currentProductID} at ${granularitySeconds}s interval from: ${apiUrl}`
   );
-  dom.chartMessage.textContent = `Loading ${granularitySeconds}s data...`;
+  dom.chartMessage.textContent = `Loading ${currentProductID} ${granularitySeconds}s data...`;
   dom.chartMessage.style.display = "block";
-
-  closeWebSocket(); // Close WS before fetch
-
+  closeWebSocket();
   fetch(apiUrl)
     .then((response) => {
       if (!response.ok) {
@@ -121,39 +127,23 @@ function fetchAndRedraw(granularitySeconds) {
       return response.json();
     })
     .then((data) => {
-      if (Array.isArray(data)) {
-        console.log(
-          `Loaded ${data.length} data points for ${granularitySeconds}s interval FROM SERVER.`
-        );
-
-        // Debugging data order check
-        if (data.length > 0) {
-          const firstTimestamp = data[0][0];
-          const lastTimestamp = data[data.length - 1][0];
-          // console.log(`  DEBUG (main.js): First TS RECEIVED: ${firstTimestamp}`);
-          // console.log(`  DEBUG (main.js): Last TS RECEIVED:  ${lastTimestamp}`);
-          if (firstTimestamp > lastTimestamp) {
-            console.warn(
-              "  DEBUG (main.js): Data RECEIVED newest-first. Reversing."
-            );
-            initializeChart(data.slice().reverse()); // Reverse if needed
-          } else {
-            console.log(
-              "  DEBUG (main.js): Data RECEIVED oldest-first. Passing directly."
-            );
-            initializeChart(data); // Use data directly
-          }
-        } else {
-          initializeChart([]);
-        }
-      } else {
-        console.error("Received data is not an array:", data);
+      if (!Array.isArray(data)) {
         throw new Error("API response was not an array.");
+      }
+      console.log(
+        `Loaded ${data.length} chart data points for ${granularitySeconds}s interval.`
+      );
+      if (data.length > 0 && data[0][0] > data[data.length - 1][0]) {
+        console.warn("Chart data RECEIVED newest-first. Reversing.");
+        initializeChart(data.slice().reverse());
+      } else {
+        console.log("Chart data RECEIVED oldest-first. Passing directly.");
+        initializeChart(data);
       }
     })
     .catch((error) => {
       console.error("Chart Error:", error);
-      dom.chartMessage.textContent = `Error loading data: ${error.message}`;
+      dom.chartMessage.textContent = `Error loading chart data: ${error.message}`;
       dom.chartMessage.style.display = "block";
     });
 }
@@ -162,7 +152,10 @@ function fetchAndRedraw(granularitySeconds) {
 document.addEventListener("DOMContentLoaded", () => {
   if (!dom.checkElements()) return;
   initializeTheme();
-  attachInteractionListeners(); // Attach ALL listeners ONCE
+  attachInteractionListeners();
+
+  checkApiStatus(); // Check backend credential status
+  initializeBalances(); // Initialize balances using the new module
 
   // Granularity Button Listener
   if (dom.granularityControls) {
@@ -194,11 +187,9 @@ document.addEventListener("DOMContentLoaded", () => {
       initialActiveButton.classList.add("active");
     }
   }
-
-  // Initial data fetch on page load
+  // Initial chart data fetch
   fetchAndRedraw(state.currentGranularity);
-
-  // Optional: Clean up WebSocket on page unload
+  // WS Cleanup
   window.addEventListener("beforeunload", () => {
     closeWebSocket();
   });

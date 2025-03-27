@@ -1,0 +1,12 @@
+# ... other ignores ...
+venv/
+env/
+.venv/
+# *.env  # Can comment out or remove if no other .env files needed
+
+# ... other ignores ...
+
+# Ignore the entire credentials folder and its contents
+credentials/
+
+# ...
