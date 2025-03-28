@@ -6,7 +6,7 @@ env/
 
 # ... other ignores ...
 
-# Ignore the entire credentials folder and its contents
-credentials/
+# Ignore the specific keyfile necessary for coinbase API access
+cdp_api_key.json
 
 # ...
