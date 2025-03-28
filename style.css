@@ -771,6 +771,45 @@ html[data-theme="dark"] .current-price-label {
   transition: color 0.3s ease;
 }
 
+/* --- Balance Dust Category Styles --- */
+.balance-list-dust-summary {
+  cursor: pointer;
+  /* font-style: italic; Removed */
+  color: var(--subtle-text-color);
+  border-top: 1px dashed var(--grid-color); /* Separator above dust */
+  /* margin-top: 5px; Removed */
+  /* padding-top: 5px; Removed */
+  /* Inherit default li padding instead */
+}
+.balance-list-dust-summary .asset-code {
+  font-size: 0.9em; /* Slightly smaller font */
+  font-weight: 500;
+  /* font-style: normal; Removed */
+}
+.balance-list-dust-summary:hover {
+  color: var(--text-color);
+}
+
+/* Remove triangle indicator */
+/* .balance-list-dust-summary::before { ... } REMOVED */
+/* .balance-list.dust-visible .balance-list-dust-summary::before { ... } REMOVED */
+
+.balance-list-dust-item {
+  display: none; /* Hidden by default */
+  /* Optional: add subtle style when visible */
+  opacity: 0.8;
+  font-size: 0.95em; /* Slightly smaller than main items */
+}
+/* Show dust items when parent list has the 'dust-visible' class */
+/* Ensure this selector is specific enough */
+ul#balance-list.dust-visible .balance-list-dust-item {
+  display: flex; /* Or 'block' if preferred, should match normal li */
+}
+/* Explicitly hide when class is not present (for robustness) */
+ul#balance-list:not(.dust-visible) .balance-list-dust-item {
+  display: none;
+}
+
 /* --- Body cursor change during resize --- */
 body.resizing,
 body.resizing * {
