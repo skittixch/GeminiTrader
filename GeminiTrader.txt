@@ -1,0 +1,4960 @@
+--- START FILE: README.md ---
+```markdown
+# GeminiTrader (Prototype)
+
+A web-based, interactive candlestick chart displaying cryptocurrency data (initially BTC-USD) fetched from a local backend proxying the Coinbase API, with live updates via WebSocket. Built with plain HTML, CSS, and vanilla JavaScript modules.
+
+## Features
+
+*   **Interactive Chart:**
+    *   Displays historical candlestick data (OHLCV).
+    *   Pan the chart by clicking and dragging the main chart area.
+    *   Zoom in/out using the mouse scroll wheel.
+    *   Scale the Y-axis (price) by clicking and dragging the price scale vertically.
+    *   Scale the X-axis (time) by clicking and dragging the time scale horizontally.
+    *   Double-click anywhere on the chart to reset the view to a default zoom level centered on the clicked time.
+*   **Live Data:**
+    *   Connects to Coinbase WebSocket feed for real-time price updates.
+    *   Displays the current ticker price as a line and label on the chart.
+    *   Updates the closing price and high/low of the *latest* candle in real-time.
+*   **Customization & UI:**
+    *   Selectable Candlestick Granularity (5m, 15m, 1h, 6h, 1d).
+    *   Logarithmic / Linear Y-axis scale toggle.
+    *   Dark / Light theme toggle (respects system preference, saves choice).
+    *   12-hour (AM/PM) / 24-hour time format toggle.
+    *   Date rollover labels and vertical separator lines on the X-axis.
+    *   Clean, minimal dashboard-like styling.
+*   **Backend Proxy:**
+    *   Simple Python Flask server (`server.py`) fetches historical data from the official Coinbase API, decoupling the frontend from direct API calls.
+
+## Project Goals (Future)
+
+*   [ ] Integrate basic trading features (e.g., placing market/limit orders - **requires authentication and careful security considerations**).
+*   [ ] integrate LLM interface to determine trading opportunities and general strategy management.
+*   [ ] Display additional data (e.g., volume bars, technical indicators).
+*   [ ] Allow selection of different trading pairs (product IDs).
+
+
+## Tech Stack
+
+*   **Frontend:** HTML5, CSS3, Vanilla JavaScript (ES Modules)
+*   **Backend:** Python, Flask, Flask-CORS, Requests
+*   **Data Source:** Coinbase Exchange API (REST for historical, WebSocket for live ticker)
+
+## Setup and Running
+
+**Prerequisites:**
+
+*   [Git](https://git-scm.com/)
+*   [Python 3](https://www.python.org/) (including `pip`)
+*   A modern web browser
+
+**Instructions:**
+
+1.  **Clone the Repository (if applicable):**
+    ```bash
+    git clone https://github.com/skittixch/GeminiTrader/tree/main.git
+    cd GeminiTrader
+    ```
+    *(If you haven't cloned it yet)*
+
+2.  **Navigate to Project Directory:**
+    Open your terminal or command prompt and `cd` into the project's root folder (the one containing `index.html`, `server.py`, etc.).
+
+3.  **Install Python Dependencies:**
+    ```bash
+    pip install Flask Flask-Cors requests
+    ```
+    *(Consider using a Python virtual environment: `python -m venv venv`, then activate it before installing)*
+
+4.  **Run the Backend Server:**
+    Open a terminal in the project directory and run:
+    ```bash
+    python server.py
+    ```
+    Leave this terminal running. You should see output indicating it's running on `http://0.0.0.0:5000/`.
+
+5.  **Run the Frontend Server:**
+    Open a *second* terminal in the *same* project directory and run Python's built-in HTTP server (or use VS Code's Live Server):
+    ```bash
+    python -m http.server 8000
+    ```
+    *(You can use a different port if 8000 is taken)*. Leave this terminal running.
+
+6.  **Access the Chart:**
+    Open your web browser and navigate to:
+    ```
+    http://localhost:8000
+    ```
+    *(Use the port number you specified for the frontend server)*.
+
+The chart should load, fetch data from your local backend (which fetches from Coinbase), connect to the WebSocket, and display the live price.
+
+## Code Structure
+
+```
+--- END FILE: README.md ---
+
+
+--- START ALL OTHER PROJECT FILES ---
+
+--- START FILE: chart.js ---
+```js
+// Encapsulate chart logic in an IIFE
+(function () {
+  "use strict"; // Enable strict mode
+
+  // --- Theme Handling (Run this early) ---
+  const themeToggle = document.getElementById("theme-checkbox");
+  const userPrefersDark =
+    window.matchMedia &&
+    window.matchMedia("(prefers-color-scheme: dark)").matches;
+  const currentTheme = localStorage.getItem("theme");
+  let theme = "light"; // Default
+
+  if (currentTheme) {
+    theme = currentTheme;
+  } else if (userPrefersDark) {
+    theme = "dark";
+  }
+
+  document.documentElement.setAttribute("data-theme", theme);
+  if (themeToggle && theme === "dark") {
+    themeToggle.checked = true;
+  }
+
+  if (themeToggle) {
+    themeToggle.addEventListener("change", function () {
+      if (this.checked) {
+        document.documentElement.setAttribute("data-theme", "dark");
+        localStorage.setItem("theme", "dark");
+      } else {
+        document.documentElement.setAttribute("data-theme", "light");
+        localStorage.setItem("theme", "light");
+      }
+      // Redrawing isn't strictly necessary as CSS handles colors, but uncomment if needed
+      // requestAnimationFrame(redrawChart);
+    });
+  }
+
+  window
+    .matchMedia("(prefers-color-scheme: dark)")
+    .addEventListener("change", (e) => {
+      if (!localStorage.getItem("theme")) {
+        const newTheme = e.matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", newTheme);
+        if (themeToggle) themeToggle.checked = newTheme === "dark";
+      }
+    });
+  // --- End Theme Handling ---
+
+  // --- DOM Elements ---
+  const chartContainer = document.getElementById("chart-container");
+  const chartWrapper = chartContainer?.querySelector(".chart-wrapper");
+  const chartArea = document.getElementById("chart-area");
+  const gridContainer = document.getElementById("grid-container");
+  const yAxisLabelsContainer = document.getElementById("y-axis-labels");
+  const xAxisLabelsContainer = document.getElementById("x-axis-labels");
+  const chartMessage = document.getElementById("chart-message");
+
+  if (
+    !chartContainer ||
+    !chartWrapper ||
+    !chartArea ||
+    !gridContainer ||
+    !yAxisLabelsContainer ||
+    !xAxisLabelsContainer ||
+    !chartMessage
+  ) {
+    console.error("Chart initialization failed: DOM elements missing.");
+    if (chartMessage)
+      chartMessage.textContent = "Error: Chart elements missing!";
+    return;
+  }
+
+  // --- Chart State ---
+  let fullData = [];
+  let visibleStartIndex = 0;
+  let visibleEndIndex = 0;
+  let minVisiblePrice = 0;
+  let maxVisiblePrice = 1;
+  let isPanning = false;
+  let isDraggingYAxis = false;
+  let isDraggingXAxis = false; // Scaling X
+  let panStartX = 0;
+  let panStartY = 0;
+  let panStartVisibleIndex = 0;
+  let panStartVisibleCount = 0;
+  let panStartMinPrice = 0;
+  let panStartMaxPrice = 0;
+  let lastDrawTime = 0;
+
+  // --- Constants ---
+  const ZOOM_FACTOR_X = 0.1;
+  const ZOOM_FACTOR_Y = 0.1;
+  const MIN_VISIBLE_CANDLES = 5;
+  const DEFAULT_RESET_CANDLE_COUNT = 100;
+  const MIN_PRICE_RANGE_SPAN = 0.1;
+  const Y_AXIS_PRICE_PADDING_FACTOR = 0.05;
+  const Y_AXIS_DRAG_SENSITIVITY = 2.0;
+  const X_AXIS_DRAG_SENSITIVITY = 2.0;
+  const MOUSE_MOVE_THROTTLE = 16;
+  const DEBOUNCE_DELAY = 100;
+
+  // --- Utility Functions ---
+  function calculateNiceStep(range, maxTicks) {
+    if (range <= 0 || maxTicks <= 0) return 1;
+    const roughStep = range / maxTicks;
+    const magnitude = Math.pow(10, Math.floor(Math.log10(roughStep)));
+    const residual = roughStep / magnitude;
+    let niceStep;
+    if (residual > 5) niceStep = 10 * magnitude;
+    else if (residual > 2) niceStep = 5 * magnitude;
+    else if (residual > 1) niceStep = 2 * magnitude;
+    else niceStep = magnitude;
+    return Math.max(niceStep, Number.EPSILON * 10);
+  }
+
+  function formatTimestamp(timestamp) {
+    const date = new Date(timestamp * 1000);
+    const hours = date.getHours().toString().padStart(2, "0");
+    const minutes = date.getMinutes().toString().padStart(2, "0");
+    return `${hours}:${minutes}`;
+  }
+
+  // --- Main Drawing Function ---
+  function redrawChart() {
+    if (!fullData || !chartArea.offsetHeight || !chartArea.offsetWidth) {
+      return;
+    }
+    const chartHeight = chartArea.offsetHeight;
+    const chartWidth = chartArea.offsetWidth;
+    const priceRange = maxVisiblePrice - minVisiblePrice;
+    const visibleCount = visibleEndIndex - visibleStartIndex;
+
+    if (priceRange <= 0 || visibleCount <= 0) {
+      chartArea.innerHTML = "";
+      gridContainer.innerHTML = "";
+      yAxisLabelsContainer.innerHTML = "";
+      xAxisLabelsContainer.innerHTML = "";
+      return;
+    }
+
+    chartArea.innerHTML = "";
+    gridContainer.innerHTML = "";
+    yAxisLabelsContainer.innerHTML = "";
+    xAxisLabelsContainer.innerHTML = "";
+
+    const scaleY = chartHeight / priceRange;
+    const totalCandleWidthRatio = 0.85;
+    const candleWidth = Math.max(
+      1,
+      (chartWidth / visibleCount) * totalCandleWidthRatio
+    );
+    const candleMargin = Math.max(
+      0.5,
+      ((chartWidth / visibleCount) * (1 - totalCandleWidthRatio)) / 2
+    );
+    const candleTotalWidth = candleWidth + candleMargin * 2;
+
+    // Draw Gridlines and Axis Labels
+    try {
+      const yTickDensity = Math.max(3, Math.round(chartHeight / 40));
+      const yTicks = calculateNiceStep(priceRange, yTickDensity);
+      const firstYTick =
+        yTicks > Number.EPSILON
+          ? Math.ceil(minVisiblePrice / yTicks) * yTicks
+          : minVisiblePrice;
+      for (
+        let price = firstYTick;
+        price <= maxVisiblePrice + yTicks * 0.1;
+        price += yTicks
+      ) {
+        if (yTicks <= Number.EPSILON || price > maxVisiblePrice + priceRange)
+          break;
+        const y = chartHeight - (price - minVisiblePrice) * scaleY;
+        if (y >= -chartHeight && y <= chartHeight * 2) {
+          const hLine = document.createElement("div");
+          hLine.className = "grid-line horizontal";
+          hLine.style.top = `${y.toFixed(1)}px`;
+          gridContainer.appendChild(hLine);
+          if (y >= -5 && y <= chartHeight + 5) {
+            const yLabel = document.createElement("div");
+            yLabel.className = "axis-label y-axis-label";
+            yLabel.style.top = `${y.toFixed(1)}px`;
+            const decimals =
+              priceRange < 10 ? (price < 1 ? 4 : 2) : price < 100 ? 1 : 0;
+            yLabel.textContent = price.toFixed(decimals);
+            yAxisLabelsContainer.appendChild(yLabel);
+          }
+        }
+        if (price + yTicks <= price) break;
+      }
+
+      const xTickDensity = Math.max(3, Math.round(chartWidth / 70));
+      const xTicks = Math.max(1, calculateNiceStep(visibleCount, xTickDensity));
+      for (let i = 0; i < visibleCount; i++) {
+        const dataIndex = visibleStartIndex + i;
+        if (dataIndex >= 0 && dataIndex < fullData.length) {
+          const isTick = (i + Math.floor(xTicks / 4)) % xTicks === 0;
+          if (i === 0 || isTick || (xTicks === 1 && i % 5 === 0)) {
+            const candleData = fullData[dataIndex];
+            if (!candleData) continue;
+            const timestamp = candleData[0];
+            const x = i * candleTotalWidth + candleTotalWidth / 2;
+            if (x >= -candleTotalWidth && x <= chartWidth + candleTotalWidth) {
+              const xLabel = document.createElement("div");
+              xLabel.className = "axis-label x-axis-label";
+              xLabel.style.left = `${x.toFixed(1)}px`;
+              xLabel.textContent = formatTimestamp(timestamp);
+              xAxisLabelsContainer.appendChild(xLabel);
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.error("Error drawing axes/grid:", e);
+    }
+
+    // Draw Candles
+    try {
+      for (let i = 0; i < visibleCount; i++) {
+        const dataIndex = visibleStartIndex + i;
+        if (dataIndex >= 0 && dataIndex < fullData.length) {
+          const candle = fullData[dataIndex];
+          if (!candle || candle.length < 5) continue;
+          const [timestamp, open, high, low, close] = candle;
+          const wickHighY = chartHeight - (high - minVisiblePrice) * scaleY;
+          const wickLowY = chartHeight - (low - minVisiblePrice) * scaleY;
+          const bodyTopY =
+            chartHeight - (Math.max(open, close) - minVisiblePrice) * scaleY;
+          const bodyBottomY =
+            chartHeight - (Math.min(open, close) - minVisiblePrice) * scaleY;
+          const wickHeight = Math.max(1, wickLowY - wickHighY);
+          const bodyHeight = Math.max(1, bodyBottomY - bodyTopY);
+          const isUp = close >= open;
+
+          const candleElement = document.createElement("div");
+          candleElement.className = "candle";
+          candleElement.style.width = `${candleWidth}px`;
+          candleElement.style.marginLeft = `${
+            i === 0 ? candleMargin : candleMargin * 2
+          }px`;
+
+          const wickElement = document.createElement("div");
+          wickElement.className = "wick";
+          wickElement.style.top = `${wickHighY.toFixed(1)}px`;
+          wickElement.style.height = `${wickHeight.toFixed(1)}px`;
+
+          const bodyElement = document.createElement("div");
+          bodyElement.className = `body ${isUp ? "color-up" : "color-down"}`; // CSS handles color via these classes
+          bodyElement.style.top = `${bodyTopY.toFixed(1)}px`;
+          bodyElement.style.height = `${bodyHeight.toFixed(1)}px`;
+
+          candleElement.appendChild(wickElement);
+          candleElement.appendChild(bodyElement);
+          chartArea.appendChild(candleElement);
+        }
+      }
+    } catch (e) {
+      console.error("Error drawing candles:", e);
+    }
+  }
+
+  // --- Event Handlers ---
+  function handleZoom(event) {
+    event.preventDefault();
+    const chartRect = chartArea.getBoundingClientRect();
+    const mouseX = event.clientX - chartRect.left;
+    const mouseY = event.clientY - chartRect.top;
+    const chartHeight = chartArea.offsetHeight;
+    const chartWidth = chartArea.offsetWidth;
+    if (!chartHeight || !chartWidth) return;
+
+    const priceRange = maxVisiblePrice - minVisiblePrice;
+    if (priceRange <= 0) return;
+
+    // Y-Axis Zoom
+    const priceAtCursor = maxVisiblePrice - (mouseY / chartHeight) * priceRange;
+    const zoomAmountY =
+      event.deltaY < 0 ? 1 - ZOOM_FACTOR_Y : 1 + ZOOM_FACTOR_Y;
+    let newMinVisiblePrice =
+      priceAtCursor - (priceAtCursor - minVisiblePrice) * zoomAmountY;
+    let newMaxVisiblePrice =
+      priceAtCursor + (maxVisiblePrice - priceAtCursor) * zoomAmountY;
+    if (newMaxVisiblePrice - newMinVisiblePrice < MIN_PRICE_RANGE_SPAN) {
+      const mid = (newMaxVisiblePrice + newMinVisiblePrice) / 2;
+      newMinVisiblePrice = mid - MIN_PRICE_RANGE_SPAN / 2;
+      newMaxVisiblePrice = mid + MIN_PRICE_RANGE_SPAN / 2;
+    }
+
+    // X-Axis Zoom
+    const currentVisibleCount = visibleEndIndex - visibleStartIndex;
+    if (currentVisibleCount <= 0) return;
+    const indexAtCursor =
+      visibleStartIndex + (mouseX / chartWidth) * currentVisibleCount;
+    const zoomAmountX =
+      event.deltaY < 0 ? 1 - ZOOM_FACTOR_X : 1 + ZOOM_FACTOR_X;
+    let newVisibleCount = Math.round(currentVisibleCount * zoomAmountX);
+    newVisibleCount = Math.max(
+      MIN_VISIBLE_CANDLES,
+      Math.min(newVisibleCount, fullData.length * 2)
+    );
+    let newStartIndex = Math.round(
+      indexAtCursor - (mouseX / chartWidth) * newVisibleCount
+    );
+    let newEndIndex = newStartIndex + newVisibleCount;
+
+    // No clamping for infinite scroll
+    visibleStartIndex = newStartIndex;
+    visibleEndIndex = newEndIndex;
+    minVisiblePrice = newMinVisiblePrice;
+    maxVisiblePrice = newMaxVisiblePrice;
+
+    requestAnimationFrame(redrawChart);
+  }
+
+  function handleMouseDownChart(event) {
+    isPanning = true;
+    isDraggingYAxis = false;
+    isDraggingXAxis = false;
+    panStartX = event.clientX;
+    panStartY = event.clientY;
+    panStartVisibleIndex = visibleStartIndex;
+    panStartMinPrice = minVisiblePrice;
+    panStartMaxPrice = maxVisiblePrice;
+    panStartVisibleCount = visibleEndIndex - visibleStartIndex;
+    chartContainer.classList.add("panning");
+  }
+
+  function handleMouseDownYAxis(event) {
+    event.stopPropagation();
+    isDraggingYAxis = true;
+    isPanning = false;
+    isDraggingXAxis = false;
+    panStartY = event.clientY;
+    panStartMinPrice = minVisiblePrice;
+    panStartMaxPrice = maxVisiblePrice;
+  }
+
+  function handleMouseDownXAxis(event) {
+    event.stopPropagation();
+    isDraggingXAxis = true;
+    isPanning = false;
+    isDraggingYAxis = false;
+    panStartX = event.clientX;
+    panStartVisibleIndex = visibleStartIndex;
+    panStartVisibleCount = visibleEndIndex - visibleStartIndex;
+  }
+
+  function handleMouseMove(event) {
+    if (!isPanning && !isDraggingYAxis && !isDraggingXAxis) return;
+
+    const now = Date.now();
+    if (now - lastDrawTime < MOUSE_MOVE_THROTTLE) return;
+
+    let needsRedraw = false;
+
+    if (isDraggingYAxis) {
+      const deltaY = event.clientY - panStartY;
+      const chartHeight = chartArea.offsetHeight;
+      if (!chartHeight) return;
+      const initialRange = panStartMaxPrice - panStartMinPrice;
+      if (initialRange <= 0) return;
+      const midPrice = (panStartMaxPrice + panStartMinPrice) / 2;
+      const scaleFactor = Math.pow(
+        2,
+        (deltaY / chartHeight) * Y_AXIS_DRAG_SENSITIVITY
+      );
+      let newRange = initialRange * scaleFactor;
+      newRange = Math.max(MIN_PRICE_RANGE_SPAN, newRange);
+      const newMin = midPrice - newRange / 2;
+      const newMax = midPrice + newRange / 2;
+      if (
+        Math.abs(newMin - minVisiblePrice) > 1e-9 ||
+        Math.abs(newMax - maxVisiblePrice) > 1e-9
+      ) {
+        minVisiblePrice = newMin;
+        maxVisiblePrice = newMax;
+        needsRedraw = true;
+      }
+    } else if (isDraggingXAxis) {
+      const deltaX = event.clientX - panStartX;
+      const chartWidth = chartArea.offsetWidth;
+      if (!chartWidth || panStartVisibleCount <= 0) return;
+      const centerIndex = panStartVisibleIndex + panStartVisibleCount / 2;
+      const scaleFactor = Math.pow(
+        2,
+        (deltaX / chartWidth) * X_AXIS_DRAG_SENSITIVITY
+      );
+      let newVisibleCount = Math.round(panStartVisibleCount * scaleFactor);
+      newVisibleCount = Math.max(
+        MIN_VISIBLE_CANDLES,
+        Math.min(newVisibleCount, fullData.length * 2)
+      );
+      let newStartIndex = Math.round(centerIndex - newVisibleCount / 2);
+      let newEndIndex = newStartIndex + newVisibleCount;
+
+      if (
+        newStartIndex !== visibleStartIndex ||
+        newEndIndex !== visibleEndIndex
+      ) {
+        visibleStartIndex = newStartIndex;
+        visibleEndIndex = newEndIndex;
+        needsRedraw = true;
+      }
+    } else if (isPanning) {
+      const deltaX = event.clientX - panStartX;
+      const deltaY = event.clientY - panStartY;
+      const chartHeight = chartArea.offsetHeight;
+      const chartWidth = chartArea.offsetWidth;
+      if (!chartWidth || !chartHeight) return;
+
+      let changedX = false;
+      let changedY = false;
+
+      if (panStartVisibleCount > 0) {
+        const indexDelta = (deltaX / chartWidth) * panStartVisibleCount;
+        let newStartIndex = panStartVisibleIndex - Math.round(indexDelta);
+        if (newStartIndex !== visibleStartIndex) {
+          visibleStartIndex = newStartIndex;
+          visibleEndIndex = newStartIndex + panStartVisibleCount;
+          changedX = true;
+        }
+      }
+
+      const initialPriceRange = panStartMaxPrice - panStartMinPrice;
+      if (initialPriceRange > 0) {
+        const priceDelta = (deltaY / chartHeight) * initialPriceRange;
+        const newMinPrice = panStartMinPrice + priceDelta;
+        const newMaxPrice = panStartMaxPrice + priceDelta;
+        if (
+          Math.abs(newMinPrice - minVisiblePrice) > 1e-9 ||
+          Math.abs(newMaxPrice - maxVisiblePrice) > 1e-9
+        ) {
+          minVisiblePrice = newMinPrice;
+          maxVisiblePrice = newMaxPrice;
+          changedY = true;
+        }
+      }
+      needsRedraw = changedX || changedY;
+    }
+
+    if (needsRedraw) {
+      lastDrawTime = now;
+      requestAnimationFrame(redrawChart);
+    }
+  }
+
+  function handleMouseUpOrLeave(event) {
+    if (isPanning || isDraggingYAxis || isDraggingXAxis) {
+      isPanning = false;
+      isDraggingYAxis = false;
+      isDraggingXAxis = false;
+      chartContainer.classList.remove("panning");
+    }
+  }
+
+  let resizeTimeout;
+  function handleResize() {
+    clearTimeout(resizeTimeout);
+    resizeTimeout = setTimeout(() => {
+      requestAnimationFrame(redrawChart);
+    }, DEBOUNCE_DELAY);
+  }
+
+  function handleDoubleClick(event) {
+    if (!fullData.length) return;
+    const chartRect = chartArea.getBoundingClientRect();
+    const mouseX = event.clientX - chartRect.left;
+    const chartWidth = chartArea.offsetWidth;
+    if (!chartWidth) return;
+
+    const currentVisibleCount = visibleEndIndex - visibleStartIndex;
+    const fractionalIndex =
+      visibleStartIndex + (mouseX / chartWidth) * currentVisibleCount;
+    let targetIndex = Math.round(fractionalIndex);
+    targetIndex = Math.max(0, Math.min(targetIndex, fullData.length - 1));
+
+    let newVisibleCount = Math.min(DEFAULT_RESET_CANDLE_COUNT, fullData.length);
+    let newStartIndex = Math.round(targetIndex - newVisibleCount / 2);
+    newStartIndex = Math.max(
+      0,
+      Math.min(newStartIndex, fullData.length - newVisibleCount)
+    );
+    let newEndIndex = Math.min(
+      fullData.length,
+      newStartIndex + newVisibleCount
+    );
+    newStartIndex = Math.max(0, newEndIndex - newVisibleCount);
+
+    let newMin = Infinity,
+      newMax = -Infinity;
+    for (let i = newStartIndex; i < newEndIndex; i++) {
+      if (!fullData[i] || fullData[i].length < 4) continue;
+      newMin = Math.min(newMin, fullData[i][3]);
+      newMax = Math.max(newMax, fullData[i][2]);
+    }
+    if (newMin === Infinity) {
+      newMin = 0;
+      newMax = 1;
+    }
+
+    const padding = Math.max(
+      MIN_PRICE_RANGE_SPAN * 0.1,
+      (newMax - newMin) * Y_AXIS_PRICE_PADDING_FACTOR
+    );
+    let newMinPrice = Math.max(0, newMin - padding);
+    let newMaxPrice = newMax + padding;
+    if (newMaxPrice - newMinPrice < MIN_PRICE_RANGE_SPAN) {
+      const mid = (newMaxPrice + newMinPrice) / 2;
+      newMinPrice = mid - MIN_PRICE_RANGE_SPAN / 2;
+      newMaxPrice = mid + MIN_PRICE_RANGE_SPAN / 2;
+    }
+
+    visibleStartIndex = newStartIndex;
+    visibleEndIndex = newEndIndex;
+    minVisiblePrice = newMinPrice;
+    maxVisiblePrice = newMaxPrice;
+
+    requestAnimationFrame(redrawChart);
+  }
+
+  // --- Initialization ---
+  function initializeChart(data) {
+    fullData = data;
+    if (!fullData.length) {
+      chartMessage.textContent = "No data loaded.";
+      chartMessage.style.display = "block";
+      return;
+    }
+    const initialVisibleCount = Math.min(
+      DEFAULT_RESET_CANDLE_COUNT,
+      fullData.length
+    );
+    visibleStartIndex = Math.max(0, fullData.length - initialVisibleCount);
+    visibleEndIndex = fullData.length;
+
+    let initialMin = Infinity,
+      initialMax = -Infinity;
+    for (let i = visibleStartIndex; i < visibleEndIndex; i++) {
+      if (!fullData[i] || fullData[i].length < 4) continue;
+      initialMin = Math.min(initialMin, fullData[i][3]);
+      initialMax = Math.max(initialMax, fullData[i][2]);
+    }
+    if (initialMin === Infinity) {
+      initialMin = 0;
+      initialMax = 1;
+    }
+    const padding = Math.max(
+      MIN_PRICE_RANGE_SPAN * 0.1,
+      (initialMax - initialMin) * Y_AXIS_PRICE_PADDING_FACTOR
+    );
+    minVisiblePrice = Math.max(0, initialMin - padding);
+    maxVisiblePrice = initialMax + padding;
+    if (maxVisiblePrice - minVisiblePrice < MIN_PRICE_RANGE_SPAN) {
+      const mid = (maxVisiblePrice + minVisiblePrice) / 2;
+      minVisiblePrice = mid - MIN_PRICE_RANGE_SPAN / 2;
+      maxVisiblePrice = mid + MIN_PRICE_RANGE_SPAN / 2;
+    }
+
+    chartContainer.addEventListener("wheel", handleZoom, { passive: false });
+    chartContainer.addEventListener("mousedown", handleMouseDownChart);
+    yAxisLabelsContainer.addEventListener("mousedown", handleMouseDownYAxis);
+    xAxisLabelsContainer.addEventListener("mousedown", handleMouseDownXAxis);
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUpOrLeave);
+    window.addEventListener("resize", handleResize);
+    chartContainer.addEventListener("dblclick", handleDoubleClick);
+
+    chartMessage.style.display = "none";
+    requestAnimationFrame(redrawChart);
+  }
+
+  // --- Data Fetching and Startup ---
+  document.addEventListener("DOMContentLoaded", () => {
+    fetch("btc_data.json")
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error(
+            `HTTP error ${response.status} (${response.statusText}) loading btc_data.json`
+          );
+        }
+        return response.json();
+      })
+      .then((data) => {
+        if (Array.isArray(data)) {
+          console.log(`Loaded ${data.length} data points.`);
+          initializeChart(data.slice().reverse());
+        } else {
+          throw new Error("Loaded data is not an array.");
+        }
+      })
+      .catch((error) => {
+        console.error("Chart Error:", error);
+        chartMessage.textContent = `Error: ${error.message}. Check console & network tab. Ensure using web server.`;
+        chartMessage.style.display = "block";
+      });
+  });
+})(); // End IIFE
+
+```
+--- END FILE: chart.js ---
+
+
+--- START FILE: create_context.sh ---
+```sh
+#!/bin/bash
+
+# --- Configuration ---
+OUTPUT_FILE="GeminiTrader.txt"
+README_FILE="README.md" # Define the README filename
+
+# File extensions/names to include
+INCLUDE_PATTERNS='\.py$|\.js$|\.jsx$|\.ts$|\.tsx$|\.html$|\.css$|\.scss$|\.md$|\.json$|\.yaml$|\.yml$|\.txt$|\.sh$|Dockerfile|Makefile'
+
+# Directory/file patterns to exclude (uses grep -E syntax)
+# Add README_FILE to the base exclusion for the main loop later
+BASE_EXCLUDE_PATTERNS='/\.git/|/node_modules/|/dist/|/build/|/venv/|/\.venv/|/__pycache__/|/\.vscode/|/\.idea/|/coverage/|/\.DS_Store|^./'"${OUTPUT_FILE}"'$'
+
+# --- Script ---
+echo "Creating context file with readme and code blocks: $OUTPUT_FILE" # Updated message
+# Clear the output file
+> "$OUTPUT_FILE"
+
+# --- 1. README File --- (Moved to be the first section)
+if [ -f "$README_FILE" ]; then
+    echo "Processing: $README_FILE (as introduction)"
+    echo "--- START FILE: $README_FILE ---" >> "$OUTPUT_FILE"
+    echo "\`\`\`markdown" >> "$OUTPUT_FILE"
+    cat "$README_FILE" >> "$OUTPUT_FILE"
+    echo "" >> "$OUTPUT_FILE" # Ensure newline before fence
+    echo "\`\`\`" >> "$OUTPUT_FILE"
+    echo "--- END FILE: $README_FILE ---" >> "$OUTPUT_FILE"
+    echo "" >> "$OUTPUT_FILE"
+    echo "" >> "$OUTPUT_FILE"
+else
+    echo "[ $README_FILE not found in project root, starting with other files. ]" >> "$OUTPUT_FILE"
+    echo "" >> "$OUTPUT_FILE"
+fi
+
+# --- 2. Individual Files --- (Renumbered section)
+echo "--- START ALL OTHER PROJECT FILES ---" >> "$OUTPUT_FILE"
+echo "" >> "$OUTPUT_FILE"
+
+# Add README_FILE to exclusions for the main find command
+# Use printf for safer path construction if README_FILE had special chars
+EXCLUDE_PATTERNS_FOR_FIND="${BASE_EXCLUDE_PATTERNS}"
+printf -v readme_pattern '|^./%s$' "$README_FILE"
+EXCLUDE_PATTERNS_FOR_FIND+="${readme_pattern}"
+
+# Find all files, filter out excluded patterns, filter for included patterns
+find . -type f -print0 | grep -zEv "$EXCLUDE_PATTERNS_FOR_FIND" | grep -zE "$INCLUDE_PATTERNS" | while IFS= read -r -d $'\0' file; do
+    # Clean file path for display (remove leading ./)
+    display_file="${file#./}"
+    echo "Processing: $display_file"
+
+    # --- Determine Language Hint ---
+    ext_raw="${file##*.}"
+    base_name=$(basename "$file")
+    lang_hint="text"
+    if [[ "$ext_raw" != "$base_name" ]] && [[ ! -z "$ext_raw" ]]; then
+        lang_hint=$(echo "$ext_raw" | tr '[:upper:]' '[:lower:]')
+        case "$lang_hint" in
+            "mjs"|"jsx") lang_hint="javascript" ;;
+            "tsx") lang_hint="typescript" ;;
+            "yml") lang_hint="yaml" ;;
+            # Add other specific mappings
+        esac
+    else
+        case "$base_name" in
+            "Dockerfile") lang_hint="dockerfile" ;;
+            "Makefile") lang_hint="makefile" ;;
+        esac
+        if [[ "$lang_hint" == "text" ]] && [[ "$base_name" == .* ]]; then
+            case "$base_name" in
+                ".bashrc"|".profile") lang_hint="bash" ;;
+                ".gitignore") lang_hint="gitignore" ;;
+                ".env") lang_hint="dotenv" ;;
+                # Add more hidden file types
+            esac
+        fi
+    fi
+
+    # --- Append to Output File ---
+    echo "--- START FILE: $display_file ---" >> "$OUTPUT_FILE"
+    echo "\`\`\`${lang_hint}" >> "$OUTPUT_FILE"
+    cat "$file" >> "$OUTPUT_FILE"
+    echo "" >> "$OUTPUT_FILE" # Ensure newline before fence
+    echo "\`\`\`" >> "$OUTPUT_FILE"
+    echo "--- END FILE: $display_file ---" >> "$OUTPUT_FILE"
+    echo "" >> "$OUTPUT_FILE"
+    echo "" >> "$OUTPUT_FILE"
+
+done
+
+echo "--- END ALL OTHER PROJECT FILES ---" >> "$OUTPUT_FILE"
+echo "" >> "$OUTPUT_FILE"
+
+echo "Finished creating $OUTPUT_FILE"
+```
+--- END FILE: create_context.sh ---
+
+
+--- START FILE: credentials/cdp_api_key.json ---
+```json
+{
+   "name": "organizations/be8ab444-9ab3-40f7-ae48-5cac5ea99bf7/apiKeys/384cfa64-a2de-4c9f-ac83-4aa59e394e89",
+   "privateKey": "-----BEGIN EC PRIVATE KEY-----\nMHcCAQEEICuKcV0qXSCOIXObz6jaMCjP+T+QxbHR8GS8uW6qSQeRoAoGCCqGSM49\nAwEHoUQDQgAEOCSdUfcZksYetcpjP9rmjOR5ighwLO309cWchcxnPZ99vo+U51fX\nF3T+N4snZD/14Yhr2RRVwEykKVA+ygmJFQ==\n-----END EC PRIVATE KEY-----\n"
+}
+```
+--- END FILE: credentials/cdp_api_key.json ---
+
+
+--- START FILE: credentials/cdp_api_key_example.json ---
+```json
+{
+   "name": "organizations/XXXXXXXXXXXXXXXXXXXXXXXX",
+   "privateKey": "-----BEGIN EC PRIVATE KEY-----\nXXXXXXXXXXXXXXXXXXXXXXXX\n-----END EC PRIVATE KEY-----\n"
+}
+```
+--- END FILE: credentials/cdp_api_key_example.json ---
+
+
+--- START FILE: get_context.py ---
+```py
+import os
+import fnmatch
+import sys
+
+# --- Configuration ---
+# Add directories or file patterns to exclude
+# Uses Unix shell-style wildcards (fnmatch)
+EXCLUDE_DIRS = {
+    ".git",
+    "node_modules",
+    "dist",
+    "build",
+    "venv",
+    "__pycache__",
+    ".vscode",
+    ".idea",
+    # Add any other directories you want to skip entirely
+}
+EXCLUDE_FILES = {
+    "*.pyc",
+    "*.log",
+    "*.lock",
+    "*.exe", "*.dll", "*.bin", "*.obj", "*.o", "*.so",  # Binaries
+    "*.png", "*.jpg", "*.jpeg", "*.gif", "*.svg", "*.ico", "*.webp",  # Images
+    "*.zip", "*.tar.gz", "*.rar", "*.7z", "*.jar",  # Archives
+    "*.pdf", "*.doc", "*.docx", "*.xls", "*.xlsx", "*.ppt", "*.pptx",  # Documents
+    "project_context.txt",  # Exclude the output file itself
+    # Add any other file patterns
+}
+
+# Mapping file extensions to Markdown language hints
+# Add more as needed
+LANG_HINTS = {
+    "py": "python",
+    "js": "javascript",
+    "ts": "typescript",
+    "cs": "csharp",
+    "html": "html",
+    "css": "css",
+    "scss": "scss",
+    "json": "json",
+    "md": "markdown",
+    "sh": "bash",
+    "ps1": "powershell",
+    "yaml": "yaml",
+    "yml": "yaml",
+    "sql": "sql",
+    "dockerfile": "dockerfile",
+    "txt": "text",
+}
+# --- End Configuration ---
+
+
+def get_lang_hint(filename):
+    """Gets the markdown language hint based on file extension."""
+    _, ext = os.path.splitext(filename)
+    return LANG_HINTS.get(ext.lower().lstrip('.'), ext.lstrip('.'))
+
+
+def should_exclude(path, is_dir):
+    """Checks if a file or directory should be excluded."""
+    name = os.path.basename(path)
+    patterns = EXCLUDE_DIRS if is_dir else EXCLUDE_FILES
+    if name in patterns:
+        return True
+    for pattern in patterns:
+        if fnmatch.fnmatch(name, pattern):
+            return True
+    return False
+
+
+def print_tree(start_path):
+    """Prints a basic directory tree structure."""
+    print("Project Directory Tree:")
+    print("=======================")
+    for root, dirs, files in os.walk(start_path, topdown=True):
+        # Filter excluded directories *before* descending into them
+        dirs[:] = [d for d in dirs if not should_exclude(
+            os.path.join(root, d), True)]
+
+        level = root.replace(start_path, '').count(os.sep)
+        indent = ' ' * 4 * level
+        print(f"{indent}{os.path.basename(root)}/")
+
+        sub_indent = ' ' * 4 * (level + 1)
+        for f in files:
+            file_path = os.path.join(root, f)
+            if not should_exclude(file_path, False):
+                print(f"{sub_indent}{f}")
+    print("\n")  # Add a newline
+
+
+def process_files(start_path):
+    """Processes and prints the content of non-excluded files."""
+    print("File Contents:")
+    print("==============")
+    print("")  # Add a newline
+
+    for root, dirs, files in os.walk(start_path, topdown=True):
+        # Filter excluded directories again (important for the files loop)
+        dirs[:] = [d for d in dirs if not should_exclude(
+            os.path.join(root, d), True)]
+
+        for filename in files:
+            file_path = os.path.join(root, filename)
+            relative_path = os.path.relpath(file_path, start_path)
+
+            if should_exclude(file_path, False):
+                continue
+
+            lang_hint = get_lang_hint(filename)
+
+            # Use forward slashes for consistency
+            print(f"--- File: {relative_path.replace(os.sep, '/')} ---")
+            print(f"```{lang_hint}")
+            try:
+                # Try reading with UTF-8, fallback to latin-1 if needed
+                # Add other encodings if necessary for your project
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+            except UnicodeDecodeError:
+                try:
+                    with open(file_path, 'r', encoding='latin-1') as f:
+                        content = f.read()
+                except Exception as e:
+                    content = f"[Error reading file: {e}]"
+            except Exception as e:
+                content = f"[Error reading file: {e}]"
+
+            print(content)
+            print("```")
+            print("")  # Add a blank line for separation
+
+
+# --- Main Execution ---
+if __name__ == "__main__":
+    project_root = os.getcwd()  # Get current working directory
+    print_tree(project_root)
+    process_files(project_root)
+    print("=======================")
+    print("--- End of Output ---")
+# --- End of Script ---
+
+```
+--- END FILE: get_context.py ---
+
+
+--- START FILE: index.html ---
+```html
+<!DOCTYPE html>
+<html lang="en"> <!-- data-theme attribute will be set by JS -->
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive BTC Candlestick Chart</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <div class="main-layout">
+
+        <!-- Header Area -->
+        <div class="header-area">
+            <div class="top-left-info">
+                <div class="status-indicator">
+                    API Status: <span id="api-status-indicator">Checking...</span>
+                </div>
+            </div>
+            <div class="header-content">
+                <h1>Interactive BTC/USD Candlestick Chart</h1>
+                <p class="instructions">Scroll=Zoom | Drag Chart=Pan | Drag Axes=Scale | Dbl-Click=Reset | Hover=Info/Crosshair</p>
+            </div>
+            <div class="header-controls">
+                <div class="granularity-controls" id="granularity-controls">
+                    <span>Interval:</span>
+                    <button data-granularity="300">5m</button>
+                    <button data-granularity="900">15m</button>
+                    <button data-granularity="3600" class="active">1h</button>
+                    <button data-granularity="21600">6h</button>
+                    <button data-granularity="86400">1d</button>
+                </div>
+                <div class="settings-group">
+                    <button id="settings-button" class="icon-button" title="Chart Settings">⚙️</button>
+                    <div id="settings-dropdown" class="dropdown-menu">
+                        <div class="dropdown-item">
+                            <span>Dark Theme</span>
+                            <div class="theme-switch-wrapper">
+                                <label class="theme-switch" for="theme-checkbox">
+                                    <input type="checkbox" id="theme-checkbox" />
+                                    <div class="slider"></div>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="dropdown-item">
+                             <span>Log Scale (Y-Axis)</span>
+                            <div class="log-scale-switch-wrapper">
+                                <label class="theme-switch" for="log-scale-checkbox">
+                                    <input type="checkbox" id="log-scale-checkbox" />
+                                    <div class="slider"></div>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="dropdown-item">
+                             <span>12-Hour Time (AM/PM)</span>
+                            <div class="time-format-switch-wrapper">
+                                <label class="theme-switch" for="time-format-checkbox">
+                                    <input type="checkbox" id="time-format-checkbox" />
+                                    <div class="slider"></div>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+
+        <!-- Content Area -->
+        <div class="content-area" id="content-area">
+
+            <!-- Top Pane (Chart Only) -->
+            <div class="chart-pane" id="chart-pane">
+                 <!-- Main Candlestick Chart Container -->
+                <div class="chart-container" id="chart-container">
+                    <div class="chart-wrapper">
+                        <div class="grid-container" id="grid-container"></div>
+                        <div class="chart-area" id="chart-area"></div>
+                        <div class="y-axis-labels" id="y-axis-labels"></div>
+                        <div class="x-axis-labels" id="x-axis-labels"></div>
+                        <div class="current-price-line" id="current-price-line" style="display: none;"></div>
+                        <div class="current-price-label" id="current-price-label" style="display: none;">-</div>
+                        <div class="crosshair-line-x" id="crosshair-line-x" style="display: none;"></div>
+                        <div class="crosshair-label-y" id="crosshair-label-y" style="display: none;">-</div>
+                        <div class="chart-tooltip" id="chart-tooltip" style="display: none; opacity: 0;"></div>
+                    </div>
+                    <div id="chart-message">Loading data...</div>
+                </div>
+                <!-- Sub-chart container removed -->
+            </div>
+
+            <!-- Resizer Handle -->
+            <div class="resizer" id="resizer"></div>
+
+            <!-- Bottom Pane (Tabbed Interface) -->
+            <div class="tab-container" id="bottom-pane">
+                <div class="tab-bar" id="bottom-tab-bar">
+                    <button class="tab-button active" data-target="positions-content">Positions</button>
+                    <button class="tab-button" data-target="open-orders-content">Open Orders</button>
+                    <button class="tab-button" data-target="order-history-content">Order History</button>
+                    <button class="tab-button" data-target="prompt-content">Prompt</button>
+                </div>
+                <div class="tab-content-area">
+                    <div id="positions-content" class="tab-content active">
+                        <div class="balance-content">
+                             <ul class="balance-list" id="balance-list">
+                                 <li class="loading">Loading balances...</li>
+                             </ul>
+                             <div class="balance-total" id="balance-total">
+                                 <span>Approx. Total (USD):</span>
+                                 <span id="total-usd-value">--.--</span>
+                                 <small id="total-usd-partial-notice" style="display: none;"> (Partial)</small>
+                             </div>
+                        </div>
+                    </div>
+                    <div id="open-orders-content" class="tab-content">
+                        <div class="pane-placeholder">
+                            <p>Open Orders will be displayed here.</p>
+                            <small>(Requires backend implementation)</small>
+                        </div>
+                    </div>
+                    <div id="order-history-content" class="tab-content">
+                         <div class="pane-placeholder">
+                             <p>Order History will be displayed here.</p>
+                             <small>(Requires backend implementation)</small>
+                         </div>
+                    </div>
+                    <div id="prompt-content" class="tab-content">
+                         <textarea id="prompt-textarea" placeholder="Enter your strategy prompt or notes here..."></textarea>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+
+    </div>
+
+    <script type="module" src="js/main.js" defer></script>
+
+</body>
+</html>
+```
+--- END FILE: index.html ---
+
+
+--- START FILE: js/balance.js ---
+```js
+// js/balance.js
+
+import * as dom from "./domElements.js";
+import { formatCurrency, formatQuantity } from "./utils.js";
+
+/**
+ * Fetches the current ticker price for a single product ID from the backend.
+ * @param {string} productId (e.g., "ETH-USD")
+ * @returns {Promise<number|null>} Resolves with the price number or null.
+ */
+async function fetchTickerPrice(productId) {
+  if (!productId) return null;
+  const url = `http://localhost:5000/api/ticker?product_id=${productId}`;
+  try {
+    const response = await fetch(url);
+    if (!response.ok) {
+      console.warn(
+        `Ticker fetch failed for ${productId}: ${response.status} ${response.statusText}`
+      );
+      return null;
+    }
+    const data = await response.json();
+    const price = parseFloat(data?.price);
+    return !isNaN(price) ? price : null;
+  } catch (error) {
+    console.error(`Network error fetching ticker for ${productId}:`, error);
+    return null;
+  }
+}
+
+/**
+ * Updates the balance pane HTML with fetched account data and prices.
+ * @param {Array} accounts - Array of account objects from the API.
+ * @param {Map<string, number>} prices - Map of currency codes (UPPERCASE) to their USD prices.
+ */
+function updateBalancePaneUI(accounts, prices) {
+  if (!dom.balanceList || !dom.balanceTotalValue || !dom.balancePartialNotice) {
+    console.error("Balance pane DOM elements not found for UI update.");
+    return;
+  }
+  dom.balanceList.innerHTML = ""; // Clear previous list items
+  let totalUsdValue = 0;
+  let partialTotal = false;
+
+  if (!Array.isArray(accounts)) {
+    dom.balanceList.innerHTML =
+      '<li class="error">Invalid account data structure.</li>';
+    accounts = [];
+  }
+
+  // Sort accounts: USD first, then others alphabetically
+  accounts.sort((a, b) => {
+    const currA = a?.currency?.toUpperCase();
+    const currB = b?.currency?.toUpperCase();
+    if (currA === "USD") return -1;
+    if (currB === "USD") return 1;
+    return (currA || "").localeCompare(currB || "");
+  });
+
+  accounts.forEach((acc) => {
+    // *** Use AVAILABLE_BALANCE string ***
+    const balanceString = acc?.available_balance?.value;
+    const currency = acc?.currency?.toUpperCase();
+    const balance = parseFloat(balanceString);
+
+    // Skip if invalid data or effectively zero balance (handle potential small floating point values)
+    const ZERO_THRESHOLD = 1e-9; // Define a small threshold for zero
+    if (!currency || isNaN(balance) || Math.abs(balance) < ZERO_THRESHOLD) {
+      return;
+    }
+
+    const li = document.createElement("li");
+    const codeSpan = document.createElement("span");
+    codeSpan.className = "asset-code";
+    codeSpan.textContent = currency;
+    const qtySpan = document.createElement("span");
+    qtySpan.className = "asset-qty";
+    qtySpan.textContent = formatQuantity(balance);
+    const valueSpan = document.createElement("span");
+    valueSpan.className = "asset-value";
+
+    let usdValue = null;
+    if (currency === "USD") {
+      usdValue = balance;
+    } else if (currency === "USDT") {
+      usdValue = balance * 1.0; // Assume USDT price is always $1.00
+    } else {
+      const price = prices.get(currency);
+      if (price) {
+        usdValue = balance * price;
+      } else {
+        partialTotal = true; // Price missing or fetch failed
+        console.warn(`Price unavailable for ${currency}.`);
+      }
+    }
+
+    if (usdValue !== null) {
+      totalUsdValue += usdValue;
+      valueSpan.textContent = formatCurrency(usdValue);
+    } else {
+      valueSpan.textContent = `(?.?? ${currency})`; // Value unknown
+    }
+
+    li.appendChild(codeSpan);
+    li.appendChild(qtySpan);
+    li.appendChild(valueSpan);
+    dom.balanceList.appendChild(li);
+  });
+
+  if (dom.balanceList.children.length === 0) {
+    dom.balanceList.innerHTML =
+      '<li class="info">No non-zero balances found.</li>';
+  }
+
+  dom.balanceTotalValue.textContent = formatCurrency(totalUsdValue);
+  dom.balancePartialNotice.style.display = partialTotal ? "inline" : "none";
+}
+
+/**
+ * Main function to orchestrate fetching account data AND necessary ticker prices,
+ * then updating the balance pane UI. Exported for use in main.js.
+ */
+export async function initializeBalances() {
+  console.log("Initializing balances...");
+  if (dom.balanceList)
+    dom.balanceList.innerHTML = '<li class="loading">Loading balances...</li>';
+  if (dom.balanceTotalValue) dom.balanceTotalValue.textContent = "--.--";
+  if (dom.balancePartialNotice) dom.balancePartialNotice.style.display = "none";
+
+  try {
+    // 1. Fetch Accounts
+    const accountsResponse = await fetch("http://localhost:5000/api/accounts");
+    const accountsResult = await (async () => {
+      const status = accountsResponse.status;
+      try {
+        const data = await accountsResponse.json();
+        return { ok: accountsResponse.ok, status: status, data: data };
+      } catch {
+        throw new Error(`Received non-JSON response (Status: ${status})`);
+      }
+    })();
+    if (!accountsResult.ok) {
+      throw new Error(
+        accountsResult.data?.error ||
+          `Account API Error (${accountsResult.status})`
+      );
+    }
+    if (!accountsResult.data || !Array.isArray(accountsResult.data.accounts)) {
+      throw new Error("Invalid account data format");
+    }
+    const accounts = accountsResult.data.accounts;
+
+    console.log("Raw Accounts Received:", JSON.stringify(accounts, null, 2));
+
+    // 2. Identify non-zero crypto assets needing prices (EXCLUDING USDT)
+    const cryptoAssetsToPrice = new Set();
+    console.log("--- Filtering accounts for pricing ---");
+    const ZERO_THRESHOLD = 1e-9; // Define a small threshold for zero
+    accounts.forEach((acc, index) => {
+      const currency = acc?.currency?.toUpperCase();
+      // *** Use AVAILABLE_BALANCE string for filtering ***
+      const balanceString = acc?.available_balance?.value;
+      const balance = parseFloat(balanceString);
+
+      // Original log
+      console.log(
+        `Account ${index}: Currency=${currency}, BalanceString='${balanceString}', ParsedBalance=${balance}`
+      );
+
+      // Detailed condition check log
+      const isCrypto = currency && currency !== "USD" && currency !== "USDT";
+      const isNumber = !isNaN(balance);
+      // Use threshold for non-zero check
+      const isNonZero = Math.abs(balance) >= ZERO_THRESHOLD;
+      console.log(
+        `  -> Checks: isCrypto=${isCrypto}, isNumber=${isNumber}, isNonZero=${isNonZero} (Threshold: ${ZERO_THRESHOLD})`
+      );
+
+      if (isCrypto && isNumber && isNonZero) {
+        // Use the parsed 'balance' and threshold
+        console.log(`  -> Adding ${currency} to price list.`);
+        cryptoAssetsToPrice.add(currency);
+      } else {
+        if (!currency) console.log(`  -> Skipping: Missing currency.`);
+        else if (!isCrypto) console.log(`  -> Skipping: Is USD or USDT.`);
+        else if (!isNumber)
+          console.log(`  -> Skipping: Parsed balance is NaN.`);
+        else if (!isNonZero)
+          console.log(`  -> Skipping: Parsed balance is effectively zero.`);
+      }
+    });
+    console.log("--- Finished filtering ---");
+    console.log("Assets to Fetch Prices For:", Array.from(cryptoAssetsToPrice));
+
+    // 3. Fetch prices concurrently
+    const pricePromises = Array.from(cryptoAssetsToPrice).map((currency) => {
+      const productId = `${currency}-USD`;
+      return fetchTickerPrice(productId).then((price) => ({ currency, price }));
+    });
+    const priceResults = await Promise.all(pricePromises);
+
+    // 4. Create Price Map
+    const prices = new Map();
+    priceResults.forEach((result) => {
+      if (result.price !== null) {
+        prices.set(result.currency, result.price);
+      }
+    });
+    console.log("Fetched Prices:", Object.fromEntries(prices));
+
+    // 5. Update UI
+    updateBalancePaneUI(accounts, prices); // Call the UI update function
+  } catch (error) {
+    console.error("Error initializing balances:", error);
+    if (dom.balanceList)
+      dom.balanceList.innerHTML = `<li class="error">Error: ${error.message}</li>`;
+    if (dom.balanceTotalValue)
+      dom.balanceTotalValue.textContent = formatCurrency(0);
+    if (dom.balancePartialNotice)
+      dom.balancePartialNotice.style.display = "none";
+  }
+}
+
+```
+--- END FILE: js/balance.js ---
+
+
+--- START FILE: js/config.js ---
+```js
+// js/config.js
+
+// Chart configuration constants
+export const ZOOM_FACTOR_X = 0.1;
+export const ZOOM_FACTOR_Y = 0.1;
+export const MIN_VISIBLE_CANDLES = 5;
+export const DEFAULT_RESET_CANDLE_COUNT = 100;
+export const MIN_PRICE_RANGE_SPAN = 0.1; // Smallest linear price diff allowed
+export const Y_AXIS_PRICE_PADDING_FACTOR = 0.05;
+export const Y_AXIS_DRAG_SENSITIVITY = 2.0;
+export const X_AXIS_DRAG_SENSITIVITY = 2.0;
+export const MOUSE_MOVE_THROTTLE = 16; // ~60fps
+export const DEBOUNCE_DELAY = 100; // Resize debounce
+export const TOOLTIP_SHOW_DELAY = 300; // ms delay before showing tooltip
+export const TOOLTIP_HIDE_DELAY = 100; // ms delay before hiding tooltip
+
+// API Defaults (used in main.js)
+export const DEFAULT_GRANULARITY = 3600; // 1 hour (must be a number)
+export const DEFAULT_PRODUCT_ID = "BTC-USD"; // This should be a string
+
+```
+--- END FILE: js/config.js ---
+
+
+--- START FILE: js/domElements.js ---
+```js
+// js/domElements.js
+
+// Layout Structure
+export const mainLayout = document.querySelector(".main-layout");
+export const headerArea = document.querySelector(".header-area");
+export const contentArea = document.getElementById("content-area");
+export const chartPane = document.getElementById("chart-pane");
+export const resizer = document.getElementById("resizer");
+export const bottomPane = document.getElementById("bottom-pane");
+
+// Chart Specific
+export const chartContainer = document.getElementById("chart-container");
+export const chartWrapper = chartContainer?.querySelector(".chart-wrapper");
+export const chartArea = document.getElementById("chart-area");
+export const gridContainer = document.getElementById("grid-container");
+export const yAxisLabelsContainer = document.getElementById("y-axis-labels");
+export const xAxisLabelsContainer = document.getElementById("x-axis-labels");
+export const chartMessage = document.getElementById("chart-message");
+export const currentPriceLine = document.getElementById("current-price-line");
+export const currentPriceLabel = document.getElementById("current-price-label");
+export const chartTooltip = document.getElementById("chart-tooltip");
+export const crosshairLineX = document.getElementById("crosshair-line-x");
+export const crosshairLabelY = document.getElementById("crosshair-label-y");
+
+// Volume/Depth elements REMOVED
+
+// Controls (Header / Settings Menu)
+export const headerControls = document.querySelector(".header-controls");
+export const granularityControls = document.getElementById(
+  "granularity-controls"
+);
+export const settingsButton = document.getElementById("settings-button");
+export const settingsDropdown = document.getElementById("settings-dropdown");
+
+// Switches (Now potentially inside dropdown)
+export const themeToggle = document.getElementById("theme-checkbox");
+export const logScaleToggle = document.getElementById("log-scale-checkbox");
+export const timeFormatToggle = document.getElementById("time-format-checkbox");
+
+// Other UI
+export const apiStatusIndicator = document.getElementById(
+  "api-status-indicator"
+);
+
+// Bottom Pane Tabs
+export const bottomTabBar = document.getElementById("bottom-tab-bar");
+export const positionsContent = document.getElementById("positions-content");
+export const openOrdersContent = document.getElementById("open-orders-content");
+export const orderHistoryContent = document.getElementById(
+  "order-history-content"
+);
+export const promptContent = document.getElementById("prompt-content");
+export const promptTextarea = document.getElementById("prompt-textarea");
+
+// Balance Pane Specific (Now inside positionsContent)
+export const balanceList = document.getElementById("balance-list");
+export const balanceTotalValue = document.getElementById("total-usd-value");
+export const balancePartialNotice = document.getElementById(
+  "total-usd-partial-notice"
+);
+
+// Exported map for checkElements to get names
+const elementMap = {
+  mainLayout,
+  headerArea,
+  contentArea,
+  chartPane,
+  resizer,
+  bottomPane, // Layout
+  chartContainer,
+  chartWrapper,
+  chartArea,
+  gridContainer,
+  yAxisLabelsContainer, // Chart Core
+  xAxisLabelsContainer,
+  chartMessage,
+  currentPriceLine,
+  currentPriceLabel,
+  chartTooltip,
+  crosshairLineX,
+  crosshairLabelY,
+  // volumeChartContainer, volumeChartCanvas, // REMOVED
+  headerControls,
+  granularityControls,
+  settingsButton,
+  settingsDropdown, // Header/Settings
+  themeToggle,
+  logScaleToggle,
+  timeFormatToggle, // Switches
+  apiStatusIndicator, // Other UI
+  bottomTabBar,
+  positionsContent,
+  openOrdersContent,
+  orderHistoryContent,
+  promptContent, // Tabs
+  promptTextarea, // Prompt Input
+  balanceList,
+  balanceTotalValue,
+  balancePartialNotice, // Balance List (nested)
+};
+
+export function checkElements() {
+  const missingElements = Object.entries(elementMap)
+    .filter(([name, el]) => !el)
+    .map(([name]) => name);
+
+  if (missingElements.length > 0) {
+    const missingNames = missingElements.join(", ");
+    console.error(
+      `Initialization failed: Essential DOM elements missing: ${missingNames}`
+    );
+    if (chartMessage) {
+      chartMessage.textContent = `Error: Missing DOM elements! (${missingNames})`;
+      chartMessage.style.display = "block";
+      chartMessage.style.color = "red";
+    } else {
+      alert(
+        `Error: Critical DOM elements missing: ${missingNames}! Cannot initialize app. Check console.`
+      );
+    }
+    return false;
+  }
+  console.log("All essential DOM elements found.");
+  return true;
+}
+
+```
+--- END FILE: js/domElements.js ---
+
+
+--- START FILE: js/drawing.js ---
+```js
+// js/drawing.js
+
+import * as config from "./config.js";
+import state from "./state.js";
+import * as dom from "./domElements.js";
+import {
+  calculateNiceStep,
+  formatTimestamp,
+  formatDate,
+  getYCoordinate,
+} from "./utils.js";
+// Volume/Depth chart drawing is disabled
+
+const SECONDS_PER_DAY = 86400;
+const MIN_PIXELS_PER_LABEL = 60;
+const Y_AXIS_MAX_ITERATIONS_SAFETY_FACTOR = 2.5; // Multiplier for max iterations limit
+
+function updateLivePriceIndicatorUI(price, chartHeight) {
+  if (
+    !dom.currentPriceLabel ||
+    !dom.currentPriceLine ||
+    isNaN(price) ||
+    !chartHeight
+  ) {
+    if (dom.currentPriceLabel) dom.currentPriceLabel.style.display = "none";
+    if (dom.currentPriceLine) dom.currentPriceLine.style.display = "none";
+    return;
+  }
+  const y = getYCoordinate(price, chartHeight);
+  if (y !== null && !isNaN(y)) {
+    const decimals = price < 1 ? 4 : price < 100 ? 2 : price < 10000 ? 1 : 0;
+    dom.currentPriceLabel.textContent = price.toFixed(decimals);
+    dom.currentPriceLabel.style.top = `${y.toFixed(1)}px`;
+    dom.currentPriceLine.style.top = `${y.toFixed(1)}px`;
+    dom.currentPriceLabel.style.display = "block";
+    dom.currentPriceLine.style.display = "block";
+  } else {
+    dom.currentPriceLabel.style.display = "none";
+    dom.currentPriceLine.style.display = "none";
+  }
+}
+
+export function redrawChart() {
+  if (
+    !dom.chartArea ||
+    !dom.gridContainer ||
+    !dom.yAxisLabelsContainer ||
+    !dom.xAxisLabelsContainer
+  ) {
+    console.error(
+      "Cannot redraw main chart: Essential drawing containers missing."
+    );
+    return;
+  }
+
+  const chartHeight = dom.chartArea.offsetHeight;
+  const chartWidth = dom.chartArea.offsetWidth;
+
+  if (!state.fullData || chartHeight <= 0 || chartWidth <= 0) {
+    dom.chartArea.innerHTML = "";
+    dom.gridContainer.innerHTML = "";
+    dom.yAxisLabelsContainer.innerHTML = "";
+    dom.xAxisLabelsContainer.innerHTML = "";
+    console.warn("Main chart redraw skipped: No data or invalid dimensions.");
+    return;
+  }
+
+  const {
+    minVisiblePrice,
+    maxVisiblePrice,
+    isLogScale,
+    visibleStartIndex,
+    visibleEndIndex,
+  } = state;
+  const visibleCount = visibleEndIndex - visibleStartIndex;
+
+  // Use the version of the Y-axis validation/drawing logic from *before* the last breaking change
+  if (
+    isNaN(minVisiblePrice) ||
+    isNaN(maxVisiblePrice) ||
+    maxVisiblePrice <= minVisiblePrice
+  ) {
+    console.error("Redraw failed: Invalid price range in state!", {
+      minVisiblePrice,
+      maxVisiblePrice,
+    });
+    // Keep this error handling, but use the slightly less complex loop from before
+    if (dom.chartMessage) {
+      dom.chartMessage.textContent = "Error: Invalid Price Range";
+      dom.chartMessage.style.display = "block";
+      dom.chartMessage.style.color = "red";
+    }
+    dom.chartArea.innerHTML = "";
+    dom.gridContainer.innerHTML = "";
+    dom.yAxisLabelsContainer.innerHTML = "";
+    dom.xAxisLabelsContainer.innerHTML = "";
+    return;
+  }
+
+  dom.chartArea.innerHTML = "";
+  dom.gridContainer.innerHTML = "";
+  dom.yAxisLabelsContainer.innerHTML = "";
+  dom.xAxisLabelsContainer.innerHTML = "";
+
+  if (visibleCount <= 0) {
+    console.warn("Redraw skipped: No visible candles.");
+    return;
+  }
+
+  const linearPriceRange = maxVisiblePrice - minVisiblePrice;
+  if (linearPriceRange <= 0 && !isLogScale) {
+    console.warn("Redraw warning: Linear price range is zero or negative.");
+  }
+
+  const candleTotalWidth = chartWidth / visibleCount;
+  const candleBodyWidthRatio = 0.7;
+  const candleWidth = Math.max(1, candleTotalWidth * candleBodyWidthRatio);
+
+  // --- Draw Grid & Y-Axis (Previous working version, before stricter loop checks) ---
+  try {
+    const yTickDensity = Math.max(3, Math.round(chartHeight / 45));
+    let rangeForStepCalc = linearPriceRange;
+    if (isLogScale) {
+      rangeForStepCalc = Math.max(
+        1.01,
+        maxVisiblePrice / Math.max(1e-9, minVisiblePrice)
+      );
+    } else {
+      rangeForStepCalc = Math.max(
+        config.MIN_PRICE_RANGE_SPAN * 0.1,
+        linearPriceRange
+      );
+    }
+    if (rangeForStepCalc <= 0) rangeForStepCalc = 1;
+
+    const yTicks = calculateNiceStep(rangeForStepCalc, yTickDensity); // Use the working utils version
+
+    if (yTicks <= 0 || isNaN(yTicks)) {
+      console.error(
+        "Y-Axis drawing aborted: Invalid tick step calculated.",
+        yTicks
+      );
+      throw new Error("Invalid Y tick step");
+    }
+
+    let firstYTick;
+    if (minVisiblePrice >= 0) {
+      firstYTick = Math.ceil(minVisiblePrice / yTicks) * yTicks;
+    } else {
+      firstYTick = Math.floor(minVisiblePrice / yTicks) * yTicks;
+    }
+
+    // Simple loop from before the iteration counter/stricter checks
+    for (
+      let price = firstYTick;
+      price <= maxVisiblePrice + yTicks * 0.1; // Allow slight overshoot
+      price += yTicks
+    ) {
+      if (isLogScale && price <= 0) continue;
+
+      const y = getYCoordinate(price, chartHeight);
+      if (y === null || isNaN(y)) continue;
+
+      if (y >= -chartHeight * 0.1 && y <= chartHeight * 1.1) {
+        const hLine = document.createElement("div");
+        hLine.className = "grid-line horizontal";
+        hLine.style.top = `${y.toFixed(1)}px`;
+        dom.gridContainer.appendChild(hLine);
+      }
+      // Condition for drawing labels
+      if (y >= -5 && y <= chartHeight + 5) {
+        const yLabel = document.createElement("div");
+        yLabel.className = "axis-label y-axis-label";
+        yLabel.style.top = `${y.toFixed(1)}px`;
+        const priceRangeForDecimals = Math.max(
+          0.1,
+          maxVisiblePrice - minVisiblePrice
+        );
+        let decimals = 0;
+        if (priceRangeForDecimals < 0.1) decimals = 4;
+        else if (priceRangeForDecimals < 1) decimals = 3;
+        else if (priceRangeForDecimals < 10 || price < 10) decimals = 2;
+        else if (price < 1000) decimals = 1;
+        else decimals = 0;
+        yLabel.textContent = price.toFixed(Math.max(0, decimals));
+        dom.yAxisLabelsContainer.appendChild(yLabel);
+      }
+      // Basic floating point safety break (less strict than before)
+      if (price + yTicks <= price && yTicks > 0) {
+        console.warn("Y-Axis loop safety break: Price not increasing.");
+        break;
+      }
+    }
+  } catch (e) {
+    console.error("Error drawing Y grid/axis:", e);
+  }
+
+  // --- Draw X-Axis & Separators --- (Unchanged)
+  try {
+    /* ... X-Axis Logic ... */
+  } catch (e) {
+    console.error("Error drawing X grid/axis:", e);
+  }
+  // --- Draw Candles --- (Unchanged)
+  try {
+    /* ... Candle Logic ... */
+  } catch (e) {
+    console.error("Error drawing candles:", e);
+  }
+  // --- Update Live Price Indicator --- (Unchanged)
+  let priceForIndicator = state.lastTickerPrice;
+  if (priceForIndicator === null && state.fullData.length > 0) {
+    const lastCandle = state.fullData[state.fullData.length - 1];
+    if (lastCandle && lastCandle.length >= 5 && !isNaN(lastCandle[4])) {
+      priceForIndicator = lastCandle[4];
+    }
+  }
+  if (priceForIndicator !== null && !isNaN(priceForIndicator)) {
+    updateLivePriceIndicatorUI(priceForIndicator, chartHeight);
+  } else {
+    if (dom.currentPriceLabel) dom.currentPriceLabel.style.display = "none";
+    if (dom.currentPriceLine) dom.currentPriceLine.style.display = "none";
+  }
+} // End of redrawChart function
+
+```
+--- END FILE: js/drawing.js ---
+
+
+--- START FILE: js/interactions.js ---
+```js
+// js/interactions.js
+
+import * as config from "./config.js";
+import state, { updateState } from "./state.js";
+import * as dom from "./domElements.js";
+import { redrawChart } from "./drawing.js";
+import {
+  calculateNiceStep,
+  getYCoordinate,
+  formatDate,
+  formatTimestamp,
+  getPriceFromYCoordinate,
+} from "./utils.js";
+
+// Tooltip State
+let hoveredCandleIndex = null;
+let tooltipShowTimeout = null;
+let tooltipHideTimeout = null;
+
+// Log Scale Helpers
+const log = Math.log;
+const exp = Math.exp;
+const MIN_LOG_VALUE = 1e-9;
+function safeLog(value) {
+  return log(Math.max(MIN_LOG_VALUE, value));
+}
+
+// --- Tooltip Functions (Using Direct Style Manipulation) ---
+function showTooltip(dataIndex, mouseX, mouseY) {
+  if (!dom.chartTooltip) return;
+  if (dataIndex < 0 || dataIndex >= state.fullData.length) {
+    hideTooltip();
+    return;
+  }
+  const candleData = state.fullData[dataIndex];
+  if (!candleData || candleData.length < 6) {
+    hideTooltip();
+    return;
+  }
+  const [timestamp, low, high, open, close] = candleData;
+  const chartRect = dom.chartArea.getBoundingClientRect();
+  const chartHeight = dom.chartArea.offsetHeight;
+  const chartContainerRect = dom.chartContainer.getBoundingClientRect();
+  const dateStr = formatDate(timestamp);
+  const timeStr = formatTimestamp(timestamp);
+  const decimals =
+    state.maxVisiblePrice - state.minVisiblePrice < 10
+      ? close < 1
+        ? 4
+        : 2
+      : close < 100
+      ? 1
+      : 0;
+  dom.chartTooltip.innerHTML = `<div class="date">${dateStr}, ${timeStr}</div><div><span class="label">Open:</span> <span class="value">${open.toFixed(
+    decimals
+  )}</span></div><div><span class="label">High:</span> <span class="value">${high.toFixed(
+    decimals
+  )}</span></div><div><span class="label">Low:</span> <span class="value">${low.toFixed(
+    decimals
+  )}</span></div><div><span class="label">Close:</span> <span class="value">${close.toFixed(
+    decimals
+  )}</span></div>`;
+  const tooltipElementHeight = dom.chartTooltip.offsetHeight;
+  const tooltipElementWidth = dom.chartTooltip.offsetWidth;
+  let tooltipY =
+    mouseY + chartRect.top - chartContainerRect.top - tooltipElementHeight - 10;
+  if (tooltipY < 10) {
+    tooltipY = mouseY + chartRect.top - chartContainerRect.top + 20;
+  }
+  let tooltipX = mouseX + chartRect.left - chartContainerRect.left + 15;
+  const rightBoundary =
+    chartContainerRect.width -
+    (dom.yAxisLabelsContainer?.offsetWidth || 55) -
+    10;
+  if (tooltipX + tooltipElementWidth > rightBoundary) {
+    tooltipX =
+      mouseX +
+      chartRect.left -
+      chartContainerRect.left -
+      tooltipElementWidth -
+      15;
+  }
+  if (tooltipX < 10) {
+    tooltipX = 10;
+  }
+  dom.chartTooltip.style.left = `${tooltipX.toFixed(1)}px`;
+  dom.chartTooltip.style.top = `${tooltipY.toFixed(1)}px`;
+  dom.chartTooltip.style.display = "block";
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      if (!dom.chartTooltip) return;
+      try {
+        dom.chartTooltip.style.opacity = 1;
+        dom.chartTooltip.style.visibility = "visible";
+      } catch (e) {
+        console.error(e);
+      }
+    });
+  });
+}
+
+function hideTooltip() {
+  if (dom.chartTooltip) {
+    dom.chartTooltip.style.opacity = 0;
+    dom.chartTooltip.style.visibility = "hidden";
+    dom.chartTooltip.classList.remove("visible");
+  }
+  hoveredCandleIndex = null;
+}
+
+// --- Crosshair Update Functions ---
+function updateCrosshair(mouseX, mouseY, chartHeight, chartWidth) {
+  if (
+    !dom.crosshairLineX ||
+    !dom.crosshairLabelY ||
+    mouseX === null ||
+    mouseY === null ||
+    chartHeight <= 0
+  ) {
+    hideCrosshair();
+    return;
+  }
+  const priceAtCursor = getPriceFromYCoordinate(mouseY, chartHeight);
+  const clampedMouseY = Math.max(0, Math.min(mouseY, chartHeight));
+  if (priceAtCursor !== null && !isNaN(priceAtCursor)) {
+    dom.crosshairLineX.style.top = `${clampedMouseY.toFixed(1)}px`;
+    dom.crosshairLineX.style.display = "block";
+    const priceRange = state.maxVisiblePrice - state.minVisiblePrice;
+    const decimals =
+      priceRange < 1 ? 4 : priceRange < 10 ? 2 : priceAtCursor < 100 ? 1 : 0;
+    dom.crosshairLabelY.textContent = priceAtCursor.toFixed(
+      Math.max(0, decimals)
+    );
+    dom.crosshairLabelY.style.top = `${clampedMouseY.toFixed(1)}px`;
+    dom.crosshairLabelY.style.display = "block";
+  } else {
+    hideCrosshair();
+  }
+}
+
+function hideCrosshair() {
+  if (dom.crosshairLineX) dom.crosshairLineX.style.display = "none";
+  if (dom.crosshairLabelY) dom.crosshairLabelY.style.display = "none";
+}
+
+// --- Modified Interaction Handlers ---
+function handleMouseMoveForTooltip(event) {
+  // Handles BOTH tooltip and crosshair
+  if (!dom.chartArea) return;
+  const chartRect = dom.chartArea.getBoundingClientRect();
+  const mouseX = event.clientX - chartRect.left;
+  const mouseY = event.clientY - chartRect.top;
+  const chartWidth = dom.chartArea.offsetWidth;
+  const chartHeight = chartRect.height;
+  if (state.isPanning || state.isDraggingXAxis || state.isDraggingYAxis) {
+    hideCrosshair();
+    if (hoveredCandleIndex !== null) {
+      clearTimeout(tooltipShowTimeout);
+      hideTooltip();
+      tooltipHideTimeout = null;
+    }
+    return;
+  }
+  if (chartWidth <= 0 || chartHeight <= 0 || !state.fullData.length) {
+    hideTooltip();
+    hideCrosshair();
+    return;
+  }
+  if (
+    mouseX >= 0 &&
+    mouseX <= chartWidth &&
+    mouseY >= 0 &&
+    mouseY <= chartHeight
+  ) {
+    updateCrosshair(mouseX, mouseY, chartHeight, chartWidth);
+    // Tooltip Logic
+    const visibleCount = state.visibleEndIndex - state.visibleStartIndex;
+    if (visibleCount <= 0) {
+      hideTooltip();
+      return;
+    }
+    const candleTotalWidth = chartWidth / visibleCount;
+    const currentSlotIndex = Math.floor(mouseX / candleTotalWidth);
+    const currentDataIndex = state.visibleStartIndex + currentSlotIndex;
+    if (currentDataIndex >= 0 && currentDataIndex < state.fullData.length) {
+      if (currentDataIndex !== hoveredCandleIndex) {
+        clearTimeout(tooltipShowTimeout);
+        clearTimeout(tooltipHideTimeout);
+        tooltipHideTimeout = null;
+        hideTooltip();
+        hoveredCandleIndex = currentDataIndex;
+        tooltipShowTimeout = setTimeout(() => {
+          showTooltip(hoveredCandleIndex, mouseX, mouseY);
+          tooltipShowTimeout = null;
+        }, config.TOOLTIP_SHOW_DELAY);
+      } else {
+        clearTimeout(tooltipHideTimeout);
+        tooltipHideTimeout = null;
+      }
+    } else {
+      clearTimeout(tooltipShowTimeout);
+      tooltipShowTimeout = null;
+      hoveredCandleIndex = null;
+      if (dom.chartTooltip && dom.chartTooltip.style.visibility === "visible") {
+        if (!tooltipHideTimeout) {
+          tooltipHideTimeout = setTimeout(() => {
+            hideTooltip();
+            tooltipHideTimeout = null;
+          }, config.TOOLTIP_HIDE_DELAY);
+        }
+      } else {
+        hideTooltip();
+      }
+    }
+  } else {
+    hideCrosshair();
+    hideTooltip();
+    clearTimeout(tooltipShowTimeout);
+    tooltipShowTimeout = null;
+    hoveredCandleIndex = null;
+    clearTimeout(tooltipHideTimeout);
+    tooltipHideTimeout = null;
+  }
+}
+
+function handleMouseLeaveChartArea(event) {
+  // Handles BOTH
+  hideCrosshair();
+  hideTooltip();
+  clearTimeout(tooltipShowTimeout);
+  tooltipShowTimeout = null;
+  clearTimeout(tooltipHideTimeout);
+  tooltipHideTimeout = null;
+  hoveredCandleIndex = null;
+}
+
+// --- Chart Interaction Handlers (Zoom, Pan, Scale, Resize, DoubleClick) ---
+export function handleZoom(event) {
+  event.preventDefault();
+  const chartRect = dom.chartArea.getBoundingClientRect();
+  const mouseX = event.clientX - chartRect.left;
+  const mouseY = event.clientY - chartRect.top;
+  const chartHeight = dom.chartArea.offsetHeight;
+  const chartWidth = dom.chartArea.offsetWidth;
+  if (!chartHeight || !chartWidth) return;
+  const zoomDirection = event.deltaY < 0 ? -1 : 1;
+  let newState = {};
+  const currentMinY = state.minVisiblePrice;
+  const currentMaxY = state.maxVisiblePrice;
+  if (state.isLogScale) {
+    const logMin = safeLog(currentMinY);
+    const logMax = safeLog(currentMaxY);
+    const logRange = logMax - logMin;
+    if (logRange > 0 && !isNaN(logRange)) {
+      const logAtCursor = logMax - (mouseY / chartHeight) * logRange;
+      const zoomAmountY = 1 + zoomDirection * config.ZOOM_FACTOR_Y;
+      const newLogMin = logAtCursor - (logAtCursor - logMin) * zoomAmountY;
+      const newLogMax = logAtCursor + (logMax - logAtCursor) * zoomAmountY;
+      newState.minVisiblePrice = Math.max(MIN_LOG_VALUE, exp(newLogMin));
+      newState.maxVisiblePrice = exp(newLogMax);
+      if (newState.maxVisiblePrice / newState.minVisiblePrice < 1.001) {
+        const midPrice = Math.sqrt(
+          newState.minVisiblePrice * newState.maxVisiblePrice
+        );
+        newState.minVisiblePrice = midPrice / 1.0005;
+        newState.maxVisiblePrice = midPrice * 1.0005;
+      }
+    }
+  } else {
+    const linearRange = currentMaxY - currentMinY;
+    if (linearRange > 0) {
+      const priceAtCursor = currentMaxY - (mouseY / chartHeight) * linearRange;
+      const zoomAmountY = 1 + zoomDirection * config.ZOOM_FACTOR_Y;
+      let newMin = priceAtCursor - (priceAtCursor - currentMinY) * zoomAmountY;
+      let newMax = priceAtCursor + (currentMaxY - priceAtCursor) * zoomAmountY;
+      if (newMax - newMin < config.MIN_PRICE_RANGE_SPAN) {
+        const mid = (newMax + newMin) / 2;
+        newMin = mid - config.MIN_PRICE_RANGE_SPAN / 2;
+        newMax = mid + config.MIN_PRICE_RANGE_SPAN / 2;
+      }
+      newState.minVisiblePrice = Math.max(0, newMin);
+      newState.maxVisiblePrice = newMax;
+    }
+  }
+  const currentVisibleCount = state.visibleEndIndex - state.visibleStartIndex;
+  if (currentVisibleCount > 0) {
+    const indexAtCursor =
+      state.visibleStartIndex + (mouseX / chartWidth) * currentVisibleCount;
+    const zoomAmountX = 1 + zoomDirection * config.ZOOM_FACTOR_X;
+    let newVisibleCount = Math.round(currentVisibleCount * zoomAmountX);
+    newVisibleCount = Math.max(
+      config.MIN_VISIBLE_CANDLES,
+      Math.min(newVisibleCount, state.fullData.length * 5)
+    );
+    let newStartIndex = Math.round(
+      indexAtCursor - (mouseX / chartWidth) * newVisibleCount
+    );
+    newStartIndex = Math.max(0, Math.min(newStartIndex, state.fullData.length));
+    let newEndIndex = newStartIndex + newVisibleCount;
+    newEndIndex = Math.min(newEndIndex, state.fullData.length);
+    newStartIndex = Math.max(0, newEndIndex - newVisibleCount);
+    newState.visibleStartIndex = newStartIndex;
+    newState.visibleEndIndex = newEndIndex;
+  }
+  updateState(newState);
+  requestAnimationFrame(redrawChart);
+}
+export function handleMouseMove(event) {
+  if (!state.isPanning && !state.isDraggingYAxis && !state.isDraggingXAxis)
+    return;
+  const now = Date.now();
+  if (now - state.lastDrawTime < config.MOUSE_MOVE_THROTTLE) return;
+  let needsRedraw = false;
+  let newState = {};
+  const chartHeight = dom.chartArea.offsetHeight;
+  const chartWidth = dom.chartArea.offsetWidth;
+  if (state.isDraggingYAxis) {
+    const deltaY = event.clientY - state.panStartY;
+    if (!chartHeight) return;
+    if (state.isLogScale) {
+      const logMinStart = safeLog(state.panStartMinPrice);
+      const logMaxStart = safeLog(state.panStartMaxPrice);
+      const logRangeStart = logMaxStart - logMinStart;
+      if (logRangeStart > 0 && !isNaN(logRangeStart)) {
+        const midLogPrice = (logMaxStart + logMinStart) / 2;
+        const scaleFactor = Math.pow(
+          2,
+          (deltaY / chartHeight) * config.Y_AXIS_DRAG_SENSITIVITY
+        );
+        let newLogRange = logRangeStart * scaleFactor;
+        if (exp(newLogRange) < 1.001) newLogRange = log(1.001);
+        const newLogMin = midLogPrice - newLogRange / 2;
+        const newLogMax = midLogPrice + newLogRange / 2;
+        const newMin = Math.max(MIN_LOG_VALUE, exp(newLogMin));
+        const newMax = exp(newLogMax);
+        if (
+          Math.abs(newMin - state.minVisiblePrice) > 1e-9 ||
+          Math.abs(newMax - state.maxVisiblePrice) > 1e-9
+        ) {
+          newState.minVisiblePrice = newMin;
+          newState.maxVisiblePrice = newMax;
+          needsRedraw = true;
+        }
+      }
+    } else {
+      const initialRange = state.panStartMaxPrice - state.panStartMinPrice;
+      if (initialRange > 0) {
+        const midPrice = (state.panStartMaxPrice + state.panStartMinPrice) / 2;
+        const scaleFactor = Math.pow(
+          2,
+          (deltaY / chartHeight) * config.Y_AXIS_DRAG_SENSITIVITY
+        );
+        let newRange = initialRange * scaleFactor;
+        newRange = Math.max(config.MIN_PRICE_RANGE_SPAN, newRange);
+        const newMin = Math.max(0, midPrice - newRange / 2);
+        const newMax = midPrice + newRange / 2;
+        if (
+          Math.abs(newMin - state.minVisiblePrice) > 1e-9 ||
+          Math.abs(newMax - state.maxVisiblePrice) > 1e-9
+        ) {
+          newState.minVisiblePrice = newMin;
+          newState.maxVisiblePrice = newMax;
+          needsRedraw = true;
+        }
+      }
+    }
+  } else if (state.isDraggingXAxis) {
+    const deltaX = event.clientX - state.panStartX;
+    if (!chartWidth || state.panStartVisibleCount <= 0) return;
+    const centerIndex =
+      state.panStartVisibleIndex + state.panStartVisibleCount / 2;
+    const scaleFactor = Math.pow(
+      2,
+      (deltaX / chartWidth) * config.X_AXIS_DRAG_SENSITIVITY
+    );
+    let newVisibleCount = Math.round(state.panStartVisibleCount * scaleFactor);
+    newVisibleCount = Math.max(
+      config.MIN_VISIBLE_CANDLES,
+      Math.min(newVisibleCount, state.fullData.length * 5)
+    );
+    let newStartIndex = Math.round(centerIndex - newVisibleCount / 2);
+    newStartIndex = Math.max(0, Math.min(newStartIndex, state.fullData.length));
+    let newEndIndex = newStartIndex + newVisibleCount;
+    newEndIndex = Math.min(newEndIndex, state.fullData.length);
+    newStartIndex = Math.max(0, newEndIndex - newVisibleCount);
+    if (
+      newStartIndex !== state.visibleStartIndex ||
+      newEndIndex !== state.visibleEndIndex
+    ) {
+      newState.visibleStartIndex = newStartIndex;
+      newState.visibleEndIndex = newEndIndex;
+      needsRedraw = true;
+    }
+  } else if (state.isPanning) {
+    const deltaX = event.clientX - state.panStartX;
+    const deltaY = event.clientY - state.panStartY;
+    if (!chartWidth || !chartHeight) return;
+    let changedX = false;
+    let changedY = false;
+    if (state.panStartVisibleCount > 0) {
+      const indexDelta = (deltaX / chartWidth) * state.panStartVisibleCount;
+      let newStartIndex = state.panStartVisibleIndex - Math.round(indexDelta);
+      if (newStartIndex !== state.visibleStartIndex) {
+        newState.visibleStartIndex = newStartIndex;
+        newState.visibleEndIndex = newStartIndex + state.panStartVisibleCount;
+        changedX = true;
+      }
+    }
+    if (state.isLogScale) {
+      const logMinStart = safeLog(state.panStartMinPrice);
+      const logMaxStart = safeLog(state.panStartMaxPrice);
+      const logRangeStart = logMaxStart - logMinStart;
+      if (logRangeStart > 0 && !isNaN(logRangeStart)) {
+        const logDelta = (deltaY / chartHeight) * logRangeStart;
+        const newLogMin = logMinStart + logDelta;
+        const newLogMax = logMaxStart + logDelta;
+        const newMin = Math.max(MIN_LOG_VALUE, exp(newLogMin));
+        const newMax = exp(newLogMax);
+        if (
+          Math.abs(newMin - state.minVisiblePrice) > 1e-9 ||
+          Math.abs(newMax - state.maxVisiblePrice) > 1e-9
+        ) {
+          newState.minVisiblePrice = newMin;
+          newState.maxVisiblePrice = newMax;
+          changedY = true;
+        }
+      }
+    } else {
+      const initialPriceRange = state.panStartMaxPrice - state.panStartMinPrice;
+      if (initialPriceRange > 0) {
+        const priceDelta = (deltaY / chartHeight) * initialPriceRange;
+        const newMinPrice = state.panStartMinPrice + priceDelta;
+        const newMaxPrice = state.panStartMaxPrice + priceDelta;
+        if (
+          Math.abs(newMinPrice - state.minVisiblePrice) > 1e-9 ||
+          Math.abs(newMaxPrice - state.maxVisiblePrice) > 1e-9
+        ) {
+          newState.minVisiblePrice = Math.max(0, newMinPrice);
+          newState.maxVisiblePrice = newMaxPrice;
+          changedY = true;
+        }
+      }
+    }
+    needsRedraw = changedX || changedY;
+  }
+  if (needsRedraw) {
+    updateState({ ...newState, lastDrawTime: now });
+    requestAnimationFrame(redrawChart);
+  }
+}
+export function handleMouseDownChart(event) {
+  if (
+    event.target !== dom.chartArea &&
+    event.target !== dom.chartWrapper &&
+    event.target !== dom.chartContainer &&
+    !event.target.classList.contains("candle")
+  )
+    return;
+  updateState({
+    isPanning: true,
+    isDraggingYAxis: false,
+    isDraggingXAxis: false,
+    panStartX: event.clientX,
+    panStartY: event.clientY,
+    panStartVisibleIndex: state.visibleStartIndex,
+    panStartMinPrice: state.minVisiblePrice,
+    panStartMaxPrice: state.maxVisiblePrice,
+    panStartVisibleCount: state.visibleEndIndex - state.visibleStartIndex,
+  });
+  if (dom.chartContainer) dom.chartContainer.classList.add("panning");
+}
+export function handleMouseDownYAxis(event) {
+  event.stopPropagation();
+  updateState({
+    isDraggingYAxis: true,
+    isPanning: false,
+    isDraggingXAxis: false,
+    panStartY: event.clientY,
+    panStartMinPrice: state.minVisiblePrice,
+    panStartMaxPrice: state.maxVisiblePrice,
+  });
+}
+export function handleMouseDownXAxis(event) {
+  event.stopPropagation();
+  updateState({
+    isDraggingXAxis: true,
+    isPanning: false,
+    isDraggingYAxis: false,
+    panStartX: event.clientX,
+    panStartVisibleIndex: state.visibleStartIndex,
+    panStartVisibleCount: state.visibleEndIndex - state.visibleStartIndex,
+  });
+}
+export function handleMouseUpOrLeave(event) {
+  if (state.isPanning || state.isDraggingYAxis || state.isDraggingXAxis) {
+    updateState({
+      isPanning: false,
+      isDraggingYAxis: false,
+      isDraggingXAxis: false,
+    });
+    if (dom.chartContainer) dom.chartContainer.classList.remove("panning");
+  }
+}
+let resizeTimeout;
+export function handleResize() {
+  clearTimeout(resizeTimeout);
+  resizeTimeout = setTimeout(() => {
+    requestAnimationFrame(redrawChart);
+  }, config.DEBOUNCE_DELAY);
+}
+
+// --- CORRECTED Double Click Handler (Reset to Now - Does NOT reset toggles) ---
+export function handleDoubleClick(event) {
+  if (!state.fullData.length || !dom.chartArea) return;
+
+  // Calculate new view range based on MOST RECENT data
+  const totalDataCount = state.fullData.length;
+  let newVisibleCount = Math.min(
+    config.DEFAULT_RESET_CANDLE_COUNT,
+    totalDataCount
+  );
+  let newEndIndex = totalDataCount;
+  let newStartIndex = Math.max(0, newEndIndex - newVisibleCount);
+  newVisibleCount = newEndIndex - newStartIndex;
+
+  // Calculate Y range for the new view
+  let newMin = Infinity,
+    newMax = -Infinity;
+  for (let i = newStartIndex; i < newEndIndex; i++) {
+    if (!state.fullData[i] || state.fullData[i].length < 5) continue;
+    newMin = Math.min(newMin, state.fullData[i][1]);
+    newMax = Math.max(newMax, state.fullData[i][2]);
+  }
+  if (newMin === Infinity || newMax === -Infinity) {
+    console.warn(
+      "Could not determine price range for reset view, using default."
+    );
+    newMin = 0;
+    newMax = state.lastTickerPrice ? state.lastTickerPrice * 1.1 : 1;
+  }
+
+  // Add padding
+  const padding = Math.max(
+    config.MIN_PRICE_RANGE_SPAN * 0.1,
+    (newMax - newMin) * config.Y_AXIS_PRICE_PADDING_FACTOR
+  );
+  let newMinPrice = Math.max(0, newMin - padding);
+  let newMaxPrice = newMax + padding;
+
+  // Ensure minimum price range span
+  if (newMaxPrice - newMinPrice < config.MIN_PRICE_RANGE_SPAN) {
+    const mid = (newMaxPrice + newMinPrice) / 2;
+    newMinPrice = mid - config.MIN_PRICE_RANGE_SPAN / 2;
+    newMaxPrice = mid + config.MIN_PRICE_RANGE_SPAN / 2;
+    newMinPrice = Math.max(0, newMinPrice);
+  }
+
+  // Update state ONLY for the view range
+  updateState({
+    visibleStartIndex: newStartIndex,
+    visibleEndIndex: newEndIndex,
+    minVisiblePrice: newMinPrice,
+    maxVisiblePrice: newMaxPrice,
+    // DO NOT reset isLogScale or is12HourFormat here
+  });
+
+  // DO NOT visually reset the toggles here
+
+  // Request redraw with the new state
+  requestAnimationFrame(redrawChart);
+}
+// --- End of CORRECTED Double Click Handler ---
+
+export function handleLogScaleToggle() {
+  const isChecked = dom.logScaleToggle.checked;
+  updateState({ isLogScale: isChecked });
+  localStorage.setItem("logScalePref", isChecked.toString());
+  requestAnimationFrame(redrawChart);
+}
+export function handleTimeFormatToggle() {
+  const isChecked = dom.timeFormatToggle.checked;
+  updateState({ is12HourFormat: isChecked });
+  localStorage.setItem("timeFormatPref", isChecked.toString());
+  requestAnimationFrame(redrawChart);
+}
+
+// --- Attach Listeners ---
+export function attachInteractionListeners() {
+  if (
+    !dom.chartContainer ||
+    !dom.yAxisLabelsContainer ||
+    !dom.xAxisLabelsContainer ||
+    !dom.chartArea
+  ) {
+    console.error("Cannot attach listeners: DOM elements missing.");
+    return;
+  }
+  dom.chartContainer.addEventListener("wheel", handleZoom, { passive: false });
+  dom.chartContainer.addEventListener("mousedown", handleMouseDownChart);
+  dom.chartContainer.addEventListener("dblclick", handleDoubleClick);
+  dom.yAxisLabelsContainer.addEventListener("mousedown", handleMouseDownYAxis);
+  dom.xAxisLabelsContainer.addEventListener("mousedown", handleMouseDownXAxis);
+  window.addEventListener("mousemove", handleMouseMove);
+  window.addEventListener("mouseup", handleMouseUpOrLeave);
+  window.addEventListener("resize", handleResize);
+  dom.chartArea.addEventListener("mousemove", handleMouseMoveForTooltip);
+  dom.chartArea.addEventListener("mouseleave", handleMouseLeaveChartArea);
+  if (dom.logScaleToggle) {
+    dom.logScaleToggle.addEventListener("change", handleLogScaleToggle);
+  }
+  if (dom.timeFormatToggle) {
+    dom.timeFormatToggle.addEventListener("change", handleTimeFormatToggle);
+  }
+}
+
+```
+--- END FILE: js/interactions.js ---
+
+
+--- START FILE: js/layout.js ---
+```js
+// js/layout.js
+import * as dom from "./domElements.js";
+import { redrawChart } from "./drawing.js"; // To redraw chart after pane resize
+
+let isResizing = false;
+let startY, startChartHeight, startBottomHeight;
+
+// Constants from CSS (or define here)
+const MIN_PANE_HEIGHT_PX = 100;
+const RESIZER_HEIGHT_PX = 6;
+const INITIAL_CHART_FLEX_BASIS = "67%"; // Keep initial percentages
+const INITIAL_BOTTOM_FLEX_BASIS = "33%"; // Keep initial percentages
+
+/**
+ * Resets the pane heights to their initial percentage basis.
+ */
+function resetPaneHeights() {
+  if (dom.chartPane && dom.bottomPane) {
+    console.log("Resetting pane heights to initial percentages.");
+    dom.chartPane.style.flexBasis = INITIAL_CHART_FLEX_BASIS;
+    dom.bottomPane.style.flexBasis = INITIAL_BOTTOM_FLEX_BASIS;
+
+    // We need to redraw the chart after the layout adjusts
+    // Use a short timeout to allow the browser to recalculate layout first
+    setTimeout(() => {
+      requestAnimationFrame(redrawChart);
+    }, 0);
+  } else {
+    console.error("Cannot reset pane heights: Pane elements not found.");
+  }
+}
+
+function handleMouseDownResize(event) {
+  event.preventDefault();
+  isResizing = true;
+  startY = event.clientY;
+
+  // Get initial heights in pixels at the start of the drag
+  startChartHeight = dom.chartPane.offsetHeight;
+  startBottomHeight = dom.bottomPane.offsetHeight;
+
+  document.body.classList.add("resizing");
+
+  window.addEventListener("mousemove", handleMouseMoveResize);
+  window.addEventListener("mouseup", handleMouseUpResize);
+}
+
+function handleMouseMoveResize(event) {
+  if (!isResizing) return;
+
+  const deltaY = event.clientY - startY;
+
+  let newChartHeight = startChartHeight + deltaY;
+  let newBottomHeight = startBottomHeight - deltaY;
+
+  const totalPaneHeight = startChartHeight + startBottomHeight;
+
+  // Enforce minimum heights
+  if (newChartHeight < MIN_PANE_HEIGHT_PX) {
+    newChartHeight = MIN_PANE_HEIGHT_PX;
+    newBottomHeight = totalPaneHeight - newChartHeight;
+  }
+  if (newBottomHeight < MIN_PANE_HEIGHT_PX) {
+    newBottomHeight = MIN_PANE_HEIGHT_PX;
+    newChartHeight = totalPaneHeight - newBottomHeight;
+  }
+  if (newChartHeight < MIN_PANE_HEIGHT_PX) newChartHeight = MIN_PANE_HEIGHT_PX;
+
+  // Apply new heights using flex-basis (pixels provide stability during drag)
+  dom.chartPane.style.flexBasis = `${newChartHeight}px`;
+  dom.bottomPane.style.flexBasis = `${newBottomHeight}px`;
+
+  requestAnimationFrame(redrawChart);
+}
+
+function handleMouseUpResize() {
+  if (isResizing) {
+    isResizing = false;
+    document.body.classList.remove("resizing");
+
+    window.removeEventListener("mousemove", handleMouseMoveResize);
+    window.removeEventListener("mouseup", handleMouseUpResize);
+  }
+}
+
+/**
+ * Handles the double-click event on the resizer.
+ */
+function handleDoubleClickResize(event) {
+  event.preventDefault(); // Prevent any default dblclick behavior
+  resetPaneHeights();
+}
+
+export function initializeResizer() {
+  // Use the dom reference directly
+  const resizer = dom.resizer;
+
+  if (resizer && dom.chartPane && dom.bottomPane && dom.contentArea) {
+    // Set initial heights using percentages
+    dom.chartPane.style.flexBasis = INITIAL_CHART_FLEX_BASIS;
+    dom.bottomPane.style.flexBasis = INITIAL_BOTTOM_FLEX_BASIS;
+    console.log(
+      `Initial flex-basis set to approx ${INITIAL_CHART_FLEX_BASIS}/${INITIAL_BOTTOM_FLEX_BASIS}`
+    );
+
+    // Attach mousedown listener for dragging
+    resizer.addEventListener("mousedown", handleMouseDownResize);
+
+    // Attach dblclick listener for resetting *** NEW ***
+    resizer.addEventListener("dblclick", handleDoubleClickResize);
+
+    console.log("Resizer initialized with drag and double-click reset.");
+
+    // Removed the optional pixel update timeout as resetting to percentage works well
+  } else {
+    console.error(
+      "Resizer initialization failed: Resizer, chartPane, or bottomPane not found in DOM."
+    );
+    if (!resizer) console.error("- Resizer missing");
+    if (!dom.chartPane) console.error("- Chart Pane missing");
+    if (!dom.bottomPane) console.error("- Bottom Pane missing");
+    if (!dom.contentArea) console.error("- Content Area missing");
+  }
+}
+
+```
+--- END FILE: js/layout.js ---
+
+
+--- START FILE: js/liveUpdate.js ---
+```js
+// js/liveUpdate.js
+
+import state, { updateState } from "./state.js";
+import { redrawChart } from "./drawing.js";
+import * as config from "./config.js";
+import { getYCoordinate } from "./utils.js"; // Import shared utility
+import * as dom from "./domElements.js"; // Import DOM elements
+
+let ws = null;
+let redrawTimeout = null;
+const REDRAW_THROTTLE_MS = 250;
+
+const WEBSOCKET_URL = "wss://ws-feed.exchange.coinbase.com";
+let currentProductId = config.DEFAULT_PRODUCT_ID;
+
+/**
+ * Updates the UI for the live price indicator.
+ * @param {number} price - The current price.
+ */
+function updateLivePriceIndicatorUI(price) {
+  if (!dom.currentPriceLabel || !dom.currentPriceLine || isNaN(price)) {
+    if (dom.currentPriceLabel) dom.currentPriceLabel.style.display = "none";
+    if (dom.currentPriceLine) dom.currentPriceLine.style.display = "none";
+    return;
+  }
+  const chartHeight = dom.chartArea.offsetHeight;
+  if (!chartHeight) return;
+  const y = getYCoordinate(price, chartHeight); // Use utility
+
+  if (y !== null && !isNaN(y)) {
+    const decimals = price < 1 ? 4 : price < 100 ? 2 : price < 10000 ? 1 : 0;
+    dom.currentPriceLabel.textContent = price.toFixed(decimals);
+    dom.currentPriceLabel.style.top = `${y.toFixed(1)}px`;
+    dom.currentPriceLine.style.top = `${y.toFixed(1)}px`;
+    dom.currentPriceLabel.style.display = "block";
+    dom.currentPriceLine.style.display = "block";
+  } else {
+    dom.currentPriceLabel.style.display = "none";
+    dom.currentPriceLine.style.display = "none";
+  }
+}
+
+function connectWebSocket() {
+  console.log(
+    `Attempting WS connect: ${WEBSOCKET_URL} for ${currentProductId}`
+  );
+  if (
+    ws &&
+    ws.readyState !== WebSocket.CLOSED &&
+    ws.readyState !== WebSocket.CLOSING
+  ) {
+    ws.close(1000, "Reconnecting");
+  }
+  ws = null;
+
+  ws = new WebSocket(WEBSOCKET_URL);
+
+  ws.onopen = () => {
+    console.log(`WS connected for ${currentProductId}. Subscribing...`);
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(
+        JSON.stringify({
+          type: "subscribe",
+          product_ids: [currentProductId],
+          channels: ["ticker"],
+        })
+      );
+    } else {
+      console.warn("WS opened but not OPEN state.");
+    }
+  };
+
+  ws.onmessage = (event) => {
+    // console.log("WS Raw:", event.data); // Uncomment for intense debugging
+    try {
+      const message = JSON.parse(event.data);
+      if (
+        message.type === "ticker" &&
+        message.product_id === currentProductId &&
+        message.price
+      ) {
+        const price = parseFloat(message.price);
+        const tickerTime = message.time
+          ? new Date(message.time).getTime() / 1000
+          : null;
+
+        if (!isNaN(price) && tickerTime && state.fullData.length > 0) {
+          updateState({ lastTickerPrice: price }); // Update state immediately
+          updateLivePriceIndicatorUI(price); // Update UI immediately
+
+          const lastCandleIndex = state.fullData.length - 1;
+          const lastCandle = state.fullData[lastCandleIndex];
+          if (!lastCandle || lastCandle.length < 6) {
+            return;
+          }
+          const candleStartTime = lastCandle[0];
+          const candleEndTime = candleStartTime + state.currentGranularity;
+
+          if (tickerTime >= candleStartTime && tickerTime < candleEndTime) {
+            let changed = false;
+            if (lastCandle[4] !== price) {
+              lastCandle[4] = price;
+              changed = true;
+            } // Close
+            if (price > lastCandle[2]) {
+              lastCandle[2] = price;
+              changed = true;
+            } // High
+            if (price < lastCandle[1]) {
+              lastCandle[1] = price;
+              changed = true;
+            } // Low
+            if (changed && !redrawTimeout) {
+              redrawTimeout = setTimeout(() => {
+                requestAnimationFrame(redrawChart);
+                redrawTimeout = null;
+              }, REDRAW_THROTTLE_MS);
+            }
+          } // else: Rollover or old data handled implicitly
+        }
+      } else if (message.type === "subscriptions") {
+        console.log("WS Subscriptions:", message.channels);
+      } else if (message.type === "error") {
+        console.error("WS Error Msg:", message.message);
+      }
+    } catch (error) {
+      console.error("Error processing WS msg:", error, event.data);
+    }
+  };
+
+  ws.onerror = (error) => {
+    console.error("WS Error Event:", error);
+  };
+  ws.onclose = (event) => {
+    console.log(`WS closed. Code: ${event.code}, Clean: ${event.wasClean}`);
+    ws = null;
+    if (redrawTimeout) {
+      clearTimeout(redrawTimeout);
+      redrawTimeout = null;
+    }
+    if (dom.currentPriceLabel) dom.currentPriceLabel.style.display = "none";
+    if (dom.currentPriceLine) dom.currentPriceLine.style.display = "none";
+    updateState({ lastTickerPrice: null });
+    if (event.code !== 1000) {
+      console.log("Attempting WS reconnect in 5s...");
+      setTimeout(connectWebSocket, 5000);
+    }
+  };
+}
+
+export function initializeWebSocket(productId = config.DEFAULT_PRODUCT_ID) {
+  currentProductId = productId;
+  connectWebSocket();
+}
+export function closeWebSocket() {
+  if (ws) {
+    console.log("Closing WS manually.");
+    ws.close(1000, "Client closure");
+    ws = null;
+  }
+  if (redrawTimeout) {
+    clearTimeout(redrawTimeout);
+    redrawTimeout = null;
+  }
+  if (dom.currentPriceLabel) dom.currentPriceLabel.style.display = "none";
+  if (dom.currentPriceLine) dom.currentPriceLine.style.display = "none";
+  updateState({ lastTickerPrice: null });
+}
+export function updateWebSocketSubscription(
+  newProductId = config.DEFAULT_PRODUCT_ID
+) {
+  if (
+    newProductId !== currentProductId ||
+    !ws ||
+    ws.readyState === WebSocket.CLOSED ||
+    ws.readyState === WebSocket.CLOSING
+  ) {
+    console.log(
+      `Product change/WS issue. Reconnecting WS for ${newProductId}.`
+    );
+    currentProductId = newProductId;
+    connectWebSocket();
+  }
+}
+
+```
+--- END FILE: js/liveUpdate.js ---
+
+
+--- START FILE: js/main.js ---
+```js
+// js/main.js
+
+import * as dom from "./domElements.js";
+import state, { updateState } from "./state.js";
+import * as config from "./config.js";
+import { initializeTheme } from "./theme.js";
+import { redrawChart } from "./drawing.js";
+import { attachInteractionListeners } from "./interactions.js";
+import {
+  initializeWebSocket,
+  closeWebSocket,
+  updateWebSocketSubscription,
+} from "./liveUpdate.js";
+import { initializeBalances } from "./balance.js";
+import { initializeResizer } from "./layout.js";
+import { initializeSettingsMenu } from "./settingsMenu.js";
+import { initializeTabs } from "./tabs.js";
+import { initializePromptTab } from "./promptTab.js";
+// import { initializeVolumeChart } from './volumeChart.js'; // Import volume chart initialization <-- COMMENTED OUT
+
+// --- Status Indicator ---
+function updateApiStatusIndicator(loaded, message = null) {
+  if (!dom.apiStatusIndicator) return;
+  dom.apiStatusIndicator.className = loaded ? "loaded" : "error";
+  dom.apiStatusIndicator.textContent = message || (loaded ? "Loaded" : "Error");
+}
+function checkApiStatus() {
+  if (!dom.apiStatusIndicator) return;
+  dom.apiStatusIndicator.textContent = "Checking...";
+  dom.apiStatusIndicator.className = "loading";
+  fetch("http://localhost:5000/api/status")
+    .then((response) => {
+      if (!response.ok) {
+        return response
+          .json()
+          .catch(() => {
+            throw new Error(`HTTP error ${response.status}`);
+          })
+          .then((errData) => {
+            throw new Error(errData.error || `HTTP error ${response.status}`);
+          });
+      }
+      return response.json();
+    })
+    .then((data) => {
+      if (data.credentials_loaded) {
+        updateApiStatusIndicator(true);
+      } else {
+        updateApiStatusIndicator(false, "Creds Failed");
+      }
+    })
+    .catch((error) => {
+      console.error("Error checking API status:", error);
+      updateApiStatusIndicator(false, "Unavailable");
+    });
+}
+
+// --- Initialize Chart View State ---
+function initializeChartView(data) {
+  if (!data || !data.length) {
+    console.warn("initializeChartView skipped: No data provided.");
+    return;
+  }
+  const totalDataCount = data.length;
+  const initialVisibleCount = Math.min(
+    config.DEFAULT_RESET_CANDLE_COUNT,
+    totalDataCount
+  );
+  const initialStartIndex = Math.max(0, totalDataCount - initialVisibleCount);
+  const initialEndIndex = totalDataCount;
+  let initialMinY = Infinity,
+    initialMaxY = -Infinity;
+  for (let i = initialStartIndex; i < initialEndIndex; i++) {
+    if (!data[i] || data[i].length < 3) continue;
+    if (!isNaN(data[i][1])) initialMinY = Math.min(initialMinY, data[i][1]);
+    if (!isNaN(data[i][2])) initialMaxY = Math.max(initialMaxY, data[i][2]);
+  }
+  if (initialMinY === Infinity || initialMaxY === -Infinity) {
+    initialMinY = 0;
+    initialMaxY = 100;
+    console.warn("Could not determine initial Y range, using fallback.");
+  }
+  const padding = Math.max(
+    config.MIN_PRICE_RANGE_SPAN * 0.1,
+    (initialMaxY - initialMinY) * config.Y_AXIS_PRICE_PADDING_FACTOR
+  );
+  let initialMinPrice = Math.max(0, initialMinY - padding);
+  let initialMaxPrice = initialMaxY + padding;
+  const savedLogPref = localStorage.getItem("logScalePref") === "true";
+  const savedTimeFormatPref = localStorage.getItem("timeFormatPref") === "true";
+  if (
+    !savedLogPref &&
+    initialMaxPrice - initialMinPrice < config.MIN_PRICE_RANGE_SPAN
+  ) {
+    const mid = (initialMaxPrice + initialMinPrice) / 2;
+    initialMinPrice = Math.max(0, mid - config.MIN_PRICE_RANGE_SPAN / 2);
+    initialMaxPrice = mid + config.MIN_PRICE_RANGE_SPAN / 2;
+  } else if (
+    savedLogPref &&
+    initialMaxPrice / Math.max(1e-9, initialMinPrice) < 1.01
+  ) {
+    const midLog =
+      (Math.log(Math.max(1e-9, initialMaxPrice)) +
+        Math.log(Math.max(1e-9, initialMinPrice))) /
+      2;
+    initialMinPrice = Math.max(1e-9, Math.exp(midLog - Math.log(1.005)));
+    initialMaxPrice = Math.exp(midLog + Math.log(1.005));
+  }
+  updateState({
+    visibleStartIndex: initialStartIndex,
+    visibleEndIndex: initialEndIndex,
+    minVisiblePrice: initialMinPrice,
+    maxVisiblePrice: initialMaxPrice,
+    isLogScale: savedLogPref,
+    is12HourFormat: savedTimeFormatPref,
+  });
+  if (dom.logScaleToggle) dom.logScaleToggle.checked = savedLogPref;
+  if (dom.timeFormatToggle) dom.timeFormatToggle.checked = savedTimeFormatPref;
+}
+
+// --- Fetch/Redraw Chart Data ---
+function fetchAndRedraw(granularitySeconds) {
+  updateState({ currentGranularity: granularitySeconds });
+  const currentProductID = config.DEFAULT_PRODUCT_ID;
+  const apiUrl = `http://localhost:5000/api/candles?granularity=${granularitySeconds}&product_id=${currentProductID}`;
+  console.log(
+    `Fetching chart data for ${currentProductID} at ${granularitySeconds}s interval from: ${apiUrl}`
+  );
+  if (dom.chartMessage) {
+    dom.chartMessage.textContent = `Loading ${currentProductID} ${Math.round(
+      granularitySeconds / 60
+    )}m data...`;
+    dom.chartMessage.style.display = "block";
+  }
+  closeWebSocket();
+  fetch(apiUrl)
+    .then((response) => {
+      if (!response.ok) {
+        return response
+          .json()
+          .catch(() => {
+            throw new Error(
+              `HTTP error ${response.status} (${response.statusText})`
+            );
+          })
+          .then((errData) => {
+            throw new Error(errData.error || `API Error ${response.status}`);
+          });
+      }
+      return response.json();
+    })
+    .then((data) => {
+      if (!Array.isArray(data)) {
+        throw new Error("Invalid data format: API response was not an array.");
+      }
+      if (data.length === 0) {
+        console.warn(
+          `No chart data returned for ${granularitySeconds}s interval.`
+        );
+        updateState({ fullData: [] });
+        if (dom.chartMessage)
+          dom.chartMessage.textContent = `No data available for this interval.`;
+        redrawChart();
+        return;
+      }
+      console.log(
+        `Loaded ${data.length} chart data points for ${granularitySeconds}s interval.`
+      );
+      let processedData = data;
+      if (data.length > 1 && data[0][0] > data[data.length - 1][0]) {
+        console.warn("Chart data received newest-first. Reversing array.");
+        processedData = data.slice().reverse();
+      } else {
+        console.log("Chart data received oldest-first (expected).");
+      }
+      updateState({ fullData: processedData });
+      initializeChartView(processedData);
+      if (dom.chartMessage) dom.chartMessage.style.display = "none";
+      requestAnimationFrame(redrawChart);
+      initializeWebSocket(currentProductID);
+    })
+    .catch((error) => {
+      console.error("Chart Data Fetch Error:", error);
+      if (dom.chartMessage) {
+        dom.chartMessage.textContent = `Error loading chart data: ${error.message}`;
+        dom.chartMessage.style.display = "block";
+        dom.chartMessage.style.color = "red";
+      }
+      updateState({ fullData: [] });
+      redrawChart();
+    });
+}
+
+// --- Main Execution ---
+document.addEventListener("DOMContentLoaded", () => {
+  if (!dom.checkElements()) {
+    return;
+  }
+
+  initializeTheme();
+  initializeSettingsMenu();
+  initializeTabs("#bottom-tab-bar", ".tab-content-area");
+  initializePromptTab();
+  // initializeVolumeChart(); // Initialize the volume chart module <-- COMMENTED OUT
+  attachInteractionListeners();
+  initializeResizer();
+  checkApiStatus();
+  initializeBalances();
+
+  if (dom.granularityControls) {
+    dom.granularityControls.addEventListener("click", (event) => {
+      if (event.target.tagName === "BUTTON" && !event.target.disabled) {
+        const newGranularity = parseInt(event.target.dataset.granularity, 10);
+        if (
+          !isNaN(newGranularity) &&
+          newGranularity !== state.currentGranularity
+        ) {
+          const currentActive =
+            dom.granularityControls.querySelector("button.active");
+          if (currentActive) currentActive.classList.remove("active");
+          event.target.classList.add("active");
+          fetchAndRedraw(newGranularity);
+        }
+      }
+    });
+    const initialActiveButton = dom.granularityControls.querySelector(
+      `button[data-granularity="${state.currentGranularity}"]`
+    );
+    if (
+      initialActiveButton &&
+      !initialActiveButton.classList.contains("active")
+    ) {
+      const currentActive =
+        dom.granularityControls.querySelector("button.active");
+      if (currentActive) currentActive.classList.remove("active");
+      initialActiveButton.classList.add("active");
+    }
+  } else {
+    console.warn("Granularity controls element not found.");
+  }
+
+  fetchAndRedraw(state.currentGranularity);
+
+  window.addEventListener("beforeunload", () => {
+    closeWebSocket(true);
+  });
+
+  console.log("GeminiTrader Frontend Initialized.");
+});
+
+```
+--- END FILE: js/main.js ---
+
+
+--- START FILE: js/promptTab.js ---
+```js
+// js/promptTab.js
+import * as dom from "./domElements.js";
+
+const STORAGE_KEY = "geminiTraderPromptText"; // Key for localStorage
+const DEBOUNCE_DELAY = 300; // ms delay before saving after user stops typing
+
+let saveTimeout = null;
+
+/**
+ * Saves the current content of the prompt textarea to localStorage.
+ */
+function savePromptText() {
+  if (dom.promptTextarea) {
+    try {
+      localStorage.setItem(STORAGE_KEY, dom.promptTextarea.value);
+      // console.log("Prompt text saved."); // Optional: for debugging
+    } catch (error) {
+      console.error("Error saving prompt text to localStorage:", error);
+      // Handle potential storage errors (e.g., quota exceeded)
+    }
+  }
+}
+
+/**
+ * Debounced version of the save function.
+ */
+function debouncedSavePromptText() {
+  clearTimeout(saveTimeout);
+  saveTimeout = setTimeout(savePromptText, DEBOUNCE_DELAY);
+}
+
+/**
+ * Loads saved prompt text from localStorage on initialization.
+ */
+function loadPromptText() {
+  if (dom.promptTextarea) {
+    try {
+      const savedText = localStorage.getItem(STORAGE_KEY);
+      if (savedText !== null) {
+        // Check for null, empty string is valid
+        dom.promptTextarea.value = savedText;
+        console.log("Prompt text loaded from localStorage.");
+      } else {
+        console.log("No saved prompt text found in localStorage.");
+      }
+    } catch (error) {
+      console.error("Error loading prompt text from localStorage:", error);
+    }
+  }
+}
+
+/**
+ * Initializes the prompt tab functionality: loads saved text and sets up auto-saving.
+ */
+export function initializePromptTab() {
+  if (!dom.promptTextarea) {
+    console.warn(
+      "Prompt textarea not found. Skipping prompt tab initialization."
+    );
+    return;
+  }
+
+  // Load any previously saved text
+  loadPromptText();
+
+  // Add event listener to save text on input (debounced)
+  dom.promptTextarea.addEventListener("input", debouncedSavePromptText);
+
+  console.log("Prompt tab initialized.");
+}
+
+```
+--- END FILE: js/promptTab.js ---
+
+
+--- START FILE: js/settingsMenu.js ---
+```js
+// js/settingsMenu.js
+import * as dom from "./domElements.js";
+
+/**
+ * Initializes the settings dropdown menu functionality.
+ */
+export function initializeSettingsMenu() {
+  // Check if elements exist right at the start
+  if (!dom.settingsButton) {
+    console.error("Settings Button (#settings-button) not found!");
+    return;
+  }
+  if (!dom.settingsDropdown) {
+    console.error("Settings Dropdown (#settings-dropdown) not found!");
+    return;
+  }
+  console.log(
+    "Settings menu elements found:",
+    dom.settingsButton,
+    dom.settingsDropdown
+  ); // Log found elements
+
+  // --- Toggle Dropdown on Button Click ---
+  dom.settingsButton.addEventListener("click", (event) => {
+    console.log("Settings button clicked."); // Log click
+    event.stopPropagation(); // Prevent the window click listener from closing it immediately
+
+    const isCurrentlyShown = dom.settingsDropdown.classList.contains("show");
+    console.log(`Dropdown 'show' class before toggle: ${isCurrentlyShown}`);
+
+    dom.settingsDropdown.classList.toggle("show");
+
+    const isNowShown = dom.settingsDropdown.classList.contains("show");
+    console.log(`Dropdown 'show' class after toggle: ${isNowShown}`); // Log state after toggle
+  });
+
+  // --- Close Dropdown on Click Outside ---
+  window.addEventListener("click", (event) => {
+    // Only run if the dropdown is currently shown
+    if (dom.settingsDropdown.classList.contains("show")) {
+      // Check if the click was outside the dropdown AND outside the button
+      const clickedOutside =
+        !dom.settingsDropdown.contains(event.target) &&
+        !dom.settingsButton.contains(event.target);
+
+      // console.log("Window clicked while dropdown is shown. Clicked outside:", clickedOutside); // Debug log
+
+      if (clickedOutside) {
+        console.log("Clicked outside, removing 'show' class."); // Log closing action
+        dom.settingsDropdown.classList.remove("show");
+      }
+    }
+  });
+
+  console.log("Settings menu event listeners attached.");
+}
+
+```
+--- END FILE: js/settingsMenu.js ---
+
+
+--- START FILE: js/state.js ---
+```js
+// js/state.js
+import * as config from "./config.js";
+
+const chartState = {
+  fullData: [],
+  visibleStartIndex: 0,
+  visibleEndIndex: 0,
+  minVisiblePrice: 0,
+  maxVisiblePrice: 1,
+  isLogScale: false,
+  currentGranularity: config.DEFAULT_GRANULARITY,
+  is12HourFormat: false, // Default to 24-hour format
+  isPanning: false,
+  isDraggingYAxis: false,
+  isDraggingXAxis: false,
+  panStartX: 0,
+  panStartY: 0,
+  panStartVisibleIndex: 0,
+  panStartVisibleCount: 0,
+  panStartMinPrice: 0,
+  panStartMaxPrice: 0,
+  lastDrawTime: 0,
+  lastTickerPrice: null, // Store last known ticker price
+  // Tooltip specific state (though managed within interactions.js for now)
+  // hoveredCandleIndex: null,
+};
+
+export function updateState(newState) {
+  Object.assign(chartState, newState);
+}
+export function getState() {
+  return { ...chartState };
+}
+export default chartState;
+
+```
+--- END FILE: js/state.js ---
+
+
+--- START FILE: js/tabs.js ---
+```js
+// js/tabs.js
+
+/**
+ * Initializes tab switching functionality for a given container.
+ * @param {string} tabBarSelector - CSS selector for the tab bar container (e.g., '#bottom-tab-bar').
+ * @param {string} contentAreaSelector - CSS selector for the area containing the tab content panes (e.g., '.tab-content-area').
+ */
+export function initializeTabs(tabBarSelector, contentAreaSelector) {
+  const tabBar = document.querySelector(tabBarSelector);
+  const contentArea = document.querySelector(contentAreaSelector);
+
+  if (!tabBar) {
+    console.error(
+      `Tab initialization failed: Tab bar not found with selector "${tabBarSelector}"`
+    );
+    return;
+  }
+  if (!contentArea) {
+    console.error(
+      `Tab initialization failed: Content area not found with selector "${contentAreaSelector}"`
+    );
+    return;
+  }
+
+  const tabButtons = tabBar.querySelectorAll(".tab-button");
+  const contentPanes = contentArea.querySelectorAll(".tab-content");
+
+  if (tabButtons.length === 0 || contentPanes.length === 0) {
+    console.warn(
+      "Tab initialization: No tab buttons or content panes found within the specified containers."
+    );
+    return;
+  }
+
+  // Add click listener to the tab bar (event delegation)
+  tabBar.addEventListener("click", (event) => {
+    const clickedButton = event.target.closest(".tab-button");
+    if (!clickedButton) {
+      return; // Click was not on a button
+    }
+
+    const targetId = clickedButton.dataset.target;
+    if (!targetId) {
+      console.warn("Clicked tab button is missing 'data-target' attribute.");
+      return;
+    }
+
+    const targetPane = contentArea.querySelector(`#${targetId}`);
+    if (!targetPane) {
+      console.warn(`Target content pane with ID "${targetId}" not found.`);
+      return;
+    }
+
+    // --- Deactivate currently active elements ---
+    const currentActiveButton = tabBar.querySelector(".tab-button.active");
+    const currentActivePane = contentArea.querySelector(".tab-content.active");
+
+    if (currentActiveButton) {
+      currentActiveButton.classList.remove("active");
+    }
+    if (currentActivePane) {
+      currentActivePane.classList.remove("active");
+    }
+
+    // --- Activate the new elements ---
+    clickedButton.classList.add("active");
+    targetPane.classList.add("active");
+
+    console.log(`Switched tab to: ${targetId}`);
+
+    // Optional: Trigger fetch/refresh logic when a tab becomes active
+    // Example: if (targetId === 'open-orders-content') { fetchOpenOrders(); }
+  });
+
+  console.log(`Tabs initialized for container: ${tabBarSelector}`);
+}
+
+```
+--- END FILE: js/tabs.js ---
+
+
+--- START FILE: js/theme.js ---
+```js
+// js/theme.js
+import { themeToggle } from "./domElements.js";
+
+export function initializeTheme() {
+  const userPrefersDark =
+    window.matchMedia &&
+    window.matchMedia("(prefers-color-scheme: dark)").matches;
+  const currentTheme = localStorage.getItem("theme");
+  let theme = "light";
+  if (currentTheme) {
+    theme = currentTheme;
+  } else if (userPrefersDark) {
+    theme = "dark";
+  }
+  document.documentElement.setAttribute("data-theme", theme);
+  if (themeToggle && theme === "dark") {
+    themeToggle.checked = true;
+  }
+  if (themeToggle) {
+    themeToggle.addEventListener("change", function () {
+      if (this.checked) {
+        document.documentElement.setAttribute("data-theme", "dark");
+        localStorage.setItem("theme", "dark");
+      } else {
+        document.documentElement.setAttribute("data-theme", "light");
+        localStorage.setItem("theme", "light");
+      }
+    });
+  }
+  window
+    .matchMedia("(prefers-color-scheme: dark)")
+    .addEventListener("change", (e) => {
+      if (!localStorage.getItem("theme")) {
+        const newTheme = e.matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", newTheme);
+        if (themeToggle) themeToggle.checked = newTheme === "dark";
+      }
+    });
+}
+
+```
+--- END FILE: js/theme.js ---
+
+
+--- START FILE: js/utils.js ---
+```js
+// js/utils.js
+import state from "./state.js";
+import * as config from "./config.js"; // Import config for MIN_PRICE_RANGE_SPAN
+
+const MIN_LOG_VALUE = 1e-9;
+
+// Reverted getYCoordinate to the version before the last stricter checks
+export function getYCoordinate(price, chartHeight) {
+  if (isNaN(price) || isNaN(chartHeight) || chartHeight <= 0) return null;
+  const { minVisiblePrice, maxVisiblePrice, isLogScale } = state;
+  // Basic range check
+  if (
+    isNaN(minVisiblePrice) ||
+    isNaN(maxVisiblePrice) ||
+    maxVisiblePrice <= minVisiblePrice
+  ) {
+    return null; // Basic invalid range check
+  }
+
+  if (isLogScale) {
+    const logMin = Math.log(Math.max(MIN_LOG_VALUE, minVisiblePrice));
+    const logMax = Math.log(Math.max(MIN_LOG_VALUE, maxVisiblePrice));
+    const logPrice = Math.log(Math.max(MIN_LOG_VALUE, price));
+    const logRange = logMax - logMin;
+    if (logRange <= 0 || isNaN(logRange)) {
+      if (logPrice <= logMin) return chartHeight;
+      if (logPrice >= logMax) return 0;
+      return chartHeight / 2; // Fallback
+    }
+    const logScaleY = chartHeight / logRange;
+    const yPos = chartHeight - (logPrice - logMin) * logScaleY;
+    return isNaN(yPos) ? null : yPos;
+  } else {
+    const priceRange = maxVisiblePrice - minVisiblePrice;
+    if (priceRange <= 0 || isNaN(priceRange)) {
+      if (price <= minVisiblePrice) return chartHeight;
+      if (price >= maxVisiblePrice) return 0;
+      return chartHeight / 2; // Fallback
+    }
+    const scaleY = chartHeight / priceRange;
+    const yPos = chartHeight - (price - minVisiblePrice) * scaleY;
+    return isNaN(yPos) ? null : yPos;
+  }
+}
+
+// Reverted getPriceFromYCoordinate to the version before the last stricter checks
+export function getPriceFromYCoordinate(yPos, chartHeight) {
+  if (isNaN(yPos) || isNaN(chartHeight) || chartHeight <= 0) return null;
+  const { minVisiblePrice, maxVisiblePrice, isLogScale } = state;
+  if (
+    isNaN(minVisiblePrice) ||
+    isNaN(maxVisiblePrice) ||
+    maxVisiblePrice <= minVisiblePrice
+  )
+    return null;
+
+  const clampedYPos = Math.max(0, Math.min(yPos, chartHeight));
+  const fraction = (chartHeight - clampedYPos) / chartHeight;
+
+  if (isLogScale) {
+    const logMin = Math.log(Math.max(MIN_LOG_VALUE, minVisiblePrice));
+    const logMax = Math.log(Math.max(MIN_LOG_VALUE, maxVisiblePrice));
+    const logRange = logMax - logMin;
+    if (logRange <= 0 || isNaN(logRange))
+      return Math.max(MIN_LOG_VALUE, minVisiblePrice);
+    const logPrice = logMin + fraction * logRange;
+    const price = Math.exp(logPrice);
+    return isNaN(price) ? null : price;
+  } else {
+    const priceRange = maxVisiblePrice - minVisiblePrice;
+    if (priceRange <= 0 || isNaN(priceRange)) return minVisiblePrice;
+    const price = minVisiblePrice + fraction * priceRange;
+    return isNaN(price) ? null : Math.max(0, price);
+  }
+}
+
+// Reverted calculateNiceStep to the version before the last stricter minimums
+export function calculateNiceStep(range, maxTicks) {
+  if (range <= 0 || isNaN(range) || maxTicks <= 0) return 1;
+  const roughStep = range / Math.max(1, maxTicks);
+  if (roughStep <= 0 || isNaN(roughStep)) return 1;
+
+  const magnitude = Math.pow(10, Math.floor(Math.log10(roughStep)));
+  const residual = roughStep / magnitude;
+
+  let niceStep;
+  if (residual > 5) niceStep = 10 * magnitude;
+  else if (residual > 2) niceStep = 5 * magnitude;
+  else if (residual > 1) niceStep = 2 * magnitude;
+  else niceStep = magnitude;
+
+  // Original minimum checks
+  return Math.max(
+    niceStep,
+    range * 1e-6,
+    Number.EPSILON * range,
+    Number.EPSILON * 10
+  );
+}
+
+// --- Time/Date Formatting --- (remain the same)
+export function formatTimestamp(timestamp) {
+  try {
+    const date = new Date(timestamp * 1000);
+    const options = {
+      timeZone: "America/Chicago",
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: state.is12HourFormat,
+    };
+    return date.toLocaleString("en-US", options);
+  } catch (error) {
+    console.error("Error formatting timestamp:", error, timestamp);
+    const fallbackDate = new Date(timestamp * 1000);
+    const h = fallbackDate.getHours().toString().padStart(2, "0");
+    const m = fallbackDate.getMinutes().toString().padStart(2, "0");
+    return `${h}:${m}?`;
+  }
+}
+export function formatDate(timestamp) {
+  try {
+    const date = new Date(timestamp * 1000);
+    const options = {
+      timeZone: "America/Chicago",
+      month: "short",
+      day: "numeric",
+    };
+    return date.toLocaleDateString("en-US", options);
+  } catch (error) {
+    console.error("Error formatting date:", error, timestamp);
+    return "Date Error";
+  }
+}
+export function formatCurrency(value, currencySymbol = "$", decimals = 2) {
+  if (isNaN(value) || value === null) {
+    return `${currencySymbol}--.--`;
+  }
+  try {
+    return value
+      .toLocaleString("en-US", {
+        style: "currency",
+        currency: "USD",
+        minimumFractionDigits: decimals,
+        maximumFractionDigits: decimals,
+      })
+      .replace("USD", currencySymbol)
+      .replace(/^\$/, currencySymbol);
+  } catch (e) {
+    console.error("Currency formatting error:", e);
+    return `${currencySymbol}${value.toFixed(decimals)}`;
+  }
+}
+export function formatQuantity(value) {
+  if (isNaN(value) || value === null) return "--";
+  const absValue = Math.abs(value);
+  let decimals;
+  if (absValue === 0) decimals = 2;
+  else if (absValue < 0.000001) decimals = 8;
+  else if (absValue < 0.01) decimals = 6;
+  else if (absValue < 1) decimals = 4;
+  else decimals = 3;
+  return value.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: decimals,
+  });
+}
+
+```
+--- END FILE: js/utils.js ---
+
+
+--- START FILE: js/volumeChart.js ---
+```js
+// js/volumeChart.js
+import * as dom from "./domElements.js";
+import state from "./state.js"; // Need state for visible range and data
+
+let ctx = null;
+let canvasWidth = 0;
+let canvasHeight = 0;
+
+/**
+ * Initializes the volume chart canvas context.
+ */
+export function initializeVolumeChart() {
+  if (!dom.volumeChartCanvas) {
+    console.error("Volume chart canvas not found.");
+    return;
+  }
+  ctx = dom.volumeChartCanvas.getContext("2d");
+  if (!ctx) {
+    console.error("Failed to get 2D context for volume chart canvas.");
+    return;
+  }
+  console.log("Volume chart initialized.");
+}
+
+/**
+ * Draws the volume bars based on the main chart's visible data.
+ *
+ * @param {object} mainChartState - The main chart's state (including fullData, visibleStartIndex, visibleEndIndex).
+ * @param {number} mainChartWidth - The width of the main chart drawing area (needed for alignment).
+ */
+export function drawVolumeChart(mainChartState, mainChartWidth) {
+  // Ensure context and canvas element exist before proceeding
+  if (!ctx || !dom.volumeChartCanvas) {
+    console.warn(
+      "Volume chart draw skipped: Context or Canvas element missing."
+    );
+    return;
+  }
+
+  canvasWidth = dom.volumeChartCanvas.offsetWidth;
+  canvasHeight = dom.volumeChartCanvas.offsetHeight;
+
+  // Ensure canvas has valid dimensions to draw on
+  if (canvasWidth <= 0 || canvasHeight <= 0) {
+    // console.warn("Volume chart draw skipped: Invalid canvas dimensions."); // Optional log
+    // Ensure canvas is clear if dimensions are invalid
+    if (dom.volumeChartCanvas.width > 0 || dom.volumeChartCanvas.height > 0) {
+      dom.volumeChartCanvas.width = 0; // Explicitly clear if needed
+      dom.volumeChartCanvas.height = 0;
+    }
+    return;
+  }
+
+  // Ensure canvas internal resolution matches display size
+  if (
+    dom.volumeChartCanvas.width !== canvasWidth ||
+    dom.volumeChartCanvas.height !== canvasHeight
+  ) {
+    dom.volumeChartCanvas.width = canvasWidth;
+    dom.volumeChartCanvas.height = canvasHeight;
+    // console.log("Resized volume canvas:", canvasWidth, canvasHeight); // Optional log
+  }
+
+  // Clear the canvas for redrawing
+  ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+
+  const { fullData, visibleStartIndex, visibleEndIndex } = mainChartState;
+  const visibleCount = visibleEndIndex - visibleStartIndex;
+
+  // Ensure there is data and visible candles to process
+  if (
+    !fullData ||
+    visibleCount <= 0 ||
+    fullData.length === 0 ||
+    mainChartWidth <= 0
+  ) {
+    // console.warn("Volume chart draw skipped: No visible data or invalid main chart width."); // Optional log
+    return; // Nothing to draw
+  }
+
+  // --- Calculate Volume Scale ---
+  let maxVisibleVolume = 0;
+  for (let i = visibleStartIndex; i < visibleEndIndex; i++) {
+    // Robust check: ensure array exists, has enough elements, and volume is a number
+    if (
+      fullData[i] &&
+      fullData[i].length > 5 &&
+      typeof fullData[i][5] === "number" &&
+      !isNaN(fullData[i][5])
+    ) {
+      maxVisibleVolume = Math.max(maxVisibleVolume, fullData[i][5]);
+    }
+  }
+
+  // Avoid division by zero if max volume is zero or less (shouldn't be <0, but safe check)
+  if (maxVisibleVolume <= 0) {
+    // console.warn("Volume chart draw skipped: Max visible volume is zero or negative."); // Optional log
+    return;
+  }
+
+  // Calculate scale factor AFTER confirming maxVisibleVolume > 0
+  const volumeScaleY = canvasHeight / maxVisibleVolume;
+
+  // --- Calculate Bar Width and Alignment ---
+  const barTotalWidth = mainChartWidth / visibleCount;
+  const barWidthRatio = 0.7;
+  const barWidth = Math.max(1, barTotalWidth * barWidthRatio);
+
+  // --- Get Colors and Opacity ---
+  const styles = getComputedStyle(document.documentElement);
+  const colorUp = styles.getPropertyValue("--candle-up").trim();
+  const colorDown = styles.getPropertyValue("--candle-down").trim();
+  const barOpacity = parseFloat(
+    styles.getPropertyValue("--volume-bar-opacity").trim() || 0.7
+  );
+
+  // Apply opacity once if using globalAlpha
+  ctx.globalAlpha = barOpacity;
+
+  // --- Draw Bars ---
+  for (let i = 0; i < visibleCount; i++) {
+    const dataIndex = visibleStartIndex + i;
+    // Basic bounds check (already somewhat covered by loop condition)
+    if (dataIndex < 0 || dataIndex >= fullData.length) continue;
+
+    const candle = fullData[dataIndex];
+    // More robust check for essential data points needed for coloring and volume
+    if (
+      !candle ||
+      candle.length < 6 ||
+      typeof candle[3] !== "number" ||
+      isNaN(candle[3]) || // open
+      typeof candle[4] !== "number" ||
+      isNaN(candle[4]) || // close
+      typeof candle[5] !== "number" ||
+      isNaN(candle[5])
+    ) {
+      // volume
+      // console.warn(`Skipping volume bar at index ${dataIndex}: Invalid candle data`, candle); // Debug log
+      continue;
+    }
+
+    const open = candle[3];
+    const close = candle[4];
+    const volume = candle[5];
+
+    // Skip drawing if volume is essentially zero
+    if (volume <= 1e-9) continue;
+
+    // Calculate height, ensuring a minimum visual height of 1px
+    const barHeight = Math.max(1, volume * volumeScaleY);
+    const isUp = close >= open;
+
+    // Calculate X position
+    const barCenterX = (i + 0.5) * barTotalWidth;
+    const barLeft = barCenterX - barWidth / 2;
+
+    // Set fill color
+    ctx.fillStyle = isUp ? colorUp : colorDown;
+
+    // Draw the rectangle
+    // Prevent drawing outside canvas bounds (Y coordinate)
+    const yPos = Math.max(0, canvasHeight - barHeight); // Ensure Y doesn't go negative
+    const drawHeight = Math.min(barHeight, canvasHeight); // Ensure height doesn't exceed canvas height
+    ctx.fillRect(barLeft, yPos, barWidth, drawHeight);
+  }
+
+  // Reset global alpha after drawing all bars
+  ctx.globalAlpha = 1.0;
+}
+
+```
+--- END FILE: js/volumeChart.js ---
+
+
+--- START FILE: server.py ---
+```py
+# server.py
+
+import os
+import json
+import requests
+import datetime
+import time
+
+# Import the correct SDK client
+from coinbase.rest import RESTClient
+
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+
+# --- Configuration ---
+CREDENTIALS_FILE_NAME = "cdp_api_key.json"
+CREDENTIALS_FOLDER = "credentials"
+PUBLIC_BASE_URL = "https://api.exchange.coinbase.com"  # For candles & public ticker
+DEFAULT_PRODUCT_ID = "BTC-USD"
+DEFAULT_GRANULARITY = 3600
+
+# --- Load Credentials & Init SDK Client ---
+COINBASE_API_KEY_NAME = None
+COINBASE_API_PRIVATE_KEY_PEM = None
+credentials_loaded = False
+rest_client = None
+try:
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    credentials_path = os.path.join(
+        script_dir, CREDENTIALS_FOLDER, CREDENTIALS_FILE_NAME)
+    print(f"Attempting to load Cloud API Key from: {credentials_path}")
+    if not os.path.exists(credentials_path):
+        raise FileNotFoundError(f"File not found: {credentials_path}")
+    with open(credentials_path, 'r') as f:
+        credentials_data = json.load(f)
+    COINBASE_API_KEY_NAME = credentials_data.get('name')
+    COINBASE_API_PRIVATE_KEY_PEM = credentials_data.get('privateKey')
+    if not COINBASE_API_KEY_NAME or not COINBASE_API_PRIVATE_KEY_PEM:
+        raise ValueError("Missing 'name' or 'privateKey' in JSON")
+    print("Cloud API Key credentials successfully read from file.")
+    credentials_loaded = True
+    print(f"  API Key Name: {COINBASE_API_KEY_NAME}")
+    # Initialize Client only if credentials loaded
+    try:
+        print("Initializing coinbase.rest.RESTClient with Cloud Key...")
+        rest_client = RESTClient(
+            api_key=COINBASE_API_KEY_NAME,
+            api_secret=COINBASE_API_PRIVATE_KEY_PEM
+        )
+        print("REST Client initialized successfully.")
+    except Exception as client_e:
+        print(f"!!! ERROR Initializing REST Client: {client_e}")
+        import traceback
+        traceback.print_exc()
+        rest_client = None
+        credentials_loaded = False  # Failed init means not ready
+except Exception as e:
+    print(f"\n!!! ERROR Loading Credentials or Initializing Client: {e}\n")
+    credentials_loaded = False
+if not credentials_loaded or not rest_client:
+    print("WARNING: Credentials loading or client initialization failed. Authenticated endpoints will fail.")
+
+# --- Flask App Setup ---
+app = Flask(__name__)
+CORS(app)
+
+# --- API Status Endpoint ---
+
+
+@app.route('/api/status')
+def get_api_status():
+    client_ready = credentials_loaded and (rest_client is not None)
+    return jsonify({"credentials_loaded": client_ready})
+
+# --- API Endpoint for Chart Data (Public) ---
+
+
+@app.route('/api/candles')
+def get_candles():
+    """ Fetches candlestick data (Public). """
+    product_id = request.args.get('product_id', DEFAULT_PRODUCT_ID)
+    try:
+        granularity = int(request.args.get('granularity', DEFAULT_GRANULARITY))
+    except ValueError:
+        return jsonify({"error": "Invalid granularity value"}), 400
+    start_iso = request.args.get('start', None)
+    end_iso = request.args.get('end', None)
+    endpoint = f"/products/{product_id}/candles"
+    url = PUBLIC_BASE_URL + endpoint
+    params = {"granularity": granularity}
+    if start_iso:
+        params["start"] = start_iso
+    if end_iso:
+        params["end"] = end_iso
+    print(f"Fetching candles: {url} with params {params}")
+    try:
+        response = requests.get(url, params=params, timeout=15)
+        response.raise_for_status()
+        candles_data = response.json()
+        print(f"Coinbase returned {len(candles_data)} candles.")
+        return jsonify(candles_data)
+
+    # --- CORRECTED ERROR HANDLING for /api/candles ---
+    except requests.exceptions.HTTPError as err:
+        print(f"HTTP error fetching candles: {err}")
+        details = f"HTTP Error {err.response.status_code}"  # Default
+        try:
+            details_json = err.response.json()
+            details = details_json.get('message', details_json)
+        except json.JSONDecodeError:
+            try:
+                details = err.response.text
+            except:
+                pass  # Ignore if text cannot be accessed
+        return jsonify({"error": f"API error {err.response.status_code}", "details": details}), err.response.status_code
+
+    except requests.exceptions.RequestException as err:
+        print(f"Request error fetching candles: {err}")
+        return jsonify({"error": f"Connection error: {err}"}), 502
+
+    except Exception as e:
+        print(f"Unexpected error fetching candles: {e}")
+        return jsonify({"error": f"Server error: {e}"}), 500
+    # --- END CORRECTION ---
+
+
+# --- NEW: Public Ticker Endpoint ---
+@app.route('/api/ticker')
+def get_ticker():
+    """ Fetches public ticker data for a specific product ID. """
+    product_id = request.args.get('product_id')
+    if not product_id:
+        return jsonify({"error": "Missing 'product_id' query parameter"}), 400
+    endpoint = f"/products/{product_id}/ticker"
+    url = PUBLIC_BASE_URL + endpoint
+    print(f"Fetching public ticker: {url}")
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        ticker_data = response.json()
+        price = ticker_data.get('price')
+        if price is None:
+            return jsonify({"error": f"Could not find price for {product_id}"}), 404
+        return jsonify({"product_id": product_id, "price": price})
+
+    # --- CORRECTED ERROR HANDLING for /api/ticker ---
+    except requests.exceptions.HTTPError as err:
+        status_code = err.response.status_code
+        print(f"HTTP error fetching ticker for {product_id}: {err}")
+        if status_code == 404:
+            return jsonify({"error": f"Product ID '{product_id}' not found."}), 404
+        details = f"HTTP Error {status_code}"  # Default
+        try:
+            details_json = err.response.json()
+            details = details_json.get('message', details_json)
+        except json.JSONDecodeError:
+            try:
+                details = err.response.text
+            except:
+                pass
+        return jsonify({"error": f"API error {status_code}", "details": details}), status_code
+    # --- END CORRECTION ---
+
+    except requests.exceptions.RequestException as err:
+        print(f"Request error fetching ticker for {product_id}: {err}")
+        return jsonify({"error": f"Connection error: {err}"}), 502
+    except Exception as e:
+        print(f"Unexpected error fetching ticker for {product_id}: {e}")
+        return jsonify({"error": f"Server error: {e}"}), 500
+
+# --- Accounts Endpoint (Implemented with SDK) ---
+
+
+@app.route('/api/accounts', methods=['GET'])
+def get_accounts():
+    """ Fetches account balances using coinbase-advanced-py SDK (Cloud Key Auth). """
+    print("Received request for /api/accounts")
+    if not rest_client:
+        print("-> REST Client not initialized, returning 503.")
+        return jsonify({"error": "API Client not ready on server.", "accounts": []}), 503
+    try:
+        print("Attempting client.get_accounts()...")
+        sdk_response = rest_client.get_accounts()
+        print(f"Successfully processed SDK response for accounts.")
+        account_list = []
+        if hasattr(sdk_response, 'accounts') and hasattr(sdk_response.accounts, '__iter__'):
+            for account_sdk_obj in sdk_response.accounts:
+                if hasattr(account_sdk_obj, 'to_dict'):
+                    account_list.append(account_sdk_obj.to_dict())
+                elif isinstance(account_sdk_obj, dict):
+                    account_list.append(account_sdk_obj)
+                else:
+                    account_list.append(repr(account_sdk_obj))
+            print(f"  -> Found {len(account_list)} accounts in response.")
+            return jsonify({"accounts": account_list})
+        else:
+            print(
+                f"Warning: Unexpected response structure from get_accounts(): {type(sdk_response)}")
+            return jsonify({"accounts": []})
+
+    # --- CORRECTED ERROR HANDLING for /api/accounts ---
+    except Exception as e:
+        print(f"!!! ERROR during SDK call (get_accounts): {e}")
+        error_message = f"Failed to fetch accounts via SDK: {str(e)}"
+        status_code = 500
+        # Check if the exception 'e' has a 'response' attribute (like SDK/requests exceptions)
+        if hasattr(e, 'response') and e.response is not None:
+            status_code = e.response.status_code
+            # --- CORRECTED INNER TRY/EXCEPT ---
+            try:
+                error_details = e.response.json()  # Try parsing JSON first
+            except json.JSONDecodeError:
+                try:
+                    error_details = e.response.text  # Fallback to text
+                except:
+                    # Final fallback
+                    error_details = "(Could not get error details)"
+            # --- END CORRECTION ---
+            print(f"--- SDK API Error Details (Status: {status_code}) ---")
+            print(error_details)
+            if status_code == 401:
+                error_message = f"SDK Auth failed (401): Check Cloud Key Permissions/Clock."
+            elif status_code == 429:
+                error_message = "SDK Rate Limit Exceeded (429)."
+            else:
+                error_message = f"SDK API Error ({status_code})"
+        else:
+            # If it's a general Python error, print traceback
+            import traceback
+            traceback.print_exc()
+        return jsonify({"error": error_message, "accounts": []}), status_code
+    # --- END CORRECTION ---
+
+# --- Orders Endpoint (Still Not Implemented) ---
+
+
+@app.route('/api/orders', methods=['POST'])
+def place_order():
+    print("Received request for /api/orders")
+    if not rest_client:
+        return jsonify({"error": "API Client not ready."}), 503
+    print("-> Actual /api/orders call using SDK not implemented. Returning 501.")
+    return jsonify({"error": "Order placement not implemented."}), 501
+
+
+# --- Run App ---
+if __name__ == '__main__':
+    print("Starting Flask server...")
+    app.run(host='0.0.0.0', port=5000, debug=True)
+
+```
+--- END FILE: server.py ---
+
+
+--- START FILE: style.css ---
+```css
+/* --- General Setup & CSS Variables --- */
+:root {
+  --bg-color: #f0f0f0;
+  --text-color: #333;
+  --subtle-text-color: #555;
+  --card-bg: #ffffff;
+  --border-color: #e0e0e0;
+  --grid-color: #eeeeee;
+  --axis-label-bg: rgba(255, 255, 255, 0.85);
+  --switch-bg: #ccc;
+  --switch-slider: #fff;
+  --switch-slider-checked: #26a69a; /* Active tab color */
+  --candle-up: #26a69a;
+  --candle-down: #ef5350;
+  --candle-wick: #555;
+  --shadow-color: rgba(0, 0, 0, 0.05);
+  --border-radius-sm: 4px;
+  --border-radius-md: 6px;
+  --current-price-color: #2962ff;
+  --current-price-text-color: #ffffff;
+  --resizer-color: #cccccc;
+  --resizer-hover-color: #aaaaaa;
+  --header-height: auto;
+  --resizer-height: 6px;
+  --min-pane-height: 100px;
+  --tab-button-hover-bg: rgba(0, 0, 0, 0.05);
+  /* Volume/Depth variables removed */
+}
+
+html[data-theme="dark"] {
+  --bg-color: #1e1e1e;
+  --text-color: #e0e0e0;
+  --subtle-text-color: #aaaaaa;
+  --card-bg: #2a2a2a;
+  --border-color: #444444;
+  --grid-color: #383838;
+  --axis-label-bg: rgba(42, 42, 42, 0.85);
+  --switch-bg: #555;
+  --switch-slider: #ccc;
+  /* --switch-slider-checked remains teal */
+  --candle-wick: #bbbbbb;
+  --shadow-color: rgba(0, 0, 0, 0.2);
+  --current-price-color: #448aff;
+  --current-price-text-color: #1e1e1e;
+  --resizer-color: #444444;
+  --resizer-hover-color: #666666;
+  --tab-button-hover-bg: rgba(255, 255, 255, 0.08);
+  /* Volume/Depth variables removed */
+}
+
+/* --- Core Layout --- */
+html,
+body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif;
+  background-color: var(--bg-color);
+  color: var(--text-color);
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+.main-layout {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+}
+
+/* --- Header Area --- */
+.header-area {
+  flex-shrink: 0;
+  padding: 5px 15px;
+  border-bottom: 1px solid var(--border-color);
+  background-color: var(--card-bg);
+  position: relative;
+  z-index: 110;
+  box-shadow: 0 1px 3px var(--shadow-color);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  min-height: 50px;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.header-content {
+  text-align: center;
+  flex-grow: 1;
+  min-width: 200px;
+}
+.header-area h1 {
+  margin: 0 0 2px 0;
+  font-size: 1.3em;
+  font-weight: 600;
+  line-height: 1.2;
+}
+.header-area p.instructions {
+  margin: 0;
+  font-size: 0.8em;
+  color: var(--subtle-text-color);
+  line-height: 1.2;
+}
+.header-controls {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  flex-shrink: 0;
+}
+.granularity-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: nowrap;
+}
+.granularity-controls span {
+  margin-right: 5px;
+  font-size: 0.85em;
+  color: var(--subtle-text-color);
+  white-space: nowrap;
+}
+.granularity-controls button {
+  padding: 5px 10px;
+  font-size: 0.85em;
+  background-color: var(--card-bg);
+  color: var(--subtle-text-color);
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius-sm);
+  cursor: pointer;
+  transition: background-color 0.2s ease, color 0.2s ease,
+    border-color 0.2s ease;
+}
+.granularity-controls button:hover {
+  border-color: var(--text-color);
+  color: var(--text-color);
+}
+.granularity-controls button.active {
+  background-color: var(--switch-slider-checked);
+  color: var(--card-bg);
+  border-color: var(--switch-slider-checked);
+  font-weight: 500;
+}
+
+/* --- Settings Button & Dropdown --- */
+.settings-group {
+  position: relative;
+}
+.icon-button {
+  background: none;
+  border: 1px solid transparent;
+  color: var(--subtle-text-color);
+  font-size: 1.4em;
+  padding: 4px 8px;
+  cursor: pointer;
+  border-radius: var(--border-radius-sm);
+  line-height: 1;
+  transition: color 0.2s ease, background-color 0.2s ease;
+}
+.icon-button:hover {
+  color: var(--text-color);
+  background-color: var(--grid-color);
+}
+.dropdown-menu {
+  position: absolute;
+  top: calc(100% + 5px);
+  right: 0;
+  background-color: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius-md);
+  box-shadow: 0 3px 8px var(--shadow-color);
+  padding: 10px 15px;
+  min-width: 240px;
+  z-index: 120;
+  display: none;
+  transition: background-color 0.3s ease, border-color 0.3s ease;
+}
+.dropdown-menu.show {
+  display: block;
+}
+.dropdown-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--grid-color);
+  font-size: 0.9em;
+  transition: border-color 0.3s ease;
+}
+.dropdown-item:last-child {
+  border-bottom: none;
+}
+.dropdown-item span {
+  margin-right: 15px;
+  white-space: nowrap;
+}
+.dropdown-item .theme-switch-wrapper,
+.dropdown-item .log-scale-switch-wrapper,
+.dropdown-item .time-format-switch-wrapper {
+  align-items: center;
+}
+.theme-switch {
+  position: relative;
+  display: inline-block;
+  width: 44px;
+  height: 24px;
+}
+.theme-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: var(--switch-bg);
+  transition: 0.4s;
+  border-radius: 24px;
+}
+.slider:before {
+  position: absolute;
+  content: "";
+  height: 18px;
+  width: 18px;
+  left: 3px;
+  bottom: 3px;
+  background-color: var(--switch-slider);
+  transition: 0.4s;
+  border-radius: 50%;
+}
+input:checked + .slider {
+  background-color: var(--switch-slider-checked);
+}
+input:focus + .slider {
+  box-shadow: 0 0 1px var(--switch-slider-checked);
+}
+input:checked + .slider:before {
+  transform: translateX(20px);
+}
+
+/* --- Top-Left Info --- */
+.top-left-info {
+  position: fixed;
+  top: 10px;
+  left: 10px;
+  z-index: 115;
+  background-color: var(--axis-label-bg);
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius-sm);
+  padding: 5px 8px;
+  box-shadow: 0 1px 3px var(--shadow-color);
+}
+.status-indicator {
+  font-size: 0.8em;
+  color: var(--subtle-text-color);
+  white-space: nowrap;
+}
+#api-status-indicator {
+  font-weight: bold;
+}
+#api-status-indicator.loaded {
+  color: var(--candle-up);
+}
+#api-status-indicator.error {
+  color: var(--candle-down);
+}
+#api-status-indicator.loading {
+  font-style: italic;
+}
+
+/* --- Content Area --- */
+.content-area {
+  flex-grow: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* --- Chart Pane (Reverted to simple flex container) --- */
+.chart-pane {
+  flex-grow: 1;
+  flex-shrink: 1;
+  overflow: hidden;
+  position: relative;
+  min-height: var(--min-pane-height);
+  display: flex; /* Ensure chart-container fills it */
+  /* Removed flex-direction */
+  background-color: var(--card-bg);
+}
+
+/* Main Candlestick Chart Container */
+.chart-container {
+  width: 100%;
+  flex-grow: 1;
+  background-color: var(--card-bg);
+  border: none;
+  padding: 10px 55px 40px 10px;
+  box-sizing: border-box;
+  position: relative;
+  overflow: hidden;
+  cursor: grab;
+  user-select: none;
+  display: flex;
+  /* Removed min-height */
+}
+.chart-container.panning {
+  cursor: grabbing;
+}
+.chart-wrapper {
+  width: 100%;
+  height: 100%;
+  position: relative;
+}
+.chart-area {
+  width: 100%;
+  height: 100%;
+  position: absolute;
+  top: 0;
+  left: 0;
+  cursor: default;
+  overflow: hidden;
+}
+.grid-container {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 0;
+}
+.grid-line {
+  position: absolute;
+  background-color: var(--grid-color);
+  transition: background-color 0.3s ease;
+}
+.grid-line.horizontal {
+  width: 100%;
+  height: 1px;
+  left: 0;
+}
+.y-axis-labels,
+.x-axis-labels {
+  position: absolute;
+  font-size: 11px;
+  color: var(--subtle-text-color);
+  z-index: 10;
+  overflow: hidden;
+  background-color: var(--card-bg);
+  transition: background-color 0.3s ease, border-color 0.3s ease,
+    color 0.3s ease;
+}
+.y-axis-labels {
+  top: 0;
+  right: -55px;
+  width: 53px;
+  height: 100%;
+  cursor: ns-resize;
+  border-left: 1px solid var(--border-color);
+  padding-left: 2px;
+}
+.x-axis-labels {
+  bottom: -40px;
+  left: 0;
+  width: 100%;
+  height: 38px;
+  cursor: ew-resize;
+  border-top: 1px solid var(--border-color);
+  padding-top: 2px;
+}
+.axis-label {
+  position: absolute;
+  padding: 1px 4px;
+  white-space: nowrap;
+  pointer-events: none;
+  border-radius: var(--border-radius-sm);
+  z-index: 11;
+}
+.y-axis-label {
+  right: 5px;
+  transform: translateY(-50%);
+  background-color: var(--axis-label-bg);
+  transition: background-color 0.3s ease;
+}
+.x-axis-label {
+  top: 2px;
+  transform: translateX(-50%);
+  color: var(--subtle-text-color);
+  background-color: transparent;
+}
+.x-axis-date-label {
+  bottom: 2px;
+  transform: translateX(-50%);
+  color: var(--text-color);
+  font-weight: 500;
+  background-color: var(--card-bg);
+  padding: 1px 6px;
+  z-index: 12;
+  border: 1px solid var(--border-color);
+  transition: background-color 0.3s ease, border-color 0.3s ease,
+    color 0.3s ease;
+}
+.day-separator-line {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  width: 1px;
+  border-left: 1px dashed var(--border-color);
+  opacity: 0.6;
+  pointer-events: none;
+  z-index: 0;
+}
+.month-separator-line {
+  border-left-style: solid;
+  opacity: 0.8;
+}
+.year-separator-line {
+  border-left-style: solid;
+  border-left-width: 2px;
+  opacity: 1;
+}
+.current-price-line {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  height: 1px;
+  background-color: var(--current-price-color);
+  opacity: 0.75;
+  pointer-events: none;
+  z-index: 15;
+  transition: top 0.1s linear;
+}
+.current-price-label {
+  position: absolute;
+  right: -55px;
+  width: 53px;
+  padding: 1px 4px;
+  font-size: 11px;
+  font-weight: 500;
+  text-align: center;
+  background-color: var(--current-price-color);
+  color: var(--current-price-text-color);
+  pointer-events: none;
+  z-index: 20;
+  border-radius: var(--border-radius-sm);
+  box-sizing: border-box;
+  transform: translateY(-50%);
+  transition: top 0.1s linear;
+  white-space: nowrap;
+}
+html[data-theme="dark"] .current-price-label {
+  color: var(--bg-color);
+}
+.crosshair-line-x {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  border-top: 1px dashed var(--subtle-text-color);
+  pointer-events: none;
+  z-index: 20;
+  opacity: 0.7;
+}
+.crosshair-label-y {
+  position: absolute;
+  right: -55px;
+  width: 53px;
+  padding: 1px 4px;
+  font-size: 11px;
+  font-weight: 500;
+  text-align: center;
+  background-color: var(--subtle-text-color);
+  color: var(--card-bg);
+  pointer-events: none;
+  z-index: 21;
+  border-radius: var(--border-radius-sm);
+  box-sizing: border-box;
+  transform: translateY(-50%);
+  white-space: nowrap;
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+.candle {
+  position: absolute;
+  box-sizing: border-box;
+  z-index: 1;
+}
+.wick {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 1px;
+  background-color: var(--candle-wick);
+}
+.body {
+  position: absolute;
+  width: 80%;
+  left: 10%;
+  box-sizing: border-box;
+  border-radius: 1px;
+}
+.color-up {
+  background-color: var(--candle-up);
+}
+.color-down {
+  background-color: var(--candle-down);
+}
+#chart-message {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: var(--subtle-text-color);
+  font-style: italic;
+  z-index: 25;
+  background-color: var(--axis-label-bg);
+  padding: 8px 15px;
+  border-radius: var(--border-radius-sm);
+  border: 1px solid var(--border-color);
+  user-select: text !important;
+  cursor: text;
+  transition: background-color 0.3s ease, border-color 0.3s ease,
+    color 0.3s ease;
+}
+.chart-tooltip {
+  position: absolute;
+  background-color: var(--axis-label-bg);
+  color: var(--text-color);
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius-md);
+  padding: 8px 12px;
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: pre;
+  pointer-events: none;
+  box-shadow: 0 2px 5px var(--shadow-color);
+  z-index: 100;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.15s ease-in-out, visibility 0s linear 0.15s;
+}
+.chart-tooltip.visible {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 0.15s ease-in-out;
+}
+.chart-tooltip .date {
+  font-weight: bold;
+  margin-bottom: 4px;
+  color: var(--text-color);
+}
+.chart-tooltip .label {
+  color: var(--subtle-text-color);
+  display: inline-block;
+  min-width: 25px;
+}
+.chart-tooltip .value {
+  font-weight: 500;
+  font-family: monospace;
+  margin-left: 5px;
+}
+
+/* Styles for volume chart container and canvas removed */
+
+/* --- Resizer Handle --- */
+.resizer {
+  flex-shrink: 0;
+  height: var(--resizer-height);
+  background-color: var(--resizer-color);
+  cursor: row-resize;
+  width: 100%;
+  transition: background-color 0.2s ease;
+  z-index: 50;
+}
+.resizer:hover {
+  background-color: var(--resizer-hover-color);
+}
+
+/* --- Bottom Pane (Tab Container) --- */
+.tab-container {
+  flex-shrink: 0;
+  overflow: hidden;
+  background-color: var(--card-bg);
+  border-top: 1px solid var(--border-color);
+  box-shadow: 0 -1px 3px var(--shadow-color);
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  min-height: var(--min-pane-height);
+  transition: background-color 0.3s ease, border-color 0.3s ease;
+}
+.tab-bar {
+  display: flex;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border-color);
+  padding: 0 10px;
+  background-color: var(--card-bg);
+  transition: background-color 0.3s ease, border-color 0.3s ease;
+}
+.tab-button {
+  padding: 8px 16px;
+  font-size: 0.9em;
+  font-weight: 500;
+  color: var(--subtle-text-color);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: color 0.2s ease, border-bottom-color 0.2s ease,
+    background-color 0.2s ease;
+  margin-bottom: -1px;
+}
+.tab-button:hover {
+  background-color: var(--tab-button-hover-bg);
+  color: var(--text-color);
+}
+.tab-button.active {
+  color: var(--switch-slider-checked);
+  border-bottom-color: var(--switch-slider-checked);
+}
+.tab-content-area {
+  flex-grow: 1;
+  overflow: hidden;
+  position: relative;
+}
+.tab-content {
+  display: none;
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  padding: 10px;
+  box-sizing: border-box;
+}
+.tab-content.active {
+  display: block;
+}
+.pane-placeholder {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  height: 100%;
+  color: var(--subtle-text-color);
+  font-style: italic;
+}
+.pane-placeholder p {
+  margin-bottom: 5px;
+}
+
+/* Prompt Tab Specific Styling */
+#prompt-content {
+  padding: 5px;
+}
+#prompt-textarea {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  resize: none;
+  background-color: var(--bg-color);
+  color: var(--text-color);
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius-sm);
+  padding: 8px;
+  font-family: inherit;
+  font-size: 0.9em;
+  line-height: 1.4;
+  outline: none;
+  transition: background-color 0.3s ease, color 0.3s ease,
+    border-color 0.3s ease;
+}
+#prompt-textarea:focus {
+  border-color: var(--switch-slider-checked);
+}
+
+/* Positions/Balance Tab Content Styling */
+#positions-content.active {
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+#positions-content .balance-content {
+  flex-grow: 1;
+  display: flex;
+  overflow: hidden;
+  height: 100%;
+}
+#positions-content .balance-list {
+  list-style: none;
+  margin: 0;
+  padding: 10px 15px;
+  overflow-y: auto;
+  flex-grow: 1;
+  font-size: 0.85em;
+}
+.balance-list li {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--grid-color);
+  transition: border-color 0.3s ease;
+}
+.balance-list li:last-child {
+  border-bottom: none;
+}
+.balance-list li span {
+  padding: 0 5px;
+  white-space: nowrap;
+}
+.balance-list li .asset-code {
+  font-weight: 600;
+  min-width: 45px;
+  flex-basis: 45px;
+  flex-shrink: 0;
+}
+.balance-list li .asset-qty {
+  text-align: right;
+  flex-grow: 1;
+  margin: 0 10px;
+  font-family: monospace;
+}
+.balance-list li .asset-value {
+  min-width: 90px;
+  flex-basis: 90px;
+  flex-shrink: 0;
+  text-align: right;
+  color: var(--subtle-text-color);
+  font-family: monospace;
+  transition: color 0.3s ease;
+}
+.balance-list li.loading,
+.balance-list li.error,
+.balance-list li.info {
+  justify-content: center;
+  color: var(--subtle-text-color);
+  font-style: italic;
+  border-bottom: none;
+  padding: 10px 0;
+}
+.balance-list li.error {
+  color: var(--candle-down);
+  font-style: normal;
+}
+#positions-content .balance-total {
+  flex-shrink: 0;
+  width: 200px;
+  padding: 10px 15px;
+  border-left: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: flex-end;
+  font-size: 0.9em;
+  transition: border-color 0.3s ease;
+  background-color: var(--card-bg);
+}
+.balance-total span:first-child {
+  color: var(--subtle-text-color);
+  margin-bottom: 5px;
+  transition: color 0.3s ease;
+}
+#total-usd-value {
+  font-size: 1.2em;
+  font-weight: 600;
+  font-family: monospace;
+}
+#total-usd-partial-notice {
+  font-size: 0.8em;
+  color: var(--subtle-text-color);
+  font-style: italic;
+  transition: color 0.3s ease;
+}
+
+/* --- Body cursor change during resize --- */
+body.resizing,
+body.resizing * {
+  cursor: row-resize !important;
+  user-select: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+}
+
+```
+--- END FILE: style.css ---
+
+
+--- START FILE: test_coinbase_sdk.py ---
+```py
+# test_coinbase_sdk.py
+
+import os
+import json
+# Import the correct SDK client
+from coinbase.rest import RESTClient
+import time
+
+# --- Configuration ---
+CREDENTIALS_FILE_NAME = "cdp_api_key.json"  # Ensure this matches your file
+CREDENTIALS_FOLDER = "credentials"
+
+# --- Load Credentials ---
+api_key_name = None
+private_key_pem = None
+credentials_loaded = False
+
+try:
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    credentials_path = os.path.join(
+        script_dir, CREDENTIALS_FOLDER, CREDENTIALS_FILE_NAME)
+    print(f"--- Loading Credentials from: {credentials_path} ---")
+
+    if not os.path.exists(credentials_path):
+        raise FileNotFoundError(f"File not found at {credentials_path}")
+
+    with open(credentials_path, 'r') as f:
+        credentials_data = json.load(f)
+
+    # Use the keys as expected by RESTClient
+    # 'name' from JSON goes to 'api_key'
+    api_key_name = credentials_data.get('name')
+    # 'privateKey' from JSON goes to 'api_secret'
+    private_key_pem = credentials_data.get('privateKey')
+
+    if not api_key_name or not private_key_pem:
+        raise ValueError("Credentials file is missing 'name' or 'privateKey'.")
+
+    print("Credentials successfully read from file.")
+    print(f"  API Key Name (used as api_key): {api_key_name}")
+    credentials_loaded = True
+
+except Exception as e:
+    print(f"!!! ERROR Loading Credentials: {e}")
+    exit(1)
+
+
+# --- Initialize SDK Client (Using coinbase-advanced-py/RESTClient) ---
+rest_client = None  # Renamed variable for clarity
+if credentials_loaded:
+    try:
+        print("\n--- Initializing coinbase.rest.RESTClient ---")
+        # Initialize using the correct Client class and arguments
+        rest_client = RESTClient(
+            api_key=api_key_name,      # 'name' from JSON
+            api_secret=private_key_pem  # PEM string from JSON
+        )
+        print("REST Client initialized successfully.")
+    except Exception as e:
+        print(f"!!! ERROR Initializing REST Client: {e}")
+        import traceback
+        traceback.print_exc()
+        rest_client = None
+else:
+    print("Skipping client initialization as credentials failed to load.")
+
+
+# --- Test API Call (List Accounts) ---
+if rest_client:
+    try:
+        print("\n--- Attempting to List Accounts (client.get_accounts) ---")
+        # Use the SDK's get_accounts method
+        accounts_data = rest_client.get_accounts()
+
+        # The documentation suggests get_accounts returns a dict directly
+        # matching the API response structure, often including an 'accounts' list
+        if isinstance(accounts_data, dict) and 'accounts' in accounts_data:
+            account_list = accounts_data.get('accounts', [])
+            print(f"SUCCESS: Fetched {len(account_list)} accounts.")
+            print("--- Accounts Data ---")
+            # Pretty print the JSON-like structure
+            print(json.dumps(accounts_data, indent=2))
+
+            # Specifically find and print USDT/USD balance if present
+            usdt_balance = "Not Found"
+            usd_balance = "Not Found"
+            for acc in account_list:
+                # Accessing values directly based on typical V3 structure
+                currency = acc.get('currency')
+                # Balances are usually nested under 'available_balance' or similar
+                # Use available for trading? Or 'balance'? Check response!
+                balance_info = acc.get('available_balance', {})
+                value = balance_info.get('value', 'N/A')
+
+                if currency == 'USDT':
+                    usdt_balance = value
+                elif currency == 'USD':
+                    usd_balance = value
+
+            print("\n--- Specific Balances ---")
+            print(f"  USD Available Balance: {usd_balance}")
+            print(f"  USDT Available Balance: {usdt_balance}")
+
+        else:
+            # If the structure is different, print the raw response
+            print("SUCCESS: Received response (Unexpected structure?):")
+            print(accounts_data)
+
+    except Exception as e:
+        print(f"\n!!! ERROR during API call (get_accounts): {e}")
+        # Check if the error object has response details (common with requests-based errors)
+        if hasattr(e, 'response') and e.response is not None:
+            try:
+                error_details = e.response.json()
+                print("--- API Error Details ---")
+                print(json.dumps(error_details, indent=2))
+                if e.response.status_code == 401:
+                    print(
+                        "!!! NOTE: 401 Unauthorized - Check API Key Permissions on CDP Portal (need View/Read for accounts) or Clock Skew.")
+            except:
+                print(
+                    f"--- API Raw Error Response Text (Status: {e.response.status_code}) ---")
+                print(e.response.text)
+        else:
+            # Print general exception info if no response details attached
+            import traceback
+            traceback.print_exc()
+
+else:
+    print("\n--- Skipping API call as REST Client was not initialized. ---")
+
+print("\n--- Test Script Finished ---")
+
+```
+--- END FILE: test_coinbase_sdk.py ---
+
+
+--- START FILE: test_manual_jwt.py ---
+```py
+# test_manual_jwt.py
+
+import os
+import json
+import http.client  # Use Python's built-in library
+import time
+import uuid
+
+# Use PyJWT for JWT creation
+import jwt
+# Cryptography for loading the key
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.serialization import load_pem_private_key
+import datetime  # Need this for JWT timestamps
+
+# --- Configuration ---
+CREDENTIALS_FILE_NAME = "cdp_api_key.json"  # Ensure this matches
+CREDENTIALS_FOLDER = "credentials"
+API_HOST = "api.coinbase.com"  # Host for http.client
+SERVICE_NAME = "retail_rest_api_proxy"  # Audience for JWT
+
+# --- Load Credentials ---
+api_key_name = None
+private_key_pem = None
+private_key_obj = None  # Store the loaded key object
+credentials_loaded = False
+
+try:
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    credentials_path = os.path.join(
+        script_dir, CREDENTIALS_FOLDER, CREDENTIALS_FILE_NAME)
+    print(f"--- Loading Credentials from: {credentials_path} ---")
+
+    if not os.path.exists(credentials_path):
+        raise FileNotFoundError(f"File not found: {credentials_path}")
+
+    with open(credentials_path, 'r') as f:
+        credentials_data = json.load(f)
+    api_key_name = credentials_data.get('name')
+    private_key_pem = credentials_data.get('privateKey')
+    if not api_key_name or not private_key_pem:
+        raise ValueError("Missing 'name' or 'privateKey'")
+
+    # Load the private key *object*
+    try:
+        private_key_obj = load_pem_private_key(
+            private_key_pem.encode('utf-8'), password=None)
+        print("Private key object loaded successfully.")
+    except Exception as key_error:
+        raise ValueError(f"Could not load key object: {key_error}")
+
+    print("Credentials successfully read.")
+    print(f"  API Key Name (kid): {api_key_name}")
+    credentials_loaded = True
+
+except Exception as e:
+    print(f"!!! ERROR Loading Credentials: {e}")
+    exit(1)
+
+
+# --- Helper Function to Generate JWT ---
+def generate_jwt_manual(method, request_path):
+    """ Generates a JWT for Coinbase Cloud API authentication (Manual Version). """
+    if not credentials_loaded or not private_key_obj:
+        print("Error: Cannot generate JWT.")
+        return None
+    try:
+        # e.g., "GET /api/v3/brokerage/accounts"
+        uri = f"{method.upper()} {request_path}"
+        payload = {
+            'sub': api_key_name, 'iss': "coinbase-cloud",
+            'nbf': datetime.datetime.now(tz=datetime.timezone.utc),
+            'exp': datetime.datetime.now(tz=datetime.timezone.utc) + datetime.timedelta(minutes=2),
+            'aud': [SERVICE_NAME], 'uri': uri
+        }
+        headers = {'alg': 'ES256', 'kid': api_key_name,
+                   'nonce': uuid.uuid4().hex}
+        token = jwt.encode(payload, private_key_obj,
+                           algorithm="ES256", headers=headers)
+        # Avoid printing full token
+        print(f"--- Generated JWT (first 10 chars): {token[:10]}... ---")
+        return token
+    except Exception as e:
+        print(f"Error generating JWT: {e}")
+        return None
+
+
+# --- Make the Authenticated API Call ---
+if credentials_loaded:
+    try:
+        method = "GET"
+        # Define the specific path WITH query parameters if needed
+        request_path_with_query = "/api/v3/brokerage/accounts"  # Start with base path
+        # Add query params like limit=1 ?
+        # query_params = "?limit=1" # Optional: Add query parameters here
+        # request_path_with_query += query_params
+
+        print(
+            f"\n--- Generating JWT for: {method} {request_path_with_query} ---")
+        auth_token = generate_jwt_manual(method, request_path_with_query)
+
+        if not auth_token:
+            raise Exception("Failed to generate JWT token.")
+
+        print(
+            f"--- Making Request: {method} https://{API_HOST}{request_path_with_query} ---")
+        conn = http.client.HTTPSConnection(API_HOST)
+
+        # Prepare headers, including the generated JWT
+        request_headers = {
+            'Authorization': f'Bearer {auth_token}',  # Use JWT as Bearer token
+            'Content-Type': 'application/json'  # Still needed even for GET
+        }
+        # Don't log token
+        print(
+            f"  Headers: {{'Authorization': 'Bearer ...', 'Content-Type': ...}}")
+
+        # Make the request (payload is empty for GET)
+        payload = ''
+        conn.request(method, request_path_with_query, payload, request_headers)
+
+        # Get and process the response
+        res = conn.getresponse()
+        status = res.status
+        reason = res.reason
+        print(f"\n--- Response Status: {status} {reason} ---")
+
+        data = res.read()
+        conn.close()  # Close the connection
+
+        print("--- Response Body (Decoded) ---")
+        response_body_str = data.decode("utf-8")
+        print(response_body_str)
+
+        # Try parsing JSON and extracting info
+        if 200 <= status < 300:
+            print("\n--- SUCCESS ---")
+            try:
+                response_json = json.loads(response_body_str)
+                # Look for USD/USDT
+                usd_balance = "Not Found"
+                usdt_balance = "Not Found"
+                for acc in response_json.get('accounts', []):
+                    currency = acc.get('currency')
+                    balance_info = acc.get('available_balance', {})
+                    value = balance_info.get('value', 'N/A')
+                    if currency == 'USD':
+                        usd_balance = value
+                    elif currency == 'USDT':
+                        usdt_balance = value
+                print(f"  USD Available: {usd_balance}")
+                print(f"  USDT Available: {usdt_balance}")
+            except json.JSONDecodeError:
+                print("  (Could not parse response body as JSON)")
+        else:
+            print("\n--- FAILED ---")
+            if status == 401:
+                print(
+                    "!!! NOTE: 401 Unauthorized - Check API Key Permissions or Clock Skew.")
+            # Further error details are already printed in the body
+
+    except Exception as e:
+        print(f"\n!!! ERROR during API call: {e}")
+        import traceback
+        traceback.print_exc()
+
+else:
+    print("\n--- Skipping API call as credentials failed to load. ---")
+
+print("\n--- Test Script Finished ---")
+
+```
+--- END FILE: test_manual_jwt.py ---
+
+
+--- END ALL OTHER PROJECT FILES ---
+
