@@ -9,6 +9,7 @@ export const MIN_PRICE_RANGE_SPAN = 0.1; // Smallest linear price diff allowed
 export const Y_AXIS_PRICE_PADDING_FACTOR = 0.05; // Linear scale padding (used for initial load, maybe keep?)
 export const Y_AXIS_LOG_PADDING_FACTOR = 0.08; // Multiplicative padding for log scale (used for initial load, maybe keep?)
 export const Y_AXIS_RESET_FILL_FACTOR = 0.85; // Target fill % of chart height on double-click reset (e.g., 85%)
+export const BALANCE_DUST_THRESHOLD_USD = 0.5; // USD value below which balances are considered "dust"
 export const Y_AXIS_DRAG_SENSITIVITY = 2.0;
 export const X_AXIS_DRAG_SENSITIVITY = 2.0;
 export const MOUSE_MOVE_THROTTLE = 16; // ~60fps

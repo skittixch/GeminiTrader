@@ -20,9 +20,8 @@ const chartState = {
   panStartMinPrice: 0,
   panStartMaxPrice: 0,
   lastDrawTime: 0,
-  lastTickerPrice: null, // Store last known ticker price
-  // Tooltip specific state (though managed within interactions.js for now)
-  // hoveredCandleIndex: null,
+  lastTickerPrice: null, // Store last known ticker price (for main chart indicator)
+  latestPrices: new Map(), // <<<--- ADDED: Map to store latest price for each asset { 'BTC': 65000.12, 'ETH': 3400.50, ... }
 };
 
 export function updateState(newState) {
@@ -31,4 +30,17 @@ export function updateState(newState) {
 export function getState() {
   return { ...chartState };
 }
+// Helper to update a single price in the map
+export function updateLatestPrice(currencyCode, price) {
+  if (
+    currencyCode &&
+    typeof currencyCode === "string" &&
+    price !== null &&
+    Number.isFinite(price)
+  ) {
+    chartState.latestPrices.set(currencyCode.toUpperCase(), price);
+    // console.log(`Updated price for ${currencyCode}: ${price}`); // Optional debug
+  }
+}
+
 export default chartState;
