@@ -2,7 +2,7 @@
 
 // --- NEW: Define Theme Background Colors ---
 export const LIGHT_MODE_BG_COLOR = "#f0f0f0"; // Default light theme background
-export const DARK_MODE_BG_COLOR = "#190f11"; // Desired dark theme background
+export const DARK_MODE_BG_COLOR = "#0f0f19"; // Desired dark theme background (Corrected typo if any)
 // --- End Theme Background Colors ---
 
 // Chart configuration constants

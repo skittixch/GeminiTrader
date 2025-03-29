@@ -3,7 +3,7 @@
   --bg-color: #f0f0f0; /* Fallback/Initial BG */
   --text-color: #333;
   --subtle-text-color: #555;
-  --card-bg: #ffffff; /* Used ONLY for dropdowns, maybe textarea */
+  --card-bg: #ffffff; /* Used for distinct elements like header, dropdowns, textarea */
   --border-color: #e0e0e0;
   --grid-color: #eeeeee;
   --axis-label-bg: rgba(
@@ -28,13 +28,17 @@
   --resizer-height: 6px;
   --min-pane-height: 100px;
   --tab-button-hover-bg: rgba(0, 0, 0, 0.05);
+  /* Volume Chart Vars */
+  --volume-bar-opacity: 0.6;
+  --sub-chart-height: 80px;
+  --sub-chart-y-axis-width: 55px;
 }
 
 html[data-theme="dark"] {
   /* --bg-color is set by JS directly on body */
   --text-color: #e0e0e0;
   --subtle-text-color: #aaaaaa;
-  --card-bg: #2a2a2a; /* Card background ONLY for dropdowns, maybe textarea */
+  --card-bg: #2a2a2a; /* Card background for specific elements */
   --border-color: #444444;
   --grid-color: #383838; /* Grid lines */
   --axis-label-bg: rgba(
@@ -61,7 +65,7 @@ body {
   overflow: hidden;
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
     Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif;
-  /* background-color is set by JavaScript */
+  /* background-color is set by JavaScript in theme.js */
   color: var(--text-color);
   transition: color 0.3s ease;
 }
@@ -89,7 +93,7 @@ body {
   flex-wrap: wrap;
   gap: 10px;
 }
-/* ... (rest of header styles remain the same, buttons still have card bg) ... */
+/* ... (rest of header styles remain the same) ... */
 .header-content {
   text-align: center;
   flex-grow: 1;
@@ -162,13 +166,13 @@ body {
 }
 .icon-button:hover {
   color: var(--text-color);
-  background-color: var(--tab-button-hover-bg); /* Use subtle hover bg */
+  background-color: var(--tab-button-hover-bg);
 }
 .dropdown-menu {
   position: absolute;
   top: calc(100% + 5px);
   right: 0;
-  background-color: var(--card-bg); /* KEEP: Dropdown is a distinct card */
+  background-color: var(--card-bg);
   border: 1px solid var(--border-color);
   border-radius: var(--border-radius-md);
   box-shadow: 0 3px 8px var(--shadow-color);
@@ -291,6 +295,7 @@ input:checked + .slider:before {
   position: relative;
   min-height: var(--min-pane-height);
   display: flex;
+  flex-direction: column;
 }
 
 /* Main Candlestick Chart Container */
@@ -305,6 +310,7 @@ input:checked + .slider:before {
   cursor: grab;
   user-select: none;
   display: flex;
+  min-height: 150px;
 }
 /* ... (rest of chart container styles) ... */
 .chart-container.panning {
@@ -352,30 +358,29 @@ input:checked + .slider:before {
   color: var(--subtle-text-color);
   z-index: 10;
   overflow: hidden;
-  background-color: transparent !important; /* Explicitly transparent! */
+  background-color: transparent; /* No background */
   border-color: var(--border-color);
   transition: border-color 0.3s ease, color 0.3s ease;
 }
-/* ... (rest of axis label area styles) ... */
 .y-axis-labels {
   top: 0;
   right: -55px;
-  width: 53px;
+  width: 55px;
   height: 100%;
   cursor: ns-resize;
-  border-left-width: 1px;
-  border-left-style: solid;
+  border-left: 1px solid var(--border-color);
   padding-left: 2px;
+  box-sizing: border-box;
 }
 .x-axis-labels {
   bottom: -40px;
   left: 0;
   width: 100%;
-  height: 38px;
+  height: 40px;
   cursor: ew-resize;
-  border-top-width: 1px;
-  border-top-style: solid;
+  border-top: 1px solid var(--border-color);
   padding-top: 2px;
+  box-sizing: border-box;
 }
 
 /* Individual Axis Labels (Text) */
@@ -391,7 +396,8 @@ input:checked + .slider:before {
   right: 5px;
   transform: translateY(-50%);
   background-color: var(--axis-label-bg);
-  transition: background-color 0.3s ease;
+  color: var(--text-color);
+  transition: background-color 0.3s ease, color 0.3s ease;
 }
 .x-axis-label {
   top: 2px;
@@ -412,7 +418,7 @@ input:checked + .slider:before {
     color 0.3s ease;
 }
 
-/* ... (rest of chart styles - separators, price line, crosshair) ... */
+/* ... (rest of chart styles) ... */
 .day-separator-line {
   position: absolute;
   top: 0;
@@ -489,8 +495,6 @@ input:checked + .slider:before {
   white-space: nowrap;
   transition: background-color 0.3s ease, color 0.3s ease;
 }
-
-/* --- Candle Styles --- */
 .candle {
   position: absolute;
   box-sizing: border-box;
@@ -500,34 +504,27 @@ input:checked + .slider:before {
   position: absolute;
   left: 50%;
   transform: translateX(-50%);
-  width: 1px; /* Color set below */
+  width: 1px;
 }
 .body {
   position: absolute;
   width: 80%;
   left: 10%;
   box-sizing: border-box;
-  border-radius: 1px; /* Color set below */
+  border-radius: 1px;
 }
-
-/* Apply color based on classes added in JS */
 .body.color-up {
   background-color: var(--candle-up);
 }
 .body.color-down {
   background-color: var(--candle-down);
 }
-
-/* --- CORRECTED Wick Coloring --- */
-/* Target wick elements that have the color class directly */
 .wick.color-up {
   background-color: var(--candle-up);
 }
 .wick.color-down {
   background-color: var(--candle-down);
 }
-/* --- End Corrected Wick Coloring --- */
-
 #chart-message {
   position: absolute;
   top: 50%;
@@ -583,6 +580,52 @@ input:checked + .slider:before {
   margin-left: 5px;
 }
 
+/* --- UNCOMMENTED: Sub-Chart (Volume) Styles --- */
+.sub-chart-container {
+  width: 100%;
+  height: var(--sub-chart-height);
+  flex-shrink: 0; /* Prevent shrinking */
+  margin-top: 5px; /* Space between main chart and volume */
+  /* Adjust padding to align canvas correctly, considering axis width */
+  padding: 0px var(--sub-chart-y-axis-width) 0px 10px;
+  box-sizing: border-box;
+  position: relative;
+  overflow: hidden;
+  border-top: 1px solid var(--border-color); /* Separator line */
+}
+
+#volume-chart-canvas {
+  display: block;
+  position: absolute;
+  top: 0;
+  left: 10px; /* Match main chart's left padding */
+  /* Calculate width based on container's padding/axis */
+  width: calc(100% - 10px - var(--sub-chart-y-axis-width));
+  height: 100%;
+}
+
+#volume-y-axis-labels {
+  position: absolute;
+  top: 0;
+  right: 0; /* Position on the far right */
+  width: calc(var(--sub-chart-y-axis-width) - 1px); /* Width minus border */
+  height: 100%;
+  font-size: 10px;
+  color: var(--subtle-text-color);
+  border-left: 1px solid var(--border-color);
+  padding-left: 2px;
+  box-sizing: border-box;
+  overflow: hidden;
+  pointer-events: none;
+  background: transparent; /* Ensure no background */
+}
+#volume-y-axis-labels .axis-label.y-axis-label {
+  background-color: var(--axis-label-bg); /* Semi-transparent for readability */
+  color: var(--text-color); /* Use main text color */
+  right: 4px;
+}
+/* --- END UNCOMMENTED --- */
+
 /* --- Resizer Handle --- */
 .resizer {
   flex-shrink: 0;
@@ -614,8 +657,8 @@ input:checked + .slider:before {
   flex-shrink: 0;
   border-bottom: 1px solid var(--border-color);
   padding: 0 10px;
-  background-color: transparent !important; /* Explicitly transparent */
-  transition: background-color 0.3s ease, border-color 0.3s ease;
+  background-color: transparent !important;
+  transition: border-color 0.3s ease;
 }
 /* ... (rest of tab styles) ... */
 .tab-button {
@@ -630,7 +673,7 @@ input:checked + .slider:before {
   transition: color 0.2s ease, border-bottom-color 0.2s ease,
     background-color 0.2s ease;
   margin-bottom: -1px;
-  border-radius: var(--border-radius-sm) var(--border-radius-sm) 0 0; /* Slightly round top corners */
+  border-radius: var(--border-radius-sm) var(--border-radius-sm) 0 0;
 }
 .tab-button:hover {
   background-color: var(--tab-button-hover-bg);
@@ -682,14 +725,14 @@ input:checked + .slider:before {
 
 /* Prompt Tab Specific Styling */
 #prompt-content {
-  padding: 5px; /* No background */
+  padding: 5px;
 }
 #prompt-textarea {
   width: 100%;
   height: 100%;
   box-sizing: border-box;
   resize: none;
-  background-color: var(--card-bg); /* KEEP: Textarea is distinct */
+  background-color: var(--card-bg);
   color: var(--text-color);
   border: 1px solid var(--border-color);
   border-radius: var(--border-radius-sm);

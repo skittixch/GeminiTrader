@@ -22,7 +22,15 @@ export const chartTooltip = document.getElementById("chart-tooltip");
 export const crosshairLineX = document.getElementById("crosshair-line-x");
 export const crosshairLabelY = document.getElementById("crosshair-label-y");
 
-// Volume/Depth elements REMOVED
+// --- UNCOMMENTED: Volume Chart Elements ---
+export const volumeChartContainer = document.getElementById(
+  "volume-chart-container"
+);
+export const volumeChartCanvas = document.getElementById("volume-chart-canvas");
+export const volumeYAxisLabels = document.getElementById(
+  "volume-y-axis-labels"
+); // Optional
+// --- END UNCOMMENTED ---
 
 // Controls (Header / Settings Menu)
 export const headerControls = document.querySelector(".header-controls");
@@ -45,7 +53,7 @@ export const apiStatusIndicator = document.getElementById(
 // Bottom Pane Tabs
 export const bottomTabBar = document.getElementById("bottom-tab-bar");
 export const positionsContent = document.getElementById("positions-content");
-export const openOrdersContent = document.getElementById("open-orders-content"); // <<< Keep this reference
+export const openOrdersContent = document.getElementById("open-orders-content");
 export const orderHistoryContent = document.getElementById(
   "order-history-content"
 );
@@ -79,7 +87,11 @@ const elementMap = {
   chartTooltip,
   crosshairLineX,
   crosshairLabelY,
-  // volumeChartContainer, volumeChartCanvas, // REMOVED
+  // --- UNCOMMENTED Volume elements ---
+  volumeChartContainer,
+  volumeChartCanvas,
+  volumeYAxisLabels,
+  // --- End Volume elements ---
   headerControls,
   granularityControls,
   settingsButton,
@@ -90,7 +102,7 @@ const elementMap = {
   apiStatusIndicator, // Other UI
   bottomTabBar,
   positionsContent,
-  openOrdersContent, // <<< Ensure this is included
+  openOrdersContent,
   orderHistoryContent,
   promptContent, // Tabs
   promptTextarea, // Prompt Input
@@ -101,7 +113,10 @@ const elementMap = {
 
 export function checkElements() {
   const missingElements = Object.entries(elementMap)
-    .filter(([name, el]) => !el)
+    .filter(([name, el]) => {
+      // Check if the element variable itself is null/undefined
+      return !el;
+    })
     .map(([name]) => name);
 
   if (missingElements.length > 0) {

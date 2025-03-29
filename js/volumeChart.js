@@ -1,6 +1,6 @@
 // js/volumeChart.js
 import * as dom from "./domElements.js";
-import state from "./state.js"; // Need state for visible range and data
+// No need to import state directly if passed into drawVolumeChart
 
 let ctx = null;
 let canvasWidth = 0;
@@ -11,7 +11,7 @@ let canvasHeight = 0;
  */
 export function initializeVolumeChart() {
   if (!dom.volumeChartCanvas) {
-    console.error("Volume chart canvas not found.");
+    console.error("Volume chart canvas not found. Cannot initialize.");
     return;
   }
   ctx = dom.volumeChartCanvas.getContext("2d");
@@ -26,26 +26,26 @@ export function initializeVolumeChart() {
  * Draws the volume bars based on the main chart's visible data.
  *
  * @param {object} mainChartState - The main chart's state (including fullData, visibleStartIndex, visibleEndIndex).
- * @param {number} mainChartWidth - The width of the main chart drawing area (needed for alignment).
+ * @param {number} mainDrawingAreaWidth - The width of the main chart's drawing area (needed for alignment).
  */
-export function drawVolumeChart(mainChartState, mainChartWidth) {
+export function drawVolumeChart(mainChartState, mainDrawingAreaWidth) {
   // Ensure context and canvas element exist before proceeding
-  if (!ctx || !dom.volumeChartCanvas) {
-    console.warn(
-      "Volume chart draw skipped: Context or Canvas element missing."
-    );
+  if (!ctx || !dom.volumeChartCanvas || !dom.volumeChartContainer) {
+    // console.warn("Volume chart draw skipped: Context or Canvas element missing."); // Less noise
     return;
   }
 
-  canvasWidth = dom.volumeChartCanvas.offsetWidth;
-  canvasHeight = dom.volumeChartCanvas.offsetHeight;
+  canvasWidth =
+    dom.volumeChartContainer.offsetWidth -
+    dom.volumeChartContainer.style.paddingLeft -
+    dom.volumeChartContainer.style.paddingRight -
+    55; // Calculate usable width (consider padding/axis)
+  canvasHeight = dom.volumeChartContainer.offsetHeight; // Use container height
 
   // Ensure canvas has valid dimensions to draw on
   if (canvasWidth <= 0 || canvasHeight <= 0) {
-    // console.warn("Volume chart draw skipped: Invalid canvas dimensions."); // Optional log
-    // Ensure canvas is clear if dimensions are invalid
     if (dom.volumeChartCanvas.width > 0 || dom.volumeChartCanvas.height > 0) {
-      dom.volumeChartCanvas.width = 0; // Explicitly clear if needed
+      dom.volumeChartCanvas.width = 0;
       dom.volumeChartCanvas.height = 0;
     }
     return;
@@ -58,7 +58,6 @@ export function drawVolumeChart(mainChartState, mainChartWidth) {
   ) {
     dom.volumeChartCanvas.width = canvasWidth;
     dom.volumeChartCanvas.height = canvasHeight;
-    // console.log("Resized volume canvas:", canvasWidth, canvasHeight); // Optional log
   }
 
   // Clear the canvas for redrawing
@@ -72,16 +71,14 @@ export function drawVolumeChart(mainChartState, mainChartWidth) {
     !fullData ||
     visibleCount <= 0 ||
     fullData.length === 0 ||
-    mainChartWidth <= 0
+    mainDrawingAreaWidth <= 0
   ) {
-    // console.warn("Volume chart draw skipped: No visible data or invalid main chart width."); // Optional log
     return; // Nothing to draw
   }
 
   // --- Calculate Volume Scale ---
   let maxVisibleVolume = 0;
   for (let i = visibleStartIndex; i < visibleEndIndex; i++) {
-    // Robust check: ensure array exists, has enough elements, and volume is a number
     if (
       fullData[i] &&
       fullData[i].length > 5 &&
@@ -92,17 +89,15 @@ export function drawVolumeChart(mainChartState, mainChartWidth) {
     }
   }
 
-  // Avoid division by zero if max volume is zero or less (shouldn't be <0, but safe check)
+  // Avoid division by zero
   if (maxVisibleVolume <= 0) {
-    // console.warn("Volume chart draw skipped: Max visible volume is zero or negative."); // Optional log
     return;
   }
-
-  // Calculate scale factor AFTER confirming maxVisibleVolume > 0
-  const volumeScaleY = canvasHeight / maxVisibleVolume;
+  const volumeScaleY = canvasHeight / maxVisibleVolume; // Scale based on canvas height
 
   // --- Calculate Bar Width and Alignment ---
-  const barTotalWidth = mainChartWidth / visibleCount;
+  // Use the main chart's drawing area width for alignment calculation
+  const barTotalWidth = mainDrawingAreaWidth / visibleCount;
   const barWidthRatio = 0.7;
   const barWidth = Math.max(1, barTotalWidth * barWidthRatio);
 
@@ -111,60 +106,83 @@ export function drawVolumeChart(mainChartState, mainChartWidth) {
   const colorUp = styles.getPropertyValue("--candle-up").trim();
   const colorDown = styles.getPropertyValue("--candle-down").trim();
   const barOpacity = parseFloat(
-    styles.getPropertyValue("--volume-bar-opacity").trim() || 0.7
-  );
+    styles.getPropertyValue("--volume-bar-opacity").trim() || 0.6
+  ); // Adjusted default
 
-  // Apply opacity once if using globalAlpha
   ctx.globalAlpha = barOpacity;
 
   // --- Draw Bars ---
   for (let i = 0; i < visibleCount; i++) {
     const dataIndex = visibleStartIndex + i;
-    // Basic bounds check (already somewhat covered by loop condition)
     if (dataIndex < 0 || dataIndex >= fullData.length) continue;
 
     const candle = fullData[dataIndex];
-    // More robust check for essential data points needed for coloring and volume
+    // Need open[3], close[4], volume[5]
     if (
       !candle ||
       candle.length < 6 ||
       typeof candle[3] !== "number" ||
-      isNaN(candle[3]) || // open
+      isNaN(candle[3]) ||
       typeof candle[4] !== "number" ||
-      isNaN(candle[4]) || // close
+      isNaN(candle[4]) ||
       typeof candle[5] !== "number" ||
-      isNaN(candle[5])
+      isNaN(candle[5]) ||
+      candle[5] <= 0
     ) {
-      // volume
-      // console.warn(`Skipping volume bar at index ${dataIndex}: Invalid candle data`, candle); // Debug log
-      continue;
+      continue; // Skip invalid or zero volume candles
     }
 
     const open = candle[3];
     const close = candle[4];
     const volume = candle[5];
-
-    // Skip drawing if volume is essentially zero
-    if (volume <= 1e-9) continue;
-
-    // Calculate height, ensuring a minimum visual height of 1px
     const barHeight = Math.max(1, volume * volumeScaleY);
     const isUp = close >= open;
 
-    // Calculate X position
+    // Calculate X position based on the main chart's drawing area width
     const barCenterX = (i + 0.5) * barTotalWidth;
     const barLeft = barCenterX - barWidth / 2;
 
-    // Set fill color
     ctx.fillStyle = isUp ? colorUp : colorDown;
 
-    // Draw the rectangle
-    // Prevent drawing outside canvas bounds (Y coordinate)
-    const yPos = Math.max(0, canvasHeight - barHeight); // Ensure Y doesn't go negative
-    const drawHeight = Math.min(barHeight, canvasHeight); // Ensure height doesn't exceed canvas height
+    const yPos = Math.max(0, canvasHeight - barHeight);
+    const drawHeight = Math.min(barHeight, canvasHeight - yPos); // Prevent drawing past bottom
     ctx.fillRect(barLeft, yPos, barWidth, drawHeight);
   }
 
-  // Reset global alpha after drawing all bars
   ctx.globalAlpha = 1.0;
+
+  // Optional: Draw Y-Axis Labels for Volume (Simple Example)
+  if (dom.volumeYAxisLabels) {
+    dom.volumeYAxisLabels.innerHTML = ""; // Clear old labels
+    const maxVolFormatted = formatVolumeLabel(maxVisibleVolume);
+    const midVolFormatted = formatVolumeLabel(maxVisibleVolume / 2);
+
+    // Max Label (Top)
+    const maxLabel = document.createElement("div");
+    maxLabel.className = "axis-label y-axis-label";
+    maxLabel.style.top = "2px"; // Position near top
+    maxLabel.textContent = maxVolFormatted;
+    dom.volumeYAxisLabels.appendChild(maxLabel);
+
+    // Mid Label (Approx Middle)
+    const midLabel = document.createElement("div");
+    midLabel.className = "axis-label y-axis-label";
+    midLabel.style.top = `${(canvasHeight / 2).toFixed(0)}px`;
+    midLabel.style.transform = "translateY(-50%)"; // Center vertically
+    midLabel.textContent = midVolFormatted;
+    dom.volumeYAxisLabels.appendChild(midLabel);
+
+    // Zero label is implicitly at the bottom
+  }
+}
+
+// Helper to format volume labels nicely (e.g., 1.23M, 543K)
+function formatVolumeLabel(volume) {
+  if (volume >= 1e6) {
+    return (volume / 1e6).toFixed(2) + "M";
+  } else if (volume >= 1e3) {
+    return (volume / 1e3).toFixed(1) + "K";
+  } else {
+    return volume.toFixed(0); // Show whole numbers for small volumes
+  }
 }
