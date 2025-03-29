@@ -1,5 +1,10 @@
 // js/config.js
 
+// --- NEW: Define Theme Background Colors ---
+export const LIGHT_MODE_BG_COLOR = "#f0f0f0"; // Default light theme background
+export const DARK_MODE_BG_COLOR = "#190f11"; // Desired dark theme background
+// --- End Theme Background Colors ---
+
 // Chart configuration constants
 export const ZOOM_FACTOR_X = 0.1;
 export const ZOOM_FACTOR_Y = 0.1;

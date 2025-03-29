@@ -5,10 +5,10 @@ import state from "./state.js";
 import * as dom from "./domElements.js";
 import {
   calculateNiceStep,
-  formatTimestamp,
-  formatDate,
+  formatTimestamp, // Ensure formatTimestamp is imported if used for X-axis
+  formatDate, // Ensure formatDate is imported if used for X-axis/Tooltips
   getYCoordinate,
-  MIN_LOG_VALUE, // <<<--- IMPORT HERE
+  MIN_LOG_VALUE,
 } from "./utils.js";
 // Volume/Depth chart drawing is disabled
 
@@ -57,11 +57,8 @@ function updateLivePriceIndicatorUI(price, chartHeight) {
 }
 
 // --- Helper to draw a single Y-axis tick/label ---
-// This function takes the *value* to display and uses the global state's
-// isLogScale setting (via getYCoordinate) to determine the *position*.
 function drawYTick(priceValue, chartHeight, minVisible, maxVisible) {
   // Skip drawing if price is essentially zero or negative
-  // Crucial for log scale, harmless for linear.
   if (priceValue <= MIN_LOG_VALUE) return;
 
   // Get position using the scale-aware function
@@ -69,7 +66,6 @@ function drawYTick(priceValue, chartHeight, minVisible, maxVisible) {
 
   // Only draw if y is a valid number
   if (y === null || !Number.isFinite(y)) {
-    // console.warn("Skipped drawing Y grid/label for price:", priceValue, "due to invalid Y:", y);
     return;
   }
 
@@ -133,7 +129,7 @@ export function redrawChart() {
   const {
     minVisiblePrice,
     maxVisiblePrice,
-    isLogScale, // We still need this for positioning via getYCoordinate
+    isLogScale,
     visibleStartIndex,
     visibleEndIndex,
   } = state;
@@ -146,7 +142,7 @@ export function redrawChart() {
     !Number.isFinite(minVisiblePrice) ||
     !Number.isFinite(maxVisiblePrice) ||
     maxVisiblePrice <= minVisiblePrice ||
-    (isLogScale && minVisiblePrice <= 0) // Log scale requires positive min price
+    (isLogScale && minVisiblePrice <= 0)
   ) {
     console.error("Redraw failed: Invalid price range in state!", {
       minVisiblePrice,
@@ -168,7 +164,7 @@ export function redrawChart() {
 
   // Constants for candle drawing
   const candleTotalWidth = chartWidth / visibleCount;
-  const candleBodyWidthRatio = 0.7; // Relative width of body to total candle space
+  const candleBodyWidthRatio = 0.7;
   const candleWidth = Math.max(1, candleTotalWidth * candleBodyWidthRatio);
   const candleMargin = Math.max(0.5, (candleTotalWidth - candleWidth) / 2);
 
@@ -176,13 +172,11 @@ export function redrawChart() {
   try {
     const yTickDensity = Math.max(3, Math.round(chartHeight / 40));
     let iterationCount = 0;
-
-    // --- Calculate Tick Values using LINEAR logic REGARDLESS of scale type ---
     const linearRange = maxVisiblePrice - minVisiblePrice;
     const linearTicks =
       linearRange > 0 && Number.isFinite(linearRange)
         ? calculateNiceStep(linearRange, yTickDensity)
-        : 1; // Fallback step
+        : 1;
 
     if (!linearTicks || linearTicks <= 0 || !Number.isFinite(linearTicks)) {
       console.error(
@@ -191,74 +185,56 @@ export function redrawChart() {
       );
     } else {
       let firstLinearTick;
-      // Find the first linear tick >= minVisiblePrice
       if (minVisiblePrice >= 0) {
         firstLinearTick =
           linearTicks > 0
             ? Math.ceil(minVisiblePrice / linearTicks) * linearTicks
             : minVisiblePrice;
       } else {
-        // Handle negative minVisiblePrice (though unlikely for price charts)
         firstLinearTick =
           linearTicks > 0
             ? Math.floor(minVisiblePrice / linearTicks) * linearTicks
             : minVisiblePrice;
       }
-      // Adjust if the first tick is too far above minVisiblePrice
       if (
         linearTicks > 0 &&
         firstLinearTick - minVisiblePrice > linearTicks * 0.99
       ) {
         firstLinearTick -= linearTicks;
       }
-      // Ensure first tick isn't below zero if min price is positive
       if (minVisiblePrice > 0 && firstLinearTick < 0) {
         firstLinearTick = 0;
       }
 
-      const loopUpperBound = maxVisiblePrice + linearTicks * 0.1; // Loop slightly beyond max
-
-      // --- Loop using LINEAR price increments ---
+      const loopUpperBound = maxVisiblePrice + linearTicks * 0.1;
       for (
         let currentPrice = firstLinearTick;
         currentPrice <= loopUpperBound &&
         iterationCount < Y_AXIS_MAX_ITERATIONS;
         currentPrice =
-          linearTicks > 0 ? currentPrice + linearTicks : loopUpperBound + 1 // Add linear step, break if step invalid
+          linearTicks > 0 ? currentPrice + linearTicks : loopUpperBound + 1
       ) {
         iterationCount++;
-
-        // --- Draw Tick using the scale-aware helper function ---
-        // The drawYTick function will use getYCoordinate which checks
-        // state.isLogScale to determine the CORRECT POSITION.
-        // The value displayed will be `currentPrice`.
         drawYTick(currentPrice, chartHeight, minVisiblePrice, maxVisiblePrice);
-
-        // Safety break if price isn't increasing
         if (
           linearTicks > Number.EPSILON &&
           currentPrice + linearTicks <= currentPrice
         ) {
-          console.warn("Y-Axis loop safety break: Price not increasing.", {
-            currentPrice,
-            linearTicks,
-          });
+          console.warn("Y-Axis loop safety break: Price not increasing.");
           break;
         }
-      } // End for loop
-
+      }
       if (iterationCount >= Y_AXIS_MAX_ITERATIONS) {
         console.warn("Y-Axis drawing loop hit max iteration limit.");
       }
-    } // End else (valid linearTicks)
+    }
   } catch (e) {
     console.error("Error drawing Y grid/axis:", e);
   }
 
-  // --- Draw X-Axis & Separators --- (No changes needed here)
+  // --- Draw X-Axis & Separators ---
   try {
     const xTickDensity = Math.max(3, Math.round(chartWidth / 70));
-    // Ensure visibleCount is positive for step calculation
     const xTicks =
       visibleCount > 0
         ? Math.max(1, calculateNiceStep(visibleCount, xTickDensity))
@@ -271,26 +247,23 @@ export function redrawChart() {
 
       const candleData = state.fullData[dataIndex];
       if (!candleData || candleData.length < 1 || isNaN(candleData[0]))
-        continue; // Check timestamp
+        continue;
       const timestamp = candleData[0];
 
       // Decide if this index should have a label
       const isFirst = i === 0;
       const isLast = i === visibleCount - 1;
-      // Simple modulo check for ticks (ensure xTicks is positive)
       const isTick = xTicks > 0 && (i + Math.floor(xTicks / 2)) % xTicks === 0;
 
       if (isFirst || isLast || isTick) {
         const x = (i + 0.5) * candleTotalWidth; // Center label on candle
-
-        // Prevent labels overlapping too much
         if (x - lastLabelX > MIN_PIXELS_PER_LABEL || isFirst || isLast) {
-          // Only draw if within reasonable bounds of the chart width
           if (x >= -candleTotalWidth && x <= chartWidth + candleTotalWidth) {
             const xLabel = document.createElement("div");
             xLabel.className = "axis-label x-axis-label";
             xLabel.style.left = `${x.toFixed(1)}px`;
-            xLabel.textContent = formatTimestamp(timestamp); // Use state-aware formatter
+            // Use formatTimestamp which now handles numbers (Unix seconds)
+            xLabel.textContent = formatTimestamp(timestamp);
             dom.xAxisLabelsContainer.appendChild(xLabel);
             lastLabelX = x;
           }
@@ -301,7 +274,7 @@ export function redrawChart() {
     console.error("Error drawing X grid/axis:", e);
   }
 
-  // --- Draw Candles --- (No changes needed here)
+  // --- Draw Candles ---
   try {
     const fragment = document.createDocumentFragment(); // Use fragment for performance
 
@@ -310,26 +283,25 @@ export function redrawChart() {
       if (dataIndex < 0 || dataIndex >= state.fullData.length) continue;
 
       const candle = state.fullData[dataIndex];
-      // Ensure candle data is valid (time, low, high, open, close)
+      // Ensure candle data is valid (time[0], low[1], high[2], open[3], close[4])
       if (
         !candle ||
         candle.length < 5 ||
         candle.slice(0, 5).some((v) => isNaN(v) || !Number.isFinite(v))
       ) {
-        // console.warn(`Skipping candle at index ${dataIndex}: Invalid data`, candle);
         continue;
       }
 
       const [timestamp, low, high, open, close] = candle;
+      const isUp = close >= open; // Determine direction
 
-      // Calculate Y coordinates using the robust utility function
-      // getYCoordinate internally handles log/linear based on state.isLogScale
+      // Calculate Y coordinates
       const wickHighY = getYCoordinate(high, chartHeight);
       const wickLowY = getYCoordinate(low, chartHeight);
       const bodyOpenY = getYCoordinate(open, chartHeight);
       const bodyCloseY = getYCoordinate(close, chartHeight);
 
-      // *** CRITICAL CHECK: Ensure all coordinates are valid finite numbers ***
+      // Skip candle if any coordinate is invalid
       if (
         wickHighY === null ||
         !Number.isFinite(wickHighY) ||
@@ -340,44 +312,46 @@ export function redrawChart() {
         bodyCloseY === null ||
         !Number.isFinite(bodyCloseY)
       ) {
-        // console.warn(`Skipping candle index ${dataIndex}: Invalid Y coordinate calculated.`);
-        // console.warn({wickHighY, wickLowY, bodyOpenY, bodyCloseY});
-        continue; // Skip this candle entirely if any coordinate is invalid
+        continue;
       }
 
       const bodyTopY = Math.min(bodyOpenY, bodyCloseY);
       const bodyBottomY = Math.max(bodyOpenY, bodyCloseY);
-
-      // Calculate heights, ensuring minimum of 1px if coordinates are valid
-      // Also check that wickLowY >= wickHighY and bodyBottomY >= bodyTopY
       const wickHeight = Math.max(1, wickLowY - wickHighY);
       const bodyHeight = Math.max(1, bodyBottomY - bodyTopY);
 
-      const isUp = close >= open;
-
       // Create candle elements
       const candleElement = document.createElement("div");
-      candleElement.className = "candle";
+      candleElement.className = "candle"; // No color class on main container
       candleElement.style.width = `${candleWidth.toFixed(1)}px`;
-      // Position based on the center of the candle slot
       const candleLeft = i * candleTotalWidth + candleMargin;
       candleElement.style.left = `${candleLeft.toFixed(1)}px`;
 
-      // Wick Element (only draw if height is valid)
+      // Wick Element (Add color class here)
+      let wickElement = null;
       if (wickHeight >= 1 && wickLowY >= wickHighY) {
-        const wickElement = document.createElement("div");
-        wickElement.className = "wick";
+        wickElement = document.createElement("div");
+        // <<< ADD COLOR CLASS TO WICK >>>
+        wickElement.className = `wick ${isUp ? "color-up" : "color-down"}`;
         wickElement.style.top = `${wickHighY.toFixed(1)}px`;
         wickElement.style.height = `${wickHeight.toFixed(1)}px`;
-        candleElement.appendChild(wickElement);
+        // Don't append yet, append based on DOM order preference (Wick first usually)
       }
 
-      // Body Element (only draw if height is valid)
+      // Body Element
+      let bodyElement = null;
       if (bodyHeight >= 1 && bodyBottomY >= bodyTopY) {
-        const bodyElement = document.createElement("div");
+        bodyElement = document.createElement("div");
         bodyElement.className = `body ${isUp ? "color-up" : "color-down"}`;
         bodyElement.style.top = `${bodyTopY.toFixed(1)}px`;
         bodyElement.style.height = `${bodyHeight.toFixed(1)}px`;
+      }
+
+      // Append wick first, then body (typical candle look)
+      if (wickElement) {
+        candleElement.appendChild(wickElement);
+      }
+      if (bodyElement) {
         candleElement.appendChild(bodyElement);
       }
 
@@ -392,9 +366,8 @@ export function redrawChart() {
     console.error("Error drawing candles:", e);
   }
 
-  // --- Update Live Price Indicator --- (No changes needed here)
+  // --- Update Live Price Indicator ---
   let priceForIndicator = state.lastTickerPrice;
-  // Fallback to last candle's close if ticker price isn't available
   if (
     (priceForIndicator === null || !Number.isFinite(priceForIndicator)) &&
     state.fullData.length > 0
@@ -405,15 +378,13 @@ export function redrawChart() {
       lastCandle.length >= 5 &&
       Number.isFinite(lastCandle[4])
     ) {
-      priceForIndicator = lastCandle[4]; // Use close price
+      priceForIndicator = lastCandle[4];
     }
   }
 
-  // Check again if price is valid before updating UI
   if (priceForIndicator !== null && Number.isFinite(priceForIndicator)) {
     updateLivePriceIndicatorUI(priceForIndicator, chartHeight);
   } else {
-    // Ensure it's hidden if no valid price
     if (dom.currentPriceLabel) dom.currentPriceLabel.style.display = "none";
     if (dom.currentPriceLine) dom.currentPriceLine.style.display = "none";
   }

@@ -1,18 +1,22 @@
 /* --- General Setup & CSS Variables --- */
 :root {
-  --bg-color: #f0f0f0;
+  --bg-color: #f0f0f0; /* Fallback/Initial BG */
   --text-color: #333;
   --subtle-text-color: #555;
-  --card-bg: #ffffff;
+  --card-bg: #ffffff; /* Used ONLY for dropdowns, maybe textarea */
   --border-color: #e0e0e0;
   --grid-color: #eeeeee;
-  --axis-label-bg: rgba(255, 255, 255, 0.85);
+  --axis-label-bg: rgba(
+    255,
+    255,
+    255,
+    0.85
+  ); /* Semi-transparent for text readability */
   --switch-bg: #ccc;
   --switch-slider: #fff;
-  --switch-slider-checked: #26a69a; /* Active tab color */
+  --switch-slider-checked: #26a69a;
   --candle-up: #26a69a;
   --candle-down: #ef5350;
-  --candle-wick: #555;
   --shadow-color: rgba(0, 0, 0, 0.05);
   --border-radius-sm: 4px;
   --border-radius-md: 6px;
@@ -24,28 +28,29 @@
   --resizer-height: 6px;
   --min-pane-height: 100px;
   --tab-button-hover-bg: rgba(0, 0, 0, 0.05);
-  /* Volume/Depth variables removed */
 }
 
 html[data-theme="dark"] {
-  --bg-color: #1e1e1e;
+  /* --bg-color is set by JS directly on body */
   --text-color: #e0e0e0;
   --subtle-text-color: #aaaaaa;
-  --card-bg: #2a2a2a;
+  --card-bg: #2a2a2a; /* Card background ONLY for dropdowns, maybe textarea */
   --border-color: #444444;
-  --grid-color: #383838;
-  --axis-label-bg: rgba(42, 42, 42, 0.85);
+  --grid-color: #383838; /* Grid lines */
+  --axis-label-bg: rgba(
+    42,
+    42,
+    42,
+    0.85
+  ); /* Semi-transparent for text readability */
   --switch-bg: #555;
   --switch-slider: #ccc;
-  /* --switch-slider-checked remains teal */
-  --candle-wick: #bbbbbb;
-  --shadow-color: rgba(0, 0, 0, 0.2);
+  --shadow-color: rgba(0, 0, 0, 0.4); /* Darker shadow on dark bg */
   --current-price-color: #448aff;
-  --current-price-text-color: #1e1e1e;
+  --current-price-text-color: #ffffff;
   --resizer-color: #444444;
   --resizer-hover-color: #666666;
   --tab-button-hover-bg: rgba(255, 255, 255, 0.08);
-  /* Volume/Depth variables removed */
 }
 
 /* --- Core Layout --- */
@@ -56,15 +61,16 @@ body {
   overflow: hidden;
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
     Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif;
-  background-color: var(--bg-color);
+  /* background-color is set by JavaScript */
   color: var(--text-color);
-  transition: background-color 0.3s ease, color 0.3s ease;
+  transition: color 0.3s ease;
 }
 .main-layout {
   display: flex;
   flex-direction: column;
   height: 100%;
   width: 100%;
+  /* No background */
 }
 
 /* --- Header Area --- */
@@ -72,7 +78,7 @@ body {
   flex-shrink: 0;
   padding: 5px 15px;
   border-bottom: 1px solid var(--border-color);
-  background-color: var(--card-bg);
+  background-color: transparent !important; /* Explicitly transparent */
   position: relative;
   z-index: 110;
   box-shadow: 0 1px 3px var(--shadow-color);
@@ -83,6 +89,7 @@ body {
   flex-wrap: wrap;
   gap: 10px;
 }
+/* ... (rest of header styles remain the same, buttons still have card bg) ... */
 .header-content {
   text-align: center;
   flex-grow: 1;
@@ -135,12 +142,10 @@ body {
 }
 .granularity-controls button.active {
   background-color: var(--switch-slider-checked);
-  color: var(--card-bg);
+  color: #ffffff;
   border-color: var(--switch-slider-checked);
   font-weight: 500;
 }
-
-/* --- Settings Button & Dropdown --- */
 .settings-group {
   position: relative;
 }
@@ -157,13 +162,13 @@ body {
 }
 .icon-button:hover {
   color: var(--text-color);
-  background-color: var(--grid-color);
+  background-color: var(--tab-button-hover-bg); /* Use subtle hover bg */
 }
 .dropdown-menu {
   position: absolute;
   top: calc(100% + 5px);
   right: 0;
-  background-color: var(--card-bg);
+  background-color: var(--card-bg); /* KEEP: Dropdown is a distinct card */
   border: 1px solid var(--border-color);
   border-radius: var(--border-radius-md);
   box-shadow: 0 3px 8px var(--shadow-color);
@@ -278,23 +283,20 @@ input:checked + .slider:before {
   overflow: hidden;
 }
 
-/* --- Chart Pane (Reverted to simple flex container) --- */
+/* --- Chart Pane --- */
 .chart-pane {
   flex-grow: 1;
   flex-shrink: 1;
   overflow: hidden;
   position: relative;
   min-height: var(--min-pane-height);
-  display: flex; /* Ensure chart-container fills it */
-  /* Removed flex-direction */
-  background-color: var(--card-bg);
+  display: flex;
 }
 
 /* Main Candlestick Chart Container */
 .chart-container {
   width: 100%;
   flex-grow: 1;
-  background-color: var(--card-bg);
   border: none;
   padding: 10px 55px 40px 10px;
   box-sizing: border-box;
@@ -303,8 +305,8 @@ input:checked + .slider:before {
   cursor: grab;
   user-select: none;
   display: flex;
-  /* Removed min-height */
 }
+/* ... (rest of chart container styles) ... */
 .chart-container.panning {
   cursor: grabbing;
 }
@@ -341,6 +343,8 @@ input:checked + .slider:before {
   height: 1px;
   left: 0;
 }
+
+/* --- Axis Label Areas --- */
 .y-axis-labels,
 .x-axis-labels {
   position: absolute;
@@ -348,17 +352,19 @@ input:checked + .slider:before {
   color: var(--subtle-text-color);
   z-index: 10;
   overflow: hidden;
-  background-color: var(--card-bg);
-  transition: background-color 0.3s ease, border-color 0.3s ease,
-    color 0.3s ease;
+  background-color: transparent !important; /* Explicitly transparent! */
+  border-color: var(--border-color);
+  transition: border-color 0.3s ease, color 0.3s ease;
 }
+/* ... (rest of axis label area styles) ... */
 .y-axis-labels {
   top: 0;
   right: -55px;
   width: 53px;
   height: 100%;
   cursor: ns-resize;
-  border-left: 1px solid var(--border-color);
+  border-left-width: 1px;
+  border-left-style: solid;
   padding-left: 2px;
 }
 .x-axis-labels {
@@ -367,9 +373,12 @@ input:checked + .slider:before {
   width: 100%;
   height: 38px;
   cursor: ew-resize;
-  border-top: 1px solid var(--border-color);
+  border-top-width: 1px;
+  border-top-style: solid;
   padding-top: 2px;
 }
+
+/* Individual Axis Labels (Text) */
 .axis-label {
   position: absolute;
   padding: 1px 4px;
@@ -395,13 +404,15 @@ input:checked + .slider:before {
   transform: translateX(-50%);
   color: var(--text-color);
   font-weight: 500;
-  background-color: var(--card-bg);
+  background-color: var(--axis-label-bg);
   padding: 1px 6px;
   z-index: 12;
   border: 1px solid var(--border-color);
   transition: background-color 0.3s ease, border-color 0.3s ease,
     color 0.3s ease;
 }
+
+/* ... (rest of chart styles - separators, price line, crosshair) ... */
 .day-separator-line {
   position: absolute;
   top: 0;
@@ -450,9 +461,6 @@ input:checked + .slider:before {
   transition: top 0.1s linear;
   white-space: nowrap;
 }
-html[data-theme="dark"] .current-price-label {
-  color: var(--bg-color);
-}
 .crosshair-line-x {
   position: absolute;
   left: 0;
@@ -472,7 +480,7 @@ html[data-theme="dark"] .current-price-label {
   font-weight: 500;
   text-align: center;
   background-color: var(--subtle-text-color);
-  color: var(--card-bg);
+  color: var(--bg-color, #0f0f19);
   pointer-events: none;
   z-index: 21;
   border-radius: var(--border-radius-sm);
@@ -481,6 +489,8 @@ html[data-theme="dark"] .current-price-label {
   white-space: nowrap;
   transition: background-color 0.3s ease, color 0.3s ease;
 }
+
+/* --- Candle Styles --- */
 .candle {
   position: absolute;
   box-sizing: border-box;
@@ -490,22 +500,34 @@ html[data-theme="dark"] .current-price-label {
   position: absolute;
   left: 50%;
   transform: translateX(-50%);
-  width: 1px;
-  background-color: var(--candle-wick);
+  width: 1px; /* Color set below */
 }
 .body {
   position: absolute;
   width: 80%;
   left: 10%;
   box-sizing: border-box;
-  border-radius: 1px;
+  border-radius: 1px; /* Color set below */
 }
-.color-up {
+
+/* Apply color based on classes added in JS */
+.body.color-up {
   background-color: var(--candle-up);
 }
-.color-down {
+.body.color-down {
   background-color: var(--candle-down);
 }
+
+/* --- CORRECTED Wick Coloring --- */
+/* Target wick elements that have the color class directly */
+.wick.color-up {
+  background-color: var(--candle-up);
+}
+.wick.color-down {
+  background-color: var(--candle-down);
+}
+/* --- End Corrected Wick Coloring --- */
+
 #chart-message {
   position: absolute;
   top: 50%;
@@ -561,8 +583,6 @@ html[data-theme="dark"] .current-price-label {
   margin-left: 5px;
 }
 
-/* Styles for volume chart container and canvas removed */
-
 /* --- Resizer Handle --- */
 .resizer {
   flex-shrink: 0;
@@ -581,23 +601,23 @@ html[data-theme="dark"] .current-price-label {
 .tab-container {
   flex-shrink: 0;
   overflow: hidden;
-  background-color: var(--card-bg);
   border-top: 1px solid var(--border-color);
   box-shadow: 0 -1px 3px var(--shadow-color);
   z-index: 40;
   display: flex;
   flex-direction: column;
   min-height: var(--min-pane-height);
-  transition: background-color 0.3s ease, border-color 0.3s ease;
+  transition: border-color 0.3s ease;
 }
 .tab-bar {
   display: flex;
   flex-shrink: 0;
   border-bottom: 1px solid var(--border-color);
   padding: 0 10px;
-  background-color: var(--card-bg);
+  background-color: transparent !important; /* Explicitly transparent */
   transition: background-color 0.3s ease, border-color 0.3s ease;
 }
+/* ... (rest of tab styles) ... */
 .tab-button {
   padding: 8px 16px;
   font-size: 0.9em;
@@ -610,6 +630,7 @@ html[data-theme="dark"] .current-price-label {
   transition: color 0.2s ease, border-bottom-color 0.2s ease,
     background-color 0.2s ease;
   margin-bottom: -1px;
+  border-radius: var(--border-radius-sm) var(--border-radius-sm) 0 0; /* Slightly round top corners */
 }
 .tab-button:hover {
   background-color: var(--tab-button-hover-bg);
@@ -618,18 +639,18 @@ html[data-theme="dark"] .current-price-label {
 .tab-button.active {
   color: var(--switch-slider-checked);
   border-bottom-color: var(--switch-slider-checked);
+  background-color: transparent;
 }
 .tab-content-area {
   flex-grow: 1;
   overflow: hidden;
-  position: relative;
+  position: relative; /* No background */
 }
 .tab-content {
   display: none;
   width: 100%;
   height: 100%;
   overflow: auto;
-  /* Removed default padding here, apply per-tab */
   box-sizing: border-box;
 }
 .tab-content.active {
@@ -643,12 +664,11 @@ html[data-theme="dark"] .current-price-label {
   height: 100%;
   color: var(--subtle-text-color);
   font-style: italic;
-  padding: 10px; /* Add padding back to placeholders */
+  padding: 10px;
 }
 .pane-placeholder p {
   margin-bottom: 5px;
 }
-/* Error style for placeholders */
 .pane-placeholder.error {
   color: var(--candle-down);
   font-style: normal;
@@ -662,14 +682,14 @@ html[data-theme="dark"] .current-price-label {
 
 /* Prompt Tab Specific Styling */
 #prompt-content {
-  padding: 5px;
+  padding: 5px; /* No background */
 }
 #prompt-textarea {
   width: 100%;
   height: 100%;
   box-sizing: border-box;
   resize: none;
-  background-color: var(--bg-color);
+  background-color: var(--card-bg); /* KEEP: Textarea is distinct */
   color: var(--text-color);
   border: 1px solid var(--border-color);
   border-radius: var(--border-radius-sm);
@@ -764,7 +784,8 @@ html[data-theme="dark"] .current-price-label {
   align-items: flex-end;
   font-size: 0.9em;
   transition: border-color 0.3s ease;
-  background-color: var(--card-bg);
+  background-color: transparent;
+  border-color: var(--border-color);
 }
 .balance-total span:first-child {
   color: var(--subtle-text-color);
@@ -782,50 +803,35 @@ html[data-theme="dark"] .current-price-label {
   font-style: italic;
   transition: color 0.3s ease;
 }
-
-/* --- Balance Dust Category Styles --- */
 .balance-list-dust-summary {
   cursor: pointer;
-  /* font-style: italic; Removed */
   color: var(--subtle-text-color);
-  border-top: 1px dashed var(--grid-color); /* Separator above dust */
-  /* margin-top: 5px; Removed */
-  /* padding-top: 5px; Removed */
-  /* Inherit default li padding instead */
+  border-top: 1px dashed var(--grid-color);
 }
 .balance-list-dust-summary .asset-code {
-  font-size: 0.9em; /* Slightly smaller font */
+  font-size: 0.9em;
   font-weight: 500;
-  /* font-style: normal; Removed */
 }
 .balance-list-dust-summary:hover {
   color: var(--text-color);
 }
-
-/* Remove triangle indicator */
-/* .balance-list-dust-summary::before { ... } REMOVED */
-/* .balance-list.dust-visible .balance-list-dust-summary::before { ... } REMOVED */
-
 .balance-list-dust-item {
-  display: none; /* Hidden by default */
-  /* Optional: add subtle style when visible */
+  display: none;
   opacity: 0.8;
-  font-size: 0.95em; /* Slightly smaller than main items */
+  font-size: 0.95em;
 }
-/* Show dust items when parent list has the 'dust-visible' class */
-/* Ensure this selector is specific enough */
 ul#balance-list.dust-visible .balance-list-dust-item {
-  display: flex; /* Or 'block' if preferred, should match normal li */
+  display: flex;
 }
-/* Explicitly hide when class is not present (for robustness) */
 ul#balance-list:not(.dust-visible) .balance-list-dust-item {
   display: none;
 }
 
-/* --- Orders Table Styling (in #open-orders-content) --- */
+/* Orders Table Styling */
 #open-orders-content {
-  padding: 10px; /* Add padding back to this specific tab */
+  padding: 10px;
 }
+/* ... (rest of orders table styles) ... */
 .orders-table {
   width: 100%;
   border-collapse: collapse;
@@ -847,7 +853,6 @@ ul#balance-list:not(.dust-visible) .balance-list-dust-item {
 .orders-table tbody tr:hover {
   background-color: var(--tab-button-hover-bg);
 }
-/* Specific column alignments / styles */
 .orders-table td.side-buy {
   color: var(--candle-up);
   font-weight: 500;
@@ -856,16 +861,37 @@ ul#balance-list:not(.dust-visible) .balance-list-dust-item {
   color: var(--candle-down);
   font-weight: 500;
 }
-.orders-table th:nth-child(5), /* Price */
+.orders-table th:nth-child(1),
+.orders-table td:nth-child(1) {
+  min-width: 110px;
+}
+.orders-table th:nth-child(5),
 .orders-table td:nth-child(5),
-.orders-table th:nth-child(6), /* Size */
+.orders-table th:nth-child(6),
 .orders-table td:nth-child(6),
-.orders-table th:nth-child(7), /* Filled */
+.orders-table th:nth-child(7),
 .orders-table td:nth-child(7) {
   text-align: right;
 }
+.orders-table td[class^="status-"] {
+  font-style: italic;
+  color: var(--subtle-text-color);
+}
+.orders-table td.status-open {
+  color: var(--text-color);
+  font-style: normal;
+}
+.orders-table td.status-pending {
+  color: orange;
+}
+.orders-table td.status-filled {
+  color: var(--candle-up);
+}
+.orders-table td.status-cancelled {
+  text-decoration: line-through;
+}
 
-/* --- Body cursor change during resize --- */
+/* Body cursor change during resize */
 body.resizing,
 body.resizing * {
   cursor: row-resize !important;
