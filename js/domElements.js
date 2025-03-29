@@ -45,7 +45,7 @@ export const apiStatusIndicator = document.getElementById(
 // Bottom Pane Tabs
 export const bottomTabBar = document.getElementById("bottom-tab-bar");
 export const positionsContent = document.getElementById("positions-content");
-export const openOrdersContent = document.getElementById("open-orders-content");
+export const openOrdersContent = document.getElementById("open-orders-content"); // <<< Keep this reference
 export const orderHistoryContent = document.getElementById(
   "order-history-content"
 );
@@ -90,7 +90,7 @@ const elementMap = {
   apiStatusIndicator, // Other UI
   bottomTabBar,
   positionsContent,
-  openOrdersContent,
+  openOrdersContent, // <<< Ensure this is included
   orderHistoryContent,
   promptContent, // Tabs
   promptTextarea, // Prompt Input

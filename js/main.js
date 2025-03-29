@@ -16,11 +16,9 @@ import { initializeResizer } from "./layout.js";
 import { initializeSettingsMenu } from "./settingsMenu.js";
 import { initializeTabs } from "./tabs.js";
 import { initializePromptTab } from "./promptTab.js";
-import { MIN_LOG_VALUE } from "./utils.js"; // <<<--- ENSURE IMPORT IS HERE
+import { MIN_LOG_VALUE } from "./utils.js";
+// Note: orders.js doesn't need explicit import here if triggered via tabs.js
 // import { initializeVolumeChart } from './volumeChart.js'; // Import volume chart initialization <-- COMMENTED OUT
-
-// Define MIN_LOG_VALUE if not imported and needed locally
-// const localMinLogValue = 1e-9; // <<<--- REMOVE LOCAL DEFINITION
 
 // --- Status Indicator ---
 function updateApiStatusIndicator(loaded, message = null) {
@@ -284,7 +282,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   initializeTheme();
   initializeSettingsMenu();
-  initializeTabs("#bottom-tab-bar", ".tab-content-area");
+  initializeTabs("#bottom-tab-bar", ".tab-content-area"); // This now handles order loading trigger
   initializePromptTab();
   // initializeVolumeChart(); // Initialize the volume chart module <-- COMMENTED OUT
   attachInteractionListeners();

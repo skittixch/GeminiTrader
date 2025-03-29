@@ -2,7 +2,7 @@
 import state from "./state.js";
 import * as config from "./config.js"; // Import config for MIN_PRICE_RANGE_SPAN
 
-export const MIN_LOG_VALUE = 1e-9; // <<<--- ADD export HERE
+export const MIN_LOG_VALUE = 1e-9; // Ensure this is exported
 const MIN_LINEAR_RANGE_EPSILON = 1e-9; // Small value to check against zero range
 const MIN_LOG_RANGE_EPSILON = 1e-9; // Small value for log range
 
@@ -197,41 +197,77 @@ export function calculateNiceStep(range, maxTicks) {
   return Number.isFinite(niceStep) ? Math.max(niceStep, minStep) : minStep;
 }
 
-// --- Time/Date Formatting --- (remain the same)
-export function formatTimestamp(timestamp) {
+// --- Time/Date Formatting ---
+
+/**
+ * Formats a timestamp or Date object into a human-readable string.
+ * Handles both Unix timestamp (seconds) and JavaScript Date objects.
+ * @param {number|Date} timestampOrDate - Unix timestamp (seconds) or Date object.
+ * @returns {string} Formatted date/time string or "Invalid Date/Time".
+ */
+export function formatTimestamp(timestampOrDate) {
   try {
-    const date = new Date(timestamp * 1000);
+    let date;
+    // ** Check input type **
+    if (timestampOrDate instanceof Date) {
+      date = timestampOrDate; // Use Date object directly
+    } else if (
+      typeof timestampOrDate === "number" &&
+      Number.isFinite(timestampOrDate)
+    ) {
+      // Assume Unix timestamp in seconds, convert to milliseconds for Date constructor
+      date = new Date(timestampOrDate * 1000);
+    } else {
+      // Handle other invalid inputs
+      console.warn(
+        "formatTimestamp received invalid input type:",
+        typeof timestampOrDate,
+        timestampOrDate
+      );
+      throw new Error(
+        "Invalid input type: Expected number (Unix timestamp) or Date object."
+      );
+    }
+
+    // Validate the resulting Date object
+    if (isNaN(date.getTime())) {
+      console.warn(
+        "formatTimestamp resulted in an Invalid Date for input:",
+        timestampOrDate
+      );
+      throw new Error("Invalid Date object produced");
+    }
+
+    // Use Intl.DateTimeFormat
     const options = {
-      timeZone: "America/Chicago", // Consider making this configurable later
+      timeZone: "America/Chicago", // Set specific timezone
+      // Adjust format as desired (e.g., remove year, add seconds)
+      month: "numeric",
+      day: "numeric",
+      // year: 'numeric', // Optional: Add year if needed
       hour: "numeric",
       minute: "2-digit",
-      hour12: state.is12HourFormat,
+      // second: '2-digit', // Optional: Add seconds if needed
+      hour12: state.is12HourFormat, // Use state setting
     };
-    // Check for invalid date
-    if (isNaN(date.getTime())) {
-      throw new Error("Invalid timestamp resulted in Invalid Date");
-    }
     return date.toLocaleString("en-US", options);
   } catch (error) {
-    console.error("Error formatting timestamp:", error, timestamp);
-    // Provide a fallback, but indicate error
-    const fallbackDate = new Date(timestamp * 1000);
-    if (isNaN(fallbackDate.getTime())) return "??:??";
-    const h = fallbackDate.getHours().toString().padStart(2, "0");
-    const m = fallbackDate.getMinutes().toString().padStart(2, "0");
-    return `${h}:${m}?`;
+    console.error("Error formatting timestamp/date:", error, timestampOrDate);
+    return "Time Error"; // More specific fallback
   }
 }
 
 export function formatDate(timestamp) {
+  // This function primarily used for chart tooltips (assumes Unix timestamp)
   try {
-    const date = new Date(timestamp * 1000);
+    const date = new Date(timestamp * 1000); // Assumes Unix seconds
     const options = {
-      timeZone: "America/Chicago", // Consider making this configurable later
+      timeZone: "America/Chicago",
       month: "short",
       day: "numeric",
+      // Maybe add year?
+      // year: 'numeric',
     };
-    // Check for invalid date
     if (isNaN(date.getTime())) {
       throw new Error("Invalid timestamp resulted in Invalid Date");
     }
@@ -243,53 +279,82 @@ export function formatDate(timestamp) {
 }
 
 export function formatCurrency(value, currencySymbol = "$", decimals = 2) {
-  if (isNaN(value) || value === null || !Number.isFinite(value)) {
-    return `${currencySymbol}--.--`;
+  const numValue = typeof value === "string" ? parseFloat(value) : value;
+
+  if (isNaN(numValue) || numValue === null || !Number.isFinite(numValue)) {
+    // Return placeholder but maybe less visually intrusive than '--.--'
+    return `?`;
   }
   try {
-    // Ensure decimals is a non-negative integer
-    const safeDecimals = Math.max(0, Math.floor(decimals));
-    return value
+    // Determine decimals dynamically based on value, suitable for crypto prices
+    let dynamicDecimals;
+    if (numValue === 0) {
+      dynamicDecimals = decimals; // Use default for zero
+    } else if (Math.abs(numValue) < 0.0001) {
+      dynamicDecimals = 8;
+    } else if (Math.abs(numValue) < 0.1) {
+      dynamicDecimals = 6;
+    } else if (Math.abs(numValue) < 10) {
+      dynamicDecimals = 4;
+    } else if (Math.abs(numValue) < 1000) {
+      dynamicDecimals = 2;
+    } else {
+      dynamicDecimals = 2; // Default for larger numbers
+    }
+
+    // Ensure minimum decimals if explicitly passed higher than dynamic default
+    const finalDecimals = Math.max(decimals, dynamicDecimals);
+
+    // Use compact notation for very large or small numbers if desired?
+    // const notation = (Math.abs(numValue) > 1e6 || Math.abs(numValue) < 1e-3) ? 'compact' : 'standard';
+
+    return numValue
       .toLocaleString("en-US", {
         style: "currency",
-        currency: "USD", // Assuming USD for now
-        minimumFractionDigits: safeDecimals,
-        maximumFractionDigits: safeDecimals,
+        currency: "USD", // Keep this as USD for the engine
+        minimumFractionDigits: finalDecimals,
+        maximumFractionDigits: finalDecimals,
+        // notation: notation // Example if using compact notation
       })
-      .replace("USD", currencySymbol) // Replace if needed, though style: 'currency' often adds it
-      .replace(/^\$/, currencySymbol); // Ensure correct symbol if default '$' is used
+      .replace("USD", currencySymbol) // Optional: Replace code if symbol is desired
+      .replace(/^\$/, currencySymbol); // Ensure the passed symbol is used
   } catch (e) {
     console.error("Currency formatting error:", e, { value, decimals });
     // Fallback formatting
     const safeDecimals = Math.max(0, Math.floor(decimals));
-    return `${currencySymbol}${value.toFixed(safeDecimals)}`;
+    return `${currencySymbol}${numValue.toFixed(safeDecimals)}`;
   }
 }
 
 export function formatQuantity(value) {
-  if (isNaN(value) || value === null || !Number.isFinite(value)) return "--";
+  const numValue = typeof value === "string" ? parseFloat(value) : value;
 
-  const absValue = Math.abs(value);
+  if (isNaN(numValue) || numValue === null || !Number.isFinite(numValue))
+    return "--";
+
+  const absValue = Math.abs(numValue);
   let decimals;
 
-  // Determine decimals based on magnitude
-  if (absValue === 0) decimals = 2; // Show 0.00 for zero
-  else if (absValue < 0.000001) decimals = 8;
-  else if (absValue < 0.001) decimals = 6; // Adjusted breakpoint
-  else if (absValue < 1) decimals = 4;
-  else if (absValue < 1000) decimals = 3; // More precision for values > 1
-  else decimals = 2; // Standard for larger numbers
+  // Determine decimals based on magnitude, optimized for crypto quantities
+  if (absValue === 0) decimals = 2; // Show 0.00
+  else if (absValue < 0.00000001)
+    decimals = 10; // Even more precision for tiny amounts
+  else if (absValue < 0.00001) decimals = 8;
+  else if (absValue < 0.01) decimals = 6;
+  else if (absValue < 1) decimals = 5;
+  else if (absValue < 100) decimals = 4;
+  else if (absValue < 10000) decimals = 3;
+  else decimals = 2; // Standard for large quantities
 
   try {
-    // Ensure decimals is valid
-    const safeDecimals = Math.max(0, Math.floor(decimals));
-    return value.toLocaleString("en-US", {
-      minimumFractionDigits: 2, // Always show at least two for consistency
-      maximumFractionDigits: safeDecimals,
+    // Use number formatting for locale-specific separators
+    return numValue.toLocaleString("en-US", {
+      minimumFractionDigits: 2, // Show at least 2 for visual consistency
+      maximumFractionDigits: decimals,
     });
   } catch (e) {
     console.error("Quantity formatting error:", e, { value, decimals });
-    const safeDecimals = Math.max(0, Math.floor(decimals));
-    return value.toFixed(safeDecimals); // Fallback
+    // Fallback to fixed decimal places
+    return numValue.toFixed(decimals);
   }
 }

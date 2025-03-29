@@ -629,7 +629,7 @@ html[data-theme="dark"] .current-price-label {
   width: 100%;
   height: 100%;
   overflow: auto;
-  padding: 10px;
+  /* Removed default padding here, apply per-tab */
   box-sizing: border-box;
 }
 .tab-content.active {
@@ -643,9 +643,21 @@ html[data-theme="dark"] .current-price-label {
   height: 100%;
   color: var(--subtle-text-color);
   font-style: italic;
+  padding: 10px; /* Add padding back to placeholders */
 }
 .pane-placeholder p {
   margin-bottom: 5px;
+}
+/* Error style for placeholders */
+.pane-placeholder.error {
+  color: var(--candle-down);
+  font-style: normal;
+}
+.pane-placeholder.error small {
+  font-size: 0.9em;
+  margin-top: 5px;
+  max-width: 80%;
+  text-align: center;
 }
 
 /* Prompt Tab Specific Styling */
@@ -808,6 +820,49 @@ ul#balance-list.dust-visible .balance-list-dust-item {
 /* Explicitly hide when class is not present (for robustness) */
 ul#balance-list:not(.dust-visible) .balance-list-dust-item {
   display: none;
+}
+
+/* --- Orders Table Styling (in #open-orders-content) --- */
+#open-orders-content {
+  padding: 10px; /* Add padding back to this specific tab */
+}
+.orders-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85em;
+}
+.orders-table th,
+.orders-table td {
+  padding: 6px 8px;
+  text-align: left;
+  border-bottom: 1px solid var(--grid-color);
+  white-space: nowrap;
+}
+.orders-table th {
+  font-weight: 600;
+  color: var(--subtle-text-color);
+  border-bottom-width: 2px;
+  border-bottom-color: var(--border-color);
+}
+.orders-table tbody tr:hover {
+  background-color: var(--tab-button-hover-bg);
+}
+/* Specific column alignments / styles */
+.orders-table td.side-buy {
+  color: var(--candle-up);
+  font-weight: 500;
+}
+.orders-table td.side-sell {
+  color: var(--candle-down);
+  font-weight: 500;
+}
+.orders-table th:nth-child(5), /* Price */
+.orders-table td:nth-child(5),
+.orders-table th:nth-child(6), /* Size */
+.orders-table td:nth-child(6),
+.orders-table th:nth-child(7), /* Filled */
+.orders-table td:nth-child(7) {
+  text-align: right;
 }
 
 /* --- Body cursor change during resize --- */

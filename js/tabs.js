@@ -1,4 +1,5 @@
 // js/tabs.js
+import { loadAndDisplayOpenOrders } from "./orders.js"; // Import the function
 
 /**
  * Initializes tab switching functionality for a given container.
@@ -39,6 +40,11 @@ export function initializeTabs(tabBarSelector, contentAreaSelector) {
       return; // Click was not on a button
     }
 
+    // Prevent unnecessary work if clicking the already active tab
+    if (clickedButton.classList.contains("active")) {
+      return;
+    }
+
     const targetId = clickedButton.dataset.target;
     if (!targetId) {
       console.warn("Clicked tab button is missing 'data-target' attribute.");
@@ -68,9 +74,30 @@ export function initializeTabs(tabBarSelector, contentAreaSelector) {
 
     console.log(`Switched tab to: ${targetId}`);
 
-    // Optional: Trigger fetch/refresh logic when a tab becomes active
-    // Example: if (targetId === 'open-orders-content') { fetchOpenOrders(); }
+    // --- Trigger fetch/refresh logic when a tab becomes active ---
+    if (targetId === "open-orders-content") {
+      // Call the function to load and display orders for this specific tab
+      loadAndDisplayOpenOrders();
+    }
+    // Example for future:
+    // else if (targetId === 'order-history-content') {
+    //   loadAndDisplayOrderHistory();
+    // }
+    // else if (targetId === 'positions-content') {
+    // Optional: Re-fetch balances if needed, though they update via WS now
+    // initializeBalances(); // Or a refresh function
+    // }
   });
 
   console.log(`Tabs initialized for container: ${tabBarSelector}`);
+
+  // Optional: Load data for the initially active tab immediately?
+  const initiallyActiveButton = tabBar.querySelector(".tab-button.active");
+  if (initiallyActiveButton) {
+    const initialTargetId = initiallyActiveButton.dataset.target;
+    if (initialTargetId === "open-orders-content") {
+      // Only load if the default active tab is the orders tab
+      // loadAndDisplayOpenOrders(); // Decided against preload, load on click is fine.
+    }
+  }
 }

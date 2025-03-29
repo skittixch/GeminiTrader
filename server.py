@@ -64,9 +64,62 @@ if not credentials_loaded or not rest_client:
 app = Flask(__name__)
 CORS(app)
 
+# --- Helper Function to Safely Convert SDK Objects ---
+
+
+def sdk_object_to_dict(obj):
+    """ Converts SDK objects with to_dict() method, handles nested structures. """
+    if hasattr(obj, 'to_dict') and callable(obj.to_dict):
+        return sdk_object_to_dict(obj.to_dict())  # Recursively convert result
+    elif isinstance(obj, dict):
+        return {k: sdk_object_to_dict(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [sdk_object_to_dict(item) for item in obj]
+    else:
+        # Convert datetime or other specific types if needed, otherwise return as is
+        if isinstance(obj, datetime.datetime):
+            return obj.isoformat()  # Example: Convert datetime to ISO string
+        return obj
+
+
+# --- Handle SDK Errors Gracefully ---
+def handle_sdk_error(e, context="SDK call"):
+    """ Standard way to log and format SDK errors for JSON response. """
+    print(f"!!! ERROR during {context}: {e}")
+    error_message = f"Failed during {context}: {str(e)}"
+    status_code = 500
+    details = None
+    if hasattr(e, 'response') and e.response is not None:
+        status_code = e.response.status_code
+        try:
+            error_details = e.response.json()
+        except json.JSONDecodeError:
+            try:
+                error_details = e.response.text
+            except:
+                error_details = "(Could not get error details)"
+        print(f"--- SDK API Error Details (Status: {status_code}) ---")
+        print(error_details)
+        if isinstance(error_details, dict):
+            details = error_details.get('message', error_details)
+        else:
+            details = str(error_details)
+
+        if status_code == 401:
+            error_message = f"SDK Auth failed (401): Check Cloud Key Permissions/Clock."
+        elif status_code == 429:
+            error_message = "SDK Rate Limit Exceeded (429)."
+        elif status_code == 400:
+            error_message = f"SDK Bad Request (400)"  # Details usually helpful
+        else:
+            error_message = f"SDK API Error ({status_code})"
+    else:
+        import traceback
+        traceback.print_exc()
+    return jsonify({"error": error_message, "details": details}), status_code
+
+
 # --- API Status Endpoint ---
-
-
 @app.route('/api/status')
 def get_api_status():
     client_ready = credentials_loaded and (rest_client is not None)
@@ -99,32 +152,25 @@ def get_candles():
         candles_data = response.json()
         print(f"Coinbase returned {len(candles_data)} candles.")
         return jsonify(candles_data)
-
-    # --- CORRECTED ERROR HANDLING for /api/candles ---
     except requests.exceptions.HTTPError as err:
         print(f"HTTP error fetching candles: {err}")
-        details = f"HTTP Error {err.response.status_code}"  # Default
+        details = f"HTTP Error {err.response.status_code}"
         try:
             details_json = err.response.json()
             details = details_json.get('message', details_json)
-        except json.JSONDecodeError:
-            try:
-                details = err.response.text
-            except:
-                pass  # Ignore if text cannot be accessed
+        except:
+            pass
         return jsonify({"error": f"API error {err.response.status_code}", "details": details}), err.response.status_code
-
     except requests.exceptions.RequestException as err:
         print(f"Request error fetching candles: {err}")
         return jsonify({"error": f"Connection error: {err}"}), 502
-
     except Exception as e:
         print(f"Unexpected error fetching candles: {e}")
         return jsonify({"error": f"Server error: {e}"}), 500
-    # --- END CORRECTION ---
+
+# --- Public Ticker Endpoint ---
 
 
-# --- NEW: Public Ticker Endpoint ---
 @app.route('/api/ticker')
 def get_ticker():
     """ Fetches public ticker data for a specific product ID. """
@@ -142,25 +188,18 @@ def get_ticker():
         if price is None:
             return jsonify({"error": f"Could not find price for {product_id}"}), 404
         return jsonify({"product_id": product_id, "price": price})
-
-    # --- CORRECTED ERROR HANDLING for /api/ticker ---
     except requests.exceptions.HTTPError as err:
         status_code = err.response.status_code
         print(f"HTTP error fetching ticker for {product_id}: {err}")
         if status_code == 404:
             return jsonify({"error": f"Product ID '{product_id}' not found."}), 404
-        details = f"HTTP Error {status_code}"  # Default
+        details = f"HTTP Error {status_code}"
         try:
             details_json = err.response.json()
             details = details_json.get('message', details_json)
-        except json.JSONDecodeError:
-            try:
-                details = err.response.text
-            except:
-                pass
+        except:
+            pass
         return jsonify({"error": f"API error {status_code}", "details": details}), status_code
-    # --- END CORRECTION ---
-
     except requests.exceptions.RequestException as err:
         print(f"Request error fetching ticker for {product_id}: {err}")
         return jsonify({"error": f"Connection error: {err}"}), 502
@@ -168,12 +207,12 @@ def get_ticker():
         print(f"Unexpected error fetching ticker for {product_id}: {e}")
         return jsonify({"error": f"Server error: {e}"}), 500
 
-# --- Accounts Endpoint (Implemented with SDK) ---
+# --- Accounts Endpoint (SDK) ---
 
 
 @app.route('/api/accounts', methods=['GET'])
 def get_accounts():
-    """ Fetches account balances using coinbase-advanced-py SDK (Cloud Key Auth). """
+    """ Fetches account balances using SDK. """
     print("Received request for /api/accounts")
     if not rest_client:
         print("-> REST Client not initialized, returning 503.")
@@ -182,64 +221,98 @@ def get_accounts():
         print("Attempting client.get_accounts()...")
         sdk_response = rest_client.get_accounts()
         print(f"Successfully processed SDK response for accounts.")
-        account_list = []
-        if hasattr(sdk_response, 'accounts') and hasattr(sdk_response.accounts, '__iter__'):
-            for account_sdk_obj in sdk_response.accounts:
-                if hasattr(account_sdk_obj, 'to_dict'):
-                    account_list.append(account_sdk_obj.to_dict())
-                elif isinstance(account_sdk_obj, dict):
-                    account_list.append(account_sdk_obj)
-                else:
-                    account_list.append(repr(account_sdk_obj))
-            print(f"  -> Found {len(account_list)} accounts in response.")
-            return jsonify({"accounts": account_list})
-        else:
-            print(
-                f"Warning: Unexpected response structure from get_accounts(): {type(sdk_response)}")
-            return jsonify({"accounts": []})
 
-    # --- CORRECTED ERROR HANDLING for /api/accounts ---
+        # Convert response to dict using helper
+        response_dict = sdk_object_to_dict(sdk_response)
+
+        # Extract accounts list (assuming standard structure)
+        account_list = response_dict.get('accounts', [])
+
+        print(f"  -> Found {len(account_list)} accounts in response.")
+        return jsonify({"accounts": account_list})
+
     except Exception as e:
-        print(f"!!! ERROR during SDK call (get_accounts): {e}")
-        error_message = f"Failed to fetch accounts via SDK: {str(e)}"
-        status_code = 500
-        # Check if the exception 'e' has a 'response' attribute (like SDK/requests exceptions)
-        if hasattr(e, 'response') and e.response is not None:
-            status_code = e.response.status_code
-            # --- CORRECTED INNER TRY/EXCEPT ---
-            try:
-                error_details = e.response.json()  # Try parsing JSON first
-            except json.JSONDecodeError:
-                try:
-                    error_details = e.response.text  # Fallback to text
-                except:
-                    # Final fallback
-                    error_details = "(Could not get error details)"
-            # --- END CORRECTION ---
-            print(f"--- SDK API Error Details (Status: {status_code}) ---")
-            print(error_details)
-            if status_code == 401:
-                error_message = f"SDK Auth failed (401): Check Cloud Key Permissions/Clock."
-            elif status_code == 429:
-                error_message = "SDK Rate Limit Exceeded (429)."
-            else:
-                error_message = f"SDK API Error ({status_code})"
-        else:
-            # If it's a general Python error, print traceback
-            import traceback
-            traceback.print_exc()
-        return jsonify({"error": error_message, "accounts": []}), status_code
-    # --- END CORRECTION ---
+        return handle_sdk_error(e, context="get_accounts")
 
-# --- Orders Endpoint (Still Not Implemented) ---
+# --- NEW: Open Orders Endpoint (SDK) ---
 
 
+@app.route('/api/open_orders', methods=['GET'])
+def get_open_orders():
+    """ Fetches open orders using SDK. """
+    print("Received request for /api/open_orders")
+    if not rest_client:
+        print("-> REST Client not initialized, returning 503.")
+        return jsonify({"error": "API Client not ready on server.", "orders": []}), 503
+    try:
+        print("Attempting client.list_orders(order_status=['OPEN'])...")
+        # Fetch only OPEN orders
+        # Note: The SDK might use different parameter names/values than the raw API.
+        # Check SDK docs if `order_status=['OPEN']` doesn't work.
+        # Common alternatives: `open_orders=True` or specific statuses like PENDING, ACTIVE.
+        # Based on coinbase-advanced-py source, order_status seems correct.
+        sdk_response = rest_client.list_orders(order_status=['OPEN'])
+        print("Successfully processed SDK response for open orders.")
+
+        # Convert response to dict using helper
+        response_dict = sdk_object_to_dict(sdk_response)
+
+        # Extract orders list
+        order_list = response_dict.get('orders', [])
+
+        print(f"  -> Found {len(order_list)} open orders.")
+        return jsonify({"orders": order_list})
+
+    except Exception as e:
+        return handle_sdk_error(e, context="list_orders (open)")
+
+
+# --- Order Placement Endpoint (Not Implemented) ---
 @app.route('/api/orders', methods=['POST'])
 def place_order():
-    print("Received request for /api/orders")
+    print("Received request for POST /api/orders")
     if not rest_client:
         return jsonify({"error": "API Client not ready."}), 503
-    print("-> Actual /api/orders call using SDK not implemented. Returning 501.")
+    # --- Order Placement Logic Would Go Here ---
+    # 1. Get order details from request.json
+    #    product_id = request.json.get('product_id')
+    #    side = request.json.get('side') # 'BUY' or 'SELL'
+    #    order_type = request.json.get('type') # 'LIMIT' or 'MARKET'
+    #    size = request.json.get('size') # Base size
+    #    price = request.json.get('price') # For limit orders
+    #    client_order_id = str(uuid.uuid4()) # Generate unique ID
+    #
+    # 2. Validate input
+    #
+    # 3. Call appropriate SDK method (e.g., client.create_order)
+    #    try:
+    #        if order_type == 'LIMIT':
+    #           sdk_response = rest_client.create_order(
+    #               client_order_id=client_order_id,
+    #               product_id=product_id,
+    #               side=side,
+    #               order_configuration={ # Structure depends on SDK version
+    #                   "limit_limit_gtd": {
+    #                       "base_size": size,
+    #                       "limit_price": price,
+    #                       "post_only": False, # Example
+    #                       # "end_time": ... # For GTD
+    #                   }
+    #               }
+    #           )
+    #        elif order_type == 'MARKET':
+    #            # Market order structure might differ (quote_size or base_size)
+    #            sdk_response = rest_client.create_order(...)
+    #        else:
+    #            return jsonify({"error": "Unsupported order type"}), 400
+    #
+    #        response_dict = sdk_object_to_dict(sdk_response)
+    #        return jsonify(response_dict), 201 # Created
+    #
+    #    except Exception as e:
+    #        return handle_sdk_error(e, context="create_order")
+    #
+    print("-> Actual order placement using SDK not implemented. Returning 501.")
     return jsonify({"error": "Order placement not implemented."}), 501
 
 
