@@ -8,6 +8,7 @@ env/
 
 # Ignore the specific keyfile necessary for coinbase API access
 cdp_api_key.json
+credentials/cdp_api_key.json
 
 #These files have to do with the development process and communications with AI development helpers
 create_context.sh
