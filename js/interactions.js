@@ -27,7 +27,7 @@ function safeLog(value) {
 }
 
 // --- Tooltip Functions ---
-// ... (showTooltip, hideTooltip - no changes needed) ...
+// ... (showTooltip, hideTooltip - original versions from the start) ...
 function showTooltip(dataIndex, mouseX, mouseY) {
   if (!dom.chartTooltip || !dom.chartArea) return;
 
@@ -137,7 +137,6 @@ function hideTooltip() {
 }
 
 // --- Crosshair Update Functions ---
-// ... (updateCrosshair, hideCrosshair - no changes needed) ...
 function updateCrosshair(mouseX, mouseY, chartHeight, chartWidth) {
   if (
     !dom.crosshairLineX ||
@@ -185,7 +184,6 @@ function hideCrosshair() {
 }
 
 // --- Interaction Handlers ---
-// ... (handleMouseMoveForTooltip, handleMouseLeaveChartArea - no changes needed) ...
 function handleMouseMoveForTooltip(event) {
   if (!dom.chartArea) return;
 
@@ -296,7 +294,6 @@ function handleMouseLeaveChartArea(event) {
 }
 
 // --- Chart Interaction Handlers (Zoom, Pan, Scale, Resize, DoubleClick) ---
-// ... (handleZoom, handleMouseMove, handleMouseDownChart, etc. - no changes needed) ...
 export function handleZoom(event) {
   event.preventDefault();
   if (!dom.chartArea) return;
@@ -380,27 +377,23 @@ export function handleZoom(event) {
     newVisibleCount = Math.max(
       config.MIN_VISIBLE_CANDLES,
       // Limit zoom out to maybe 5x the total data length? Prevents excessive range.
-      Math.min(newVisibleCount, state.fullData.length * 5)
+      // *** Allow zooming out beyond available data (for future space) ***
+      // Math.min(newVisibleCount, state.fullData.length * 5) // OLD
+      newVisibleCount // NEW - No upper limit based on data length here
     );
-    // Clamp further to not exceed total data length when zooming in fully
-    newVisibleCount = Math.min(newVisibleCount, state.fullData.length);
+    // Clamp minimum visible candles
+    newVisibleCount = Math.max(config.MIN_VISIBLE_CANDLES, newVisibleCount);
 
     // Calculate new start index to keep the index under the cursor stationary
     let newStartIndex = Math.round(
       indexAtCursorFloat - (mouseX / chartWidth) * newVisibleCount
     );
 
-    // Clamp start/end indices to valid range [0, fullData.length]
+    // *** Clamp ONLY the lower bound (cannot view before index 0) ***
     newStartIndex = Math.max(0, newStartIndex);
-    let newEndIndex = newStartIndex + newVisibleCount;
 
-    // Adjust if end index exceeds data bounds
-    if (newEndIndex > state.fullData.length) {
-      newEndIndex = state.fullData.length;
-      newStartIndex = Math.max(0, newEndIndex - newVisibleCount); // Recalculate start index based on clamped end
-    }
-    // Final clamp on start index (shouldn't be needed if logic above is correct, but safe)
-    newStartIndex = Math.max(0, newStartIndex);
+    // *** End index is simply start + count (can exceed data length) ***
+    let newEndIndex = newStartIndex + newVisibleCount;
 
     newState.visibleStartIndex = newStartIndex;
     newState.visibleEndIndex = newEndIndex;
@@ -510,21 +503,22 @@ export function handleMouseMove(event) {
     );
 
     let newVisibleCount = Math.round(state.panStartVisibleCount * scaleFactor);
-    // Clamp new count: min candles, max data length * factor, max total data length
+    // Clamp new count: min candles, but no upper bound based on data length
     newVisibleCount = Math.max(config.MIN_VISIBLE_CANDLES, newVisibleCount);
-    newVisibleCount = Math.min(newVisibleCount, state.fullData.length * 5); // Limit zoom out
-    newVisibleCount = Math.min(newVisibleCount, state.fullData.length); // Cannot show more than exist
+    // newVisibleCount = Math.min(newVisibleCount, state.fullData.length * 5); // OLD Limit zoom out
+    // newVisibleCount = Math.min(newVisibleCount, state.fullData.length); // OLD Cannot show more than exist
 
     let newStartIndex = Math.round(centerIndex - newVisibleCount / 2);
 
-    // Clamp start/end indices
+    // Clamp start/end indices - ONLY clamp start index at 0
     newStartIndex = Math.max(0, newStartIndex);
     let newEndIndex = newStartIndex + newVisibleCount;
-    if (newEndIndex > state.fullData.length) {
-      newEndIndex = state.fullData.length;
-      newStartIndex = Math.max(0, newEndIndex - newVisibleCount);
-    }
-    newStartIndex = Math.max(0, newStartIndex); // Final start clamp
+    // *** REMOVED upper clamp based on fullData.length ***
+    // if (newEndIndex > state.fullData.length) {
+    //   newEndIndex = state.fullData.length;
+    //   newStartIndex = Math.max(0, newEndIndex - newVisibleCount);
+    // }
+    // newStartIndex = Math.max(0, newStartIndex); // Final start clamp
 
     // Check if indices changed
     if (
@@ -546,23 +540,28 @@ export function handleMouseMove(event) {
     let changedX = false;
     let changedY = false;
 
-    // Pan X (Time)
+    // ===>>> Pan X (Time) Modification <<<===
     if (state.panStartVisibleCount > 0) {
       const indexDelta = (deltaX / chartWidth) * state.panStartVisibleCount;
       let newStartIndex = state.panStartVisibleIndex - Math.round(indexDelta);
 
-      // Clamp panning within data bounds [0, N - visibleCount]
-      const maxStartIndex = state.fullData.length - state.panStartVisibleCount;
-      newStartIndex = Math.max(0, Math.min(newStartIndex, maxStartIndex));
+      // Clamp panning ONLY at the beginning (index 0)
+      newStartIndex = Math.max(0, newStartIndex);
+
+      // *** REMOVE the upper clamp based on data length ***
+      // const maxStartIndex = state.fullData.length - state.panStartVisibleCount;
+      // newStartIndex = Math.min(newStartIndex, maxStartIndex); // <-- REMOVED
 
       if (newStartIndex !== state.visibleStartIndex) {
         newState.visibleStartIndex = newStartIndex;
+        // Calculate end index based on the (potentially unclamped right) start index
         newState.visibleEndIndex = newStartIndex + state.panStartVisibleCount;
         changedX = true;
       }
     }
+    // ===>>> End Pan X Modification <<<===
 
-    // Pan Y (Price)
+    // Pan Y (Price) - Unchanged
     if (state.isLogScale) {
       const logMinStart = safeLog(state.panStartMinPrice);
       const logMaxStart = safeLog(state.panStartMaxPrice);
@@ -576,7 +575,6 @@ export function handleMouseMove(event) {
         const newMin = Math.max(MIN_LOG_VALUE, exp(newLogMin));
         const newMax = exp(newLogMax);
 
-        // Check for significant change
         if (
           Math.abs(newMin - state.minVisiblePrice) > 1e-9 ||
           Math.abs(newMax - state.maxVisiblePrice) > 1e-9
@@ -587,14 +585,12 @@ export function handleMouseMove(event) {
         }
       }
     } else {
-      // Linear Scale Pan Y
       const initialPriceRange = state.panStartMaxPrice - state.panStartMinPrice;
       if (initialPriceRange > 0 && Number.isFinite(initialPriceRange)) {
         const priceDelta = (deltaY / chartHeight) * initialPriceRange;
         const newMinPrice = state.panStartMinPrice + priceDelta;
         const newMaxPrice = state.panStartMaxPrice + priceDelta;
 
-        // Check for significant change
         if (
           Math.abs(newMinPrice - state.minVisiblePrice) > 1e-9 ||
           Math.abs(newMaxPrice - state.maxVisiblePrice) > 1e-9
@@ -621,13 +617,16 @@ export function handleMouseDownChart(event) {
   const target = event.target;
   if (!dom.chartArea || !dom.chartWrapper || !dom.gridContainer) return;
 
-  if (
+  // Check if target is chartArea, chartWrapper, gridContainer, or a candle/its children
+  const isChartElement =
     target === dom.chartArea ||
     target === dom.chartWrapper ||
     target === dom.gridContainer ||
-    target.classList.contains("grid-line") ||
-    target.classList.contains("candle")
-  ) {
+    target.classList.contains("grid-line") || // Direct click on grid line
+    target.classList.contains("candle") || // Direct click on candle div
+    target.closest(".candle"); // Click on wick or body inside candle div
+
+  if (isChartElement) {
     updateState({
       isPanning: true,
       isDraggingYAxis: false,
@@ -705,19 +704,24 @@ export function handleDoubleClick(event) {
   if (!chartHeight || chartHeight <= 0) return; // Need height for scaling
 
   // --- Reset X-Axis (Time) ---
+  // Reset view to show DEFAULT_RESET_CANDLE_COUNT candles ending at the *last available data point*
   const totalDataCount = state.fullData.length;
   let newVisibleCount = Math.min(
     config.DEFAULT_RESET_CANDLE_COUNT,
-    totalDataCount
+    totalDataCount // Cannot show more than we have data for on reset
   );
-  let newEndIndex = totalDataCount; // Show up to the latest candle
+  // End index is the end of available data
+  let newEndIndex = totalDataCount;
+  // Start index is calculated based on end and count, clamped at 0
   let newStartIndex = Math.max(0, newEndIndex - newVisibleCount);
-  newVisibleCount = newEndIndex - newStartIndex; // Recalculate actual count
+  // Recalculate actual count based on clamping
+  newVisibleCount = newEndIndex - newStartIndex;
 
   // --- Find Actual Data Range (Y-Axis) in the New Time Window ---
   let newMinY = Infinity,
     newMaxY = -Infinity;
   for (let i = newStartIndex; i < newEndIndex; i++) {
+    // This loop uses valid indices based on the reset calculation above
     if (!state.fullData[i] || state.fullData[i].length < 5) continue;
     const low = state.fullData[i][1];
     const high = state.fullData[i][2];
@@ -731,7 +735,7 @@ export function handleDoubleClick(event) {
 
   // Handle cases where range couldn't be determined or is invalid
   let dataRangeY;
-  const minValidRange = 1e-9; // A very small number to represent effectively zero range
+  const minValidRange = 1e-9; // A very small number
 
   if (
     newMinY === Infinity ||
@@ -748,24 +752,22 @@ export function handleDoubleClick(event) {
         ? lastCandle[4]
         : (state.minVisiblePrice + state.maxVisiblePrice) / 2 || 100;
 
-    // Use a small default span based on scale type
     if (state.isLogScale) {
-      newMinY = Math.max(MIN_LOG_VALUE, centerPrice / 1.01); // +/- 1%
+      newMinY = Math.max(MIN_LOG_VALUE, centerPrice / 1.01);
       newMaxY = centerPrice * 1.01;
     } else {
       const halfSpan = config.MIN_PRICE_RANGE_SPAN / 2 || 0.05;
       newMinY = Math.max(0, centerPrice - halfSpan);
       newMaxY = centerPrice + halfSpan;
     }
-    dataRangeY = newMaxY - newMinY; // Recalculate data range for fallback
-    if (dataRangeY < minValidRange) dataRangeY = minValidRange; // Ensure positive range
+    dataRangeY = newMaxY - newMinY;
+    if (dataRangeY < minValidRange) dataRangeY = minValidRange;
   } else {
     dataRangeY = newMaxY - newMinY;
   }
 
-  // Ensure minimums are positive for log scale calculations
   newMinY = Math.max(MIN_LOG_VALUE, newMinY);
-  newMaxY = Math.max(newMinY + minValidRange, newMaxY); // Ensure max > min
+  newMaxY = Math.max(newMinY + minValidRange, newMaxY);
 
   // --- Calculate Required Total Y-Range for Target Fill ---
   let newMinPrice, newMaxPrice;
@@ -773,14 +775,11 @@ export function handleDoubleClick(event) {
   const inverseFill = 1.0 / targetFill;
 
   if (state.isLogScale) {
-    // Log Scale Calculation
     const safeMinY = Math.max(MIN_LOG_VALUE, newMinY);
-    const safeMaxY = Math.max(safeMinY * 1.0001, newMaxY); // Ensure Max > Min slightly
-
+    const safeMaxY = Math.max(safeMinY * 1.0001, newMaxY);
     const logDataRangeY = safeLog(safeMaxY) - safeLog(safeMinY);
 
     if (!Number.isFinite(logDataRangeY) || logDataRangeY <= 0) {
-      // Fallback if log range calculation fails
       console.warn(
         "Log range calculation failed in reset, using simple padding."
       );
@@ -791,14 +790,10 @@ export function handleDoubleClick(event) {
       const logTotalRange = logDataRangeY * inverseFill;
       const logPaddingTotal = logTotalRange - logDataRangeY;
       const logPaddingAmount = logPaddingTotal / 2.0;
-
       const newLogMin = safeLog(safeMinY) - logPaddingAmount;
       const newLogMax = safeLog(safeMaxY) + logPaddingAmount;
-
       newMinPrice = Math.max(MIN_LOG_VALUE, exp(newLogMin));
       newMaxPrice = exp(newLogMax);
-
-      // Ensure minimum range ratio after calculation
       if (newMaxPrice / newMinPrice < 1.01) {
         const midLog = (newLogMax + newLogMin) / 2;
         const halfRangeLog = Math.log(1.005);
@@ -809,7 +804,6 @@ export function handleDoubleClick(event) {
   } else {
     // Linear Scale Calculation
     if (dataRangeY <= 0) {
-      // Should be handled by fallback above, but double check
       console.warn("Linear range is zero in reset, using simple padding.");
       const halfSpan = config.MIN_PRICE_RANGE_SPAN / 2 || 0.05;
       newMinPrice = Math.max(0, newMinY - halfSpan);
@@ -818,11 +812,8 @@ export function handleDoubleClick(event) {
       const totalRange = dataRangeY * inverseFill;
       const paddingTotal = totalRange - dataRangeY;
       const paddingAmount = paddingTotal / 2.0;
-
-      newMinPrice = Math.max(0, newMinY - paddingAmount); // Clamp at 0
+      newMinPrice = Math.max(0, newMinY - paddingAmount);
       newMaxPrice = newMaxY + paddingAmount;
-
-      // Ensure minimum linear range span
       if (newMaxPrice - newMinPrice < config.MIN_PRICE_RANGE_SPAN) {
         const mid = (newMaxPrice + newMinPrice) / 2;
         newMinPrice = Math.max(0, mid - config.MIN_PRICE_RANGE_SPAN / 2);
@@ -834,13 +825,11 @@ export function handleDoubleClick(event) {
   // Update state with new X and Y ranges
   updateState({
     visibleStartIndex: newStartIndex,
-    visibleEndIndex: newEndIndex,
+    visibleEndIndex: newEndIndex, // Ensure end index matches calculated start+count
     minVisiblePrice: newMinPrice,
     maxVisiblePrice: newMaxPrice,
-    // DO NOT reset isLogScale or is12HourFormat here
   });
 
-  // Request redraw with the new state
   requestAnimationFrame(redrawChart);
 }
 // --- End of Double Click Handler ---
@@ -866,19 +855,16 @@ export function handleLogScaleToggle() {
       // Switching TO Log
       const linearRange = currentMax - currentMin;
       const logCenter = safeLog(centerPrice);
-      // Estimate equivalent log range (this is approximate)
-      const logRangeEstimate = safeLog(currentMax) - safeLog(currentMin); // Use current log range
+      const logRangeEstimate = safeLog(currentMax) - safeLog(currentMin);
 
       if (Number.isFinite(logRangeEstimate) && logRangeEstimate > 0) {
         const halfLogRange = logRangeEstimate / 2;
         newMin = Math.max(MIN_LOG_VALUE, exp(logCenter - halfLogRange));
         newMax = exp(logCenter + halfLogRange);
       } else {
-        // Fallback if range fails
         newMin = Math.max(MIN_LOG_VALUE, centerPrice / 1.1);
         newMax = centerPrice * 1.1;
       }
-      // Ensure min log ratio
       if (newMax / newMin < 1.01) {
         const midLog = (safeLog(newMax) + safeLog(newMin)) / 2;
         newMin = Math.max(MIN_LOG_VALUE, exp(midLog - Math.log(1.005)));
@@ -887,18 +873,16 @@ export function handleLogScaleToggle() {
     } else {
       // Switching TO Linear
       const logRange = safeLog(currentMax) - safeLog(currentMin);
-      // Estimate equivalent linear range based on center price (approximate)
-      const linearRatio = currentMax / currentMin; // Ratio
-      const linearRangeEstimate = centerPrice * (linearRatio - 1); // Very rough estimate
+      const linearRatio = currentMax / currentMin;
+      const linearRangeEstimate = centerPrice * (linearRatio - 1);
       let halfLinearRange = linearRangeEstimate / 2;
 
-      // Use a more stable fallback if estimate is bad
       if (
         !Number.isFinite(halfLinearRange) ||
         halfLinearRange <= config.MIN_PRICE_RANGE_SPAN / 2
       ) {
         halfLinearRange =
-          (currentMax - currentMin) / 2 || config.MIN_PRICE_RANGE_SPAN; // Use current linear diff or default
+          (currentMax - currentMin) / 2 || config.MIN_PRICE_RANGE_SPAN;
       }
       halfLinearRange = Math.max(
         config.MIN_PRICE_RANGE_SPAN / 2,
@@ -907,14 +891,12 @@ export function handleLogScaleToggle() {
 
       newMin = Math.max(0, centerPrice - halfLinearRange);
       newMax = centerPrice + halfLinearRange;
-      // Ensure min linear span
       if (newMax - newMin < config.MIN_PRICE_RANGE_SPAN) {
         const mid = (newMax + newMin) / 2;
         newMin = Math.max(0, mid - config.MIN_PRICE_RANGE_SPAN / 2);
         newMax = mid + config.MIN_PRICE_RANGE_SPAN / 2;
       }
     }
-
     updateState({ minVisiblePrice: newMin, maxVisiblePrice: newMax });
   } else {
     console.warn("Could not get center price for scale toggle adjustment.");
@@ -933,10 +915,10 @@ export function handleTimeFormatToggle() {
 // --- Attach Listeners ---
 export function attachInteractionListeners() {
   if (
-    !dom.chartContainer ||
+    !dom.chartContainer || // Use the main chart container for panning/zoom/dblclick
     !dom.yAxisLabelsContainer ||
     !dom.xAxisLabelsContainer ||
-    !dom.chartArea
+    !dom.chartArea // Use chartArea for tooltip/crosshair move/leave
   ) {
     console.error(
       "Cannot attach interaction listeners: Essential chart DOM elements missing."
