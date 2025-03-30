@@ -821,155 +821,6 @@ echo "Finished creating $OUTPUT_FILE"
 --- END FILE: credentials/cdp_api_key_example.json ---
 
 
---- START FILE: get_context.py ---
-```py
-import os
-import fnmatch
-import sys
-
-# --- Configuration ---
-# Add directories or file patterns to exclude
-# Uses Unix shell-style wildcards (fnmatch)
-EXCLUDE_DIRS = {
-    ".git",
-    "node_modules",
-    "dist",
-    "build",
-    "venv",
-    "__pycache__",
-    ".vscode",
-    ".idea",
-    # Add any other directories you want to skip entirely
-}
-EXCLUDE_FILES = {
-    "*.pyc",
-    "*.log",
-    "*.lock",
-    "*.exe", "*.dll", "*.bin", "*.obj", "*.o", "*.so",  # Binaries
-    "*.png", "*.jpg", "*.jpeg", "*.gif", "*.svg", "*.ico", "*.webp",  # Images
-    "*.zip", "*.tar.gz", "*.rar", "*.7z", "*.jar",  # Archives
-    "*.pdf", "*.doc", "*.docx", "*.xls", "*.xlsx", "*.ppt", "*.pptx",  # Documents
-    "project_context.txt",  # Exclude the output file itself
-    # Add any other file patterns
-}
-
-# Mapping file extensions to Markdown language hints
-# Add more as needed
-LANG_HINTS = {
-    "py": "python",
-    "js": "javascript",
-    "ts": "typescript",
-    "cs": "csharp",
-    "html": "html",
-    "css": "css",
-    "scss": "scss",
-    "json": "json",
-    "md": "markdown",
-    "sh": "bash",
-    "ps1": "powershell",
-    "yaml": "yaml",
-    "yml": "yaml",
-    "sql": "sql",
-    "dockerfile": "dockerfile",
-    "txt": "text",
-}
-# --- End Configuration ---
-
-
-def get_lang_hint(filename):
-    """Gets the markdown language hint based on file extension."""
-    _, ext = os.path.splitext(filename)
-    return LANG_HINTS.get(ext.lower().lstrip('.'), ext.lstrip('.'))
-
-
-def should_exclude(path, is_dir):
-    """Checks if a file or directory should be excluded."""
-    name = os.path.basename(path)
-    patterns = EXCLUDE_DIRS if is_dir else EXCLUDE_FILES
-    if name in patterns:
-        return True
-    for pattern in patterns:
-        if fnmatch.fnmatch(name, pattern):
-            return True
-    return False
-
-
-def print_tree(start_path):
-    """Prints a basic directory tree structure."""
-    print("Project Directory Tree:")
-    print("=======================")
-    for root, dirs, files in os.walk(start_path, topdown=True):
-        # Filter excluded directories *before* descending into them
-        dirs[:] = [d for d in dirs if not should_exclude(
-            os.path.join(root, d), True)]
-
-        level = root.replace(start_path, '').count(os.sep)
-        indent = ' ' * 4 * level
-        print(f"{indent}{os.path.basename(root)}/")
-
-        sub_indent = ' ' * 4 * (level + 1)
-        for f in files:
-            file_path = os.path.join(root, f)
-            if not should_exclude(file_path, False):
-                print(f"{sub_indent}{f}")
-    print("\n")  # Add a newline
-
-
-def process_files(start_path):
-    """Processes and prints the content of non-excluded files."""
-    print("File Contents:")
-    print("==============")
-    print("")  # Add a newline
-
-    for root, dirs, files in os.walk(start_path, topdown=True):
-        # Filter excluded directories again (important for the files loop)
-        dirs[:] = [d for d in dirs if not should_exclude(
-            os.path.join(root, d), True)]
-
-        for filename in files:
-            file_path = os.path.join(root, filename)
-            relative_path = os.path.relpath(file_path, start_path)
-
-            if should_exclude(file_path, False):
-                continue
-
-            lang_hint = get_lang_hint(filename)
-
-            # Use forward slashes for consistency
-            print(f"--- File: {relative_path.replace(os.sep, '/')} ---")
-            print(f"```{lang_hint}")
-            try:
-                # Try reading with UTF-8, fallback to latin-1 if needed
-                # Add other encodings if necessary for your project
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    content = f.read()
-            except UnicodeDecodeError:
-                try:
-                    with open(file_path, 'r', encoding='latin-1') as f:
-                        content = f.read()
-                except Exception as e:
-                    content = f"[Error reading file: {e}]"
-            except Exception as e:
-                content = f"[Error reading file: {e}]"
-
-            print(content)
-            print("```")
-            print("")  # Add a blank line for separation
-
-
-# --- Main Execution ---
-if __name__ == "__main__":
-    project_root = os.getcwd()  # Get current working directory
-    print_tree(project_root)
-    process_files(project_root)
-    print("=======================")
-    print("--- End of Output ---")
-# --- End of Script ---
-
-```
---- END FILE: get_context.py ---
-
-
 --- START FILE: index.html ---
 ```html
 <!DOCTYPE html>
@@ -1043,7 +894,7 @@ if __name__ == "__main__":
         <!-- Content Area -->
         <div class="content-area" id="content-area">
 
-            <!-- Top Pane (Chart Only) -->
+            <!-- Top Pane (Now includes Main Chart + Volume) -->
             <div class="chart-pane" id="chart-pane">
                  <!-- Main Candlestick Chart Container -->
                 <div class="chart-container" id="chart-container">
@@ -1060,7 +911,14 @@ if __name__ == "__main__":
                     </div>
                     <div id="chart-message">Loading data...</div>
                 </div>
-                <!-- Sub-chart container removed -->
+
+                <!-- <<< Volume Chart Container >>> -->
+                <div class="sub-chart-container volume-chart-container" id="volume-chart-container">
+                    <canvas id="volume-chart-canvas"></canvas>
+                     <div class="sub-chart-y-axis-labels" id="volume-y-axis-labels"></div>
+                </div>
+                 <!-- <<< END Volume Chart Container >>> -->
+
             </div>
 
             <!-- Resizer Handle -->
@@ -1089,7 +947,6 @@ if __name__ == "__main__":
                     </div>
                     <div id="open-orders-content" class="tab-content">
                         <!-- Content dynamically generated by js/orders.js -->
-                        <!-- Placeholder removed -->
                     </div>
                     <div id="order-history-content" class="tab-content">
                          <div class="pane-placeholder">
@@ -1108,7 +965,7 @@ if __name__ == "__main__":
     </div>
 
     <script type="module" src="js/main.js" defer></script>
-    <!-- Ensure order.js is implicitly loaded via main.js/tabs.js imports -->
+    {/* Volume chart now initialized via main.js import */}
 
 </body>
 </html>
@@ -1552,6 +1409,11 @@ export async function initializeBalances() {
 ```js
 // js/config.js
 
+// --- NEW: Define Theme Background Colors ---
+export const LIGHT_MODE_BG_COLOR = "#f0f0f0"; // Default light theme background
+export const DARK_MODE_BG_COLOR = "#0f0f19"; // Desired dark theme background (Corrected typo if any)
+// --- End Theme Background Colors ---
+
 // Chart configuration constants
 export const ZOOM_FACTOR_X = 0.1;
 export const ZOOM_FACTOR_Y = 0.1;
@@ -1603,7 +1465,15 @@ export const chartTooltip = document.getElementById("chart-tooltip");
 export const crosshairLineX = document.getElementById("crosshair-line-x");
 export const crosshairLabelY = document.getElementById("crosshair-label-y");
 
-// Volume/Depth elements REMOVED
+// --- UNCOMMENTED: Volume Chart Elements ---
+export const volumeChartContainer = document.getElementById(
+  "volume-chart-container"
+);
+export const volumeChartCanvas = document.getElementById("volume-chart-canvas");
+export const volumeYAxisLabels = document.getElementById(
+  "volume-y-axis-labels"
+); // Optional
+// --- END UNCOMMENTED ---
 
 // Controls (Header / Settings Menu)
 export const headerControls = document.querySelector(".header-controls");
@@ -1626,7 +1496,7 @@ export const apiStatusIndicator = document.getElementById(
 // Bottom Pane Tabs
 export const bottomTabBar = document.getElementById("bottom-tab-bar");
 export const positionsContent = document.getElementById("positions-content");
-export const openOrdersContent = document.getElementById("open-orders-content"); // <<< Keep this reference
+export const openOrdersContent = document.getElementById("open-orders-content");
 export const orderHistoryContent = document.getElementById(
   "order-history-content"
 );
@@ -1660,7 +1530,11 @@ const elementMap = {
   chartTooltip,
   crosshairLineX,
   crosshairLabelY,
-  // volumeChartContainer, volumeChartCanvas, // REMOVED
+  // --- UNCOMMENTED Volume elements ---
+  volumeChartContainer,
+  volumeChartCanvas,
+  volumeYAxisLabels,
+  // --- End Volume elements ---
   headerControls,
   granularityControls,
   settingsButton,
@@ -1671,7 +1545,7 @@ const elementMap = {
   apiStatusIndicator, // Other UI
   bottomTabBar,
   positionsContent,
-  openOrdersContent, // <<< Ensure this is included
+  openOrdersContent,
   orderHistoryContent,
   promptContent, // Tabs
   promptTextarea, // Prompt Input
@@ -1682,7 +1556,10 @@ const elementMap = {
 
 export function checkElements() {
   const missingElements = Object.entries(elementMap)
-    .filter(([name, el]) => !el)
+    .filter(([name, el]) => {
+      // Check if the element variable itself is null/undefined
+      return !el;
+    })
     .map(([name]) => name);
 
   if (missingElements.length > 0) {
@@ -1716,172 +1593,126 @@ export function checkElements() {
 import * as config from "./config.js";
 import state from "./state.js";
 import * as dom from "./domElements.js";
+import { drawVolumeChart } from "./volumeChart.js";
 import {
   calculateNiceStep,
   formatTimestamp,
   formatDate,
   getYCoordinate,
-  MIN_LOG_VALUE, // <<<--- IMPORT HERE
+  MIN_LOG_VALUE,
 } from "./utils.js";
-// Volume/Depth chart drawing is disabled
 
 const SECONDS_PER_DAY = 86400;
-const MIN_PIXELS_PER_LABEL = 60;
-const Y_AXIS_MAX_ITERATIONS = 500; // Safety limit for Y-axis loop
+const MIN_PIXELS_PER_LABEL = 60; // Minimum space between labels
+const Y_AXIS_MAX_ITERATIONS = 500;
 
 // --- Live Price Indicator ---
 function updateLivePriceIndicatorUI(price, chartHeight) {
-  if (
-    !dom.currentPriceLabel ||
-    !dom.currentPriceLine ||
-    isNaN(price) ||
-    !Number.isFinite(price) ||
-    !chartHeight ||
-    chartHeight <= 0
-  ) {
-    if (dom.currentPriceLabel) dom.currentPriceLabel.style.display = "none";
-    if (dom.currentPriceLine) dom.currentPriceLine.style.display = "none";
-    return;
-  }
-
-  // getYCoordinate internally handles log/linear scaling for position
-  const y = getYCoordinate(price, chartHeight);
-
-  if (y !== null && Number.isFinite(y)) {
-    // Adjust decimal places based on price magnitude for better readability
-    let decimals = 0;
-    if (price < 0.01) decimals = 6;
-    else if (price < 1) decimals = 4;
-    else if (price < 100) decimals = 2;
-    else if (price < 10000) decimals = 1;
-    else decimals = 0; // Or potentially use localeString for larger numbers
-    decimals = Math.max(0, decimals);
-
-    dom.currentPriceLabel.textContent = price.toFixed(decimals);
-    dom.currentPriceLabel.style.top = `${y.toFixed(1)}px`;
-    dom.currentPriceLine.style.top = `${y.toFixed(1)}px`;
-    dom.currentPriceLabel.style.display = "block";
-    dom.currentPriceLine.style.display = "block";
-  } else {
-    // Hide if Y coordinate is invalid
-    dom.currentPriceLabel.style.display = "none";
-    dom.currentPriceLine.style.display = "none";
-  }
+  /* ... no changes ... */
 }
 
 // --- Helper to draw a single Y-axis tick/label ---
-// This function takes the *value* to display and uses the global state's
-// isLogScale setting (via getYCoordinate) to determine the *position*.
 function drawYTick(priceValue, chartHeight, minVisible, maxVisible) {
-  // Skip drawing if price is essentially zero or negative
-  // Crucial for log scale, harmless for linear.
-  if (priceValue <= MIN_LOG_VALUE) return;
-
-  // Get position using the scale-aware function
-  const y = getYCoordinate(priceValue, chartHeight);
-
-  // Only draw if y is a valid number
-  if (y === null || !Number.isFinite(y)) {
-    // console.warn("Skipped drawing Y grid/label for price:", priceValue, "due to invalid Y:", y);
+  // Keep previous logging inside this helper for Y-axis issues if they return
+  // console.log(`[drawYTick] Trying price: ${priceValue}`);
+  if (priceValue <= MIN_LOG_VALUE) {
     return;
   }
-
-  // Draw grid line slightly outside main chart area too
+  const y = getYCoordinate(priceValue, chartHeight);
+  // console.log(`[drawYTick] Calculated Y for ${priceValue}: ${y}`);
+  if (y === null || !Number.isFinite(y)) {
+    return;
+  }
   if (y >= -chartHeight * 0.1 && y <= chartHeight * 1.1) {
     const hLine = document.createElement("div");
     hLine.className = "grid-line horizontal";
     hLine.style.top = `${y.toFixed(1)}px`;
     dom.gridContainer.appendChild(hLine);
   }
-
-  // Draw label only if clearly within or very near chart height
   if (y >= -5 && y <= chartHeight + 5) {
     const yLabel = document.createElement("div");
     yLabel.className = "axis-label y-axis-label";
     yLabel.style.top = `${y.toFixed(1)}px`;
-
-    // Determine decimals based on price magnitude
     let decimals = 0;
     if (priceValue < 0.01) decimals = 6;
     else if (priceValue < 1) decimals = 4;
     else if (priceValue < 100) decimals = 2;
     else if (priceValue < 10000) decimals = 1;
     else decimals = 0;
-    decimals = Math.max(0, decimals); // Ensure non-negative
-
+    decimals = Math.max(0, decimals);
     yLabel.textContent = priceValue.toFixed(decimals);
-    dom.yAxisLabelsContainer.appendChild(yLabel);
+    try {
+      // Wrap appendChild for safety
+      dom.yAxisLabelsContainer.appendChild(yLabel);
+      // console.log(`[drawYTick] Appended label for ${priceValue}`);
+    } catch (e) {
+      console.error(
+        `[drawYTick] Error appending Y label for ${priceValue}:`,
+        e
+      );
+    }
   }
 }
 
 // --- Main Chart Redraw ---
 export function redrawChart() {
+  // console.log(`[redrawChart] Function called.`); // Reduce noise
+
   if (
     !dom.chartArea ||
     !dom.gridContainer ||
     !dom.yAxisLabelsContainer ||
     !dom.xAxisLabelsContainer
   ) {
-    console.error(
-      "Cannot redraw main chart: Essential drawing containers missing."
-    );
+    console.error("[redrawChart] Missing drawing containers.");
     return;
   }
 
-  // Clear previous content
   dom.chartArea.innerHTML = "";
   dom.gridContainer.innerHTML = "";
   dom.yAxisLabelsContainer.innerHTML = "";
   dom.xAxisLabelsContainer.innerHTML = "";
+  if (dom.volumeYAxisLabels) dom.volumeYAxisLabels.innerHTML = "";
 
   const chartHeight = dom.chartArea.offsetHeight;
   const chartWidth = dom.chartArea.offsetWidth;
 
-  // Validate chart dimensions and data
-  if (!state.fullData || chartHeight <= 0 || chartWidth <= 0) {
-    console.warn("Main chart redraw skipped: No data or invalid dimensions.");
+  if (!state.fullData || state.fullData.length === 0) {
+    console.warn("[redrawChart] No data.");
+    return;
+  }
+  if (chartHeight <= 0 || chartWidth <= 0) {
+    console.warn(`[redrawChart] Invalid dimensions.`);
     return;
   }
 
   const {
     minVisiblePrice,
     maxVisiblePrice,
-    isLogScale, // We still need this for positioning via getYCoordinate
+    isLogScale,
     visibleStartIndex,
     visibleEndIndex,
   } = state;
   const visibleCount = visibleEndIndex - visibleStartIndex;
 
-  // More robust validation of price range state
   if (
     isNaN(minVisiblePrice) ||
     isNaN(maxVisiblePrice) ||
     !Number.isFinite(minVisiblePrice) ||
     !Number.isFinite(maxVisiblePrice) ||
     maxVisiblePrice <= minVisiblePrice ||
-    (isLogScale && minVisiblePrice <= 0) // Log scale requires positive min price
+    (isLogScale && minVisiblePrice <= 0)
   ) {
-    console.error("Redraw failed: Invalid price range in state!", {
-      minVisiblePrice,
-      maxVisiblePrice,
-      isLogScale,
-    });
-    if (dom.chartMessage) {
-      dom.chartMessage.textContent = "Error: Invalid Price Range";
-      dom.chartMessage.style.display = "block";
-      dom.chartMessage.style.color = "red";
-    }
-    return; // Stop drawing
+    console.error("[redrawChart] Invalid price range.");
+    return;
   }
-
   if (visibleCount <= 0) {
-    console.warn("Redraw skipped: No visible candles.");
-    return; // Nothing to draw
+    console.warn(`[redrawChart] visibleCount is ${visibleCount}.`);
+    return;
   }
 
-  // Constants for candle drawing
   const candleTotalWidth = chartWidth / visibleCount;
-  const candleBodyWidthRatio = 0.7; // Relative width of body to total candle space
+  const candleBodyWidthRatio = 0.7;
   const candleWidth = Math.max(1, candleTotalWidth * candleBodyWidthRatio);
   const candleMargin = Math.max(0.5, (candleTotalWidth - candleWidth) / 2);
 
@@ -1889,89 +1720,62 @@ export function redrawChart() {
   try {
     const yTickDensity = Math.max(3, Math.round(chartHeight / 40));
     let iterationCount = 0;
-
-    // --- Calculate Tick Values using LINEAR logic REGARDLESS of scale type ---
     const linearRange = maxVisiblePrice - minVisiblePrice;
     const linearTicks =
       linearRange > 0 && Number.isFinite(linearRange)
         ? calculateNiceStep(linearRange, yTickDensity)
-        : 1; // Fallback step
-
+        : 1;
     if (!linearTicks || linearTicks <= 0 || !Number.isFinite(linearTicks)) {
-      console.error(
-        "Y-Axis drawing aborted: Invalid linear tick step calculated.",
-        linearTicks
-      );
+      /* Handle error */
     } else {
       let firstLinearTick;
-      // Find the first linear tick >= minVisiblePrice
       if (minVisiblePrice >= 0) {
         firstLinearTick =
           linearTicks > 0
             ? Math.ceil(minVisiblePrice / linearTicks) * linearTicks
             : minVisiblePrice;
       } else {
-        // Handle negative minVisiblePrice (though unlikely for price charts)
         firstLinearTick =
           linearTicks > 0
             ? Math.floor(minVisiblePrice / linearTicks) * linearTicks
             : minVisiblePrice;
       }
-      // Adjust if the first tick is too far above minVisiblePrice
       if (
         linearTicks > 0 &&
         firstLinearTick - minVisiblePrice > linearTicks * 0.99
       ) {
         firstLinearTick -= linearTicks;
       }
-      // Ensure first tick isn't below zero if min price is positive
       if (minVisiblePrice > 0 && firstLinearTick < 0) {
         firstLinearTick = 0;
       }
-
-      const loopUpperBound = maxVisiblePrice + linearTicks * 0.1; // Loop slightly beyond max
-
-      // --- Loop using LINEAR price increments ---
+      const loopUpperBound = maxVisiblePrice + linearTicks * 0.1;
       for (
         let currentPrice = firstLinearTick;
         currentPrice <= loopUpperBound &&
         iterationCount < Y_AXIS_MAX_ITERATIONS;
         currentPrice =
-          linearTicks > 0 ? currentPrice + linearTicks : loopUpperBound + 1 // Add linear step, break if step invalid
+          linearTicks > 0 ? currentPrice + linearTicks : loopUpperBound + 1
       ) {
         iterationCount++;
-
-        // --- Draw Tick using the scale-aware helper function ---
-        // The drawYTick function will use getYCoordinate which checks
-        // state.isLogScale to determine the CORRECT POSITION.
-        // The value displayed will be `currentPrice`.
         drawYTick(currentPrice, chartHeight, minVisiblePrice, maxVisiblePrice);
-
-        // Safety break if price isn't increasing
         if (
           linearTicks > Number.EPSILON &&
           currentPrice + linearTicks <= currentPrice
         ) {
-          console.warn("Y-Axis loop safety break: Price not increasing.", {
-            currentPrice,
-            linearTicks,
-          });
           break;
         }
-      } // End for loop
-
-      if (iterationCount >= Y_AXIS_MAX_ITERATIONS) {
-        console.warn("Y-Axis drawing loop hit max iteration limit.");
       }
-    } // End else (valid linearTicks)
+    }
   } catch (e) {
-    console.error("Error drawing Y grid/axis:", e);
+    console.error("[redrawChart] Error drawing Y grid/axis:", e);
   }
 
-  // --- Draw X-Axis & Separators --- (No changes needed here)
+  // --- Draw X-Axis & Separators ---
+  let xAxisLabelsDrawnCount = 0;
   try {
+    // console.log("[redrawChart] Drawing X-Axis..."); // Reduce noise
     const xTickDensity = Math.max(3, Math.round(chartWidth / 70));
-    // Ensure visibleCount is positive for step calculation
     const xTicks =
       visibleCount > 0
         ? Math.max(1, calculateNiceStep(visibleCount, xTickDensity))
@@ -1981,68 +1785,81 @@ export function redrawChart() {
     for (let i = 0; i < visibleCount; i++) {
       const dataIndex = visibleStartIndex + i;
       if (dataIndex < 0 || dataIndex >= state.fullData.length) continue;
-
       const candleData = state.fullData[dataIndex];
       if (!candleData || candleData.length < 1 || isNaN(candleData[0]))
-        continue; // Check timestamp
+        continue;
       const timestamp = candleData[0];
 
-      // Decide if this index should have a label
       const isFirst = i === 0;
       const isLast = i === visibleCount - 1;
-      // Simple modulo check for ticks (ensure xTicks is positive)
-      const isTick = xTicks > 0 && (i + Math.floor(xTicks / 2)) % xTicks === 0;
+      const isTickCandidate =
+        xTicks > 0 && (i + Math.floor(xTicks / 2)) % xTicks === 0;
 
-      if (isFirst || isLast || isTick) {
-        const x = (i + 0.5) * candleTotalWidth; // Center label on candle
+      if (isFirst || isLast || isTickCandidate) {
+        const x = (i + 0.5) * candleTotalWidth;
+        const spacingCondition = x - lastLabelX > MIN_PIXELS_PER_LABEL;
 
-        // Prevent labels overlapping too much
-        if (x - lastLabelX > MIN_PIXELS_PER_LABEL || isFirst || isLast) {
-          // Only draw if within reasonable bounds of the chart width
+        if (spacingCondition || isFirst || isLast) {
           if (x >= -candleTotalWidth && x <= chartWidth + candleTotalWidth) {
             const xLabel = document.createElement("div");
             xLabel.className = "axis-label x-axis-label";
             xLabel.style.left = `${x.toFixed(1)}px`;
-            xLabel.textContent = formatTimestamp(timestamp); // Use state-aware formatter
-            dom.xAxisLabelsContainer.appendChild(xLabel);
-            lastLabelX = x;
+
+            // <<< Wrap formatTimestamp and appendChild in try...catch >>>
+            try {
+              const formattedTime = formatTimestamp(timestamp);
+              if (formattedTime && formattedTime !== "Time Error") {
+                // Check for valid formatted time
+                xLabel.textContent = formattedTime;
+                dom.xAxisLabelsContainer.appendChild(xLabel);
+                xAxisLabelsDrawnCount++;
+                lastLabelX = x;
+                // console.log(`[X-Axis Tick ${i}] Appended label "${formattedTime}" at X=${x.toFixed(1)}`); // Optional log on success
+              } else {
+                console.warn(
+                  `[X-Axis Tick ${i}] formatTimestamp returned invalid: "${formattedTime}" for timestamp ${timestamp}`
+                );
+              }
+            } catch (labelError) {
+              console.error(
+                `[X-Axis Tick ${i}] Error formatting or appending label for timestamp ${timestamp}:`,
+                labelError
+              );
+              // Continue to the next iteration even if one label fails
+            }
+            // <<< End try...catch wrapper >>>
           }
         }
       }
     }
+    // console.log(`[redrawChart] X-Axis drawing finished. Appended Label Count: ${xAxisLabelsDrawnCount}`); // Reduce noise
   } catch (e) {
-    console.error("Error drawing X grid/axis:", e);
+    // Catch errors in the main X-axis loop setup (less likely now)
+    console.error("[redrawChart] Error drawing X grid/axis:", e);
   }
 
-  // --- Draw Candles --- (No changes needed here)
+  // --- Draw Candles ---
+  let candlesDrawn = 0;
+  let candlesSkippedInvalidCoords = 0;
   try {
-    const fragment = document.createDocumentFragment(); // Use fragment for performance
-
+    const fragment = document.createDocumentFragment();
     for (let i = 0; i < visibleCount; i++) {
       const dataIndex = visibleStartIndex + i;
       if (dataIndex < 0 || dataIndex >= state.fullData.length) continue;
-
       const candle = state.fullData[dataIndex];
-      // Ensure candle data is valid (time, low, high, open, close)
       if (
         !candle ||
         candle.length < 5 ||
         candle.slice(0, 5).some((v) => isNaN(v) || !Number.isFinite(v))
       ) {
-        // console.warn(`Skipping candle at index ${dataIndex}: Invalid data`, candle);
         continue;
       }
-
       const [timestamp, low, high, open, close] = candle;
-
-      // Calculate Y coordinates using the robust utility function
-      // getYCoordinate internally handles log/linear based on state.isLogScale
+      const isUp = close >= open;
       const wickHighY = getYCoordinate(high, chartHeight);
       const wickLowY = getYCoordinate(low, chartHeight);
       const bodyOpenY = getYCoordinate(open, chartHeight);
       const bodyCloseY = getYCoordinate(close, chartHeight);
-
-      // *** CRITICAL CHECK: Ensure all coordinates are valid finite numbers ***
       if (
         wickHighY === null ||
         !Number.isFinite(wickHighY) ||
@@ -2053,83 +1870,78 @@ export function redrawChart() {
         bodyCloseY === null ||
         !Number.isFinite(bodyCloseY)
       ) {
-        // console.warn(`Skipping candle index ${dataIndex}: Invalid Y coordinate calculated.`);
-        // console.warn({wickHighY, wickLowY, bodyOpenY, bodyCloseY});
-        continue; // Skip this candle entirely if any coordinate is invalid
+        candlesSkippedInvalidCoords++;
+        continue; // Skip this candle
       }
-
       const bodyTopY = Math.min(bodyOpenY, bodyCloseY);
       const bodyBottomY = Math.max(bodyOpenY, bodyCloseY);
-
-      // Calculate heights, ensuring minimum of 1px if coordinates are valid
-      // Also check that wickLowY >= wickHighY and bodyBottomY >= bodyTopY
       const wickHeight = Math.max(1, wickLowY - wickHighY);
       const bodyHeight = Math.max(1, bodyBottomY - bodyTopY);
-
-      const isUp = close >= open;
-
-      // Create candle elements
       const candleElement = document.createElement("div");
       candleElement.className = "candle";
       candleElement.style.width = `${candleWidth.toFixed(1)}px`;
-      // Position based on the center of the candle slot
       const candleLeft = i * candleTotalWidth + candleMargin;
       candleElement.style.left = `${candleLeft.toFixed(1)}px`;
-
-      // Wick Element (only draw if height is valid)
+      let wickElement = null;
       if (wickHeight >= 1 && wickLowY >= wickHighY) {
-        const wickElement = document.createElement("div");
-        wickElement.className = "wick";
+        wickElement = document.createElement("div");
+        wickElement.className = `wick ${isUp ? "color-up" : "color-down"}`;
         wickElement.style.top = `${wickHighY.toFixed(1)}px`;
         wickElement.style.height = `${wickHeight.toFixed(1)}px`;
-        candleElement.appendChild(wickElement);
       }
-
-      // Body Element (only draw if height is valid)
+      let bodyElement = null;
       if (bodyHeight >= 1 && bodyBottomY >= bodyTopY) {
-        const bodyElement = document.createElement("div");
+        bodyElement = document.createElement("div");
         bodyElement.className = `body ${isUp ? "color-up" : "color-down"}`;
         bodyElement.style.top = `${bodyTopY.toFixed(1)}px`;
         bodyElement.style.height = `${bodyHeight.toFixed(1)}px`;
+      }
+      if (wickElement) {
+        candleElement.appendChild(wickElement);
+      }
+      if (bodyElement) {
         candleElement.appendChild(bodyElement);
       }
-
-      // Only append candleElement if it has a body or wick
       if (candleElement.childNodes.length > 0) {
-        fragment.appendChild(candleElement); // Append to fragment
+        fragment.appendChild(candleElement);
+        candlesDrawn++;
       }
     }
-
-    dom.chartArea.appendChild(fragment); // Append fragment once
+    dom.chartArea.appendChild(fragment);
+    // console.log(`[redrawChart] Candle drawing finished. Drawn: ${candlesDrawn}, Skipped: ${candlesSkippedInvalidCoords}`); // Reduce noise
   } catch (e) {
-    console.error("Error drawing candles:", e);
+    console.error("[redrawChart] Error drawing candles:", e);
   }
 
-  // --- Update Live Price Indicator --- (No changes needed here)
-  let priceForIndicator = state.lastTickerPrice;
-  // Fallback to last candle's close if ticker price isn't available
-  if (
-    (priceForIndicator === null || !Number.isFinite(priceForIndicator)) &&
-    state.fullData.length > 0
-  ) {
-    const lastCandle = state.fullData[state.fullData.length - 1];
-    if (
-      lastCandle &&
-      lastCandle.length >= 5 &&
-      Number.isFinite(lastCandle[4])
-    ) {
-      priceForIndicator = lastCandle[4]; // Use close price
-    }
-  }
-
-  // Check again if price is valid before updating UI
+  // --- Update Live Price Indicator ---
+  let priceForIndicator = state.lastTickerPrice; /* ... existing logic ... */
   if (priceForIndicator !== null && Number.isFinite(priceForIndicator)) {
     updateLivePriceIndicatorUI(priceForIndicator, chartHeight);
   } else {
-    // Ensure it's hidden if no valid price
     if (dom.currentPriceLabel) dom.currentPriceLabel.style.display = "none";
     if (dom.currentPriceLine) dom.currentPriceLine.style.display = "none";
   }
+  // console.log(`[redrawChart] Live price indicator updated/hidden.`); // Reduce noise
+
+  // --- Draw Volume Chart ---
+  try {
+    drawVolumeChart(state, chartWidth);
+  } catch (e) {
+    console.error("[redrawChart] Error calling drawVolumeChart:", e);
+    if (dom.volumeChartCanvas && dom.volumeChartCanvas.getContext) {
+      const volCtx = dom.volumeChartCanvas.getContext("2d");
+      if (volCtx) {
+        volCtx.clearRect(
+          0,
+          0,
+          dom.volumeChartCanvas.width,
+          dom.volumeChartCanvas.height
+        );
+      }
+    }
+  }
+
+  // console.log(`[redrawChart] Function finished completely.`); // Reduce noise
 } // End of redrawChart function
 
 ```
@@ -3539,9 +3351,8 @@ import { initializeResizer } from "./layout.js";
 import { initializeSettingsMenu } from "./settingsMenu.js";
 import { initializeTabs } from "./tabs.js";
 import { initializePromptTab } from "./promptTab.js";
+import { initializeVolumeChart } from "./volumeChart.js"; // Volume chart is back
 import { MIN_LOG_VALUE } from "./utils.js";
-// Note: orders.js doesn't need explicit import here if triggered via tabs.js
-// import { initializeVolumeChart } from './volumeChart.js'; // Import volume chart initialization <-- COMMENTED OUT
 
 // --- Status Indicator ---
 function updateApiStatusIndicator(loaded, message = null) {
@@ -3556,23 +3367,15 @@ function checkApiStatus() {
   fetch("http://localhost:5000/api/status")
     .then((response) => {
       if (!response.ok) {
-        return response
-          .json()
-          .catch(() => {
-            throw new Error(`HTTP error ${response.status}`);
-          })
-          .then((errData) => {
-            throw new Error(errData.error || `HTTP error ${response.status}`);
-          });
+        throw new Error(`HTTP ${response.status}`);
       }
       return response.json();
     })
     .then((data) => {
-      if (data.credentials_loaded) {
-        updateApiStatusIndicator(true);
-      } else {
-        updateApiStatusIndicator(false, "Creds Failed");
-      }
+      updateApiStatusIndicator(
+        data.credentials_loaded,
+        data.credentials_loaded ? null : "Creds Failed"
+      );
     })
     .catch((error) => {
       console.error("Error checking API status:", error);
@@ -3582,15 +3385,13 @@ function checkApiStatus() {
 
 // --- Initialize Chart View State ---
 function initializeChartView(data) {
+  console.log("[initializeChartView] Starting."); // Log start
   if (!data || !data.length) {
-    console.warn("initializeChartView skipped: No data provided.");
+    console.warn("[initializeChartView] Skipped: No data.");
     return;
   }
-
-  // Determine if log scale preference is set
   const savedLogPref = localStorage.getItem("logScalePref") === "true";
   const savedTimeFormatPref = localStorage.getItem("timeFormatPref") === "true";
-
   const totalDataCount = data.length;
   const initialVisibleCount = Math.min(
     config.DEFAULT_RESET_CANDLE_COUNT,
@@ -3598,85 +3399,59 @@ function initializeChartView(data) {
   );
   const initialStartIndex = Math.max(0, totalDataCount - initialVisibleCount);
   const initialEndIndex = totalDataCount;
-
-  // Find min/max low/high in the initial visible range
   let initialMinY = Infinity,
     initialMaxY = -Infinity;
   for (let i = initialStartIndex; i < initialEndIndex; i++) {
-    if (!data[i] || data[i].length < 5) continue; // Need low[1] and high[2]
-    const low = data[i][1];
-    const high = data[i][2];
-    if (!isNaN(low) && Number.isFinite(low)) {
-      initialMinY = Math.min(initialMinY, low);
-    }
-    if (!isNaN(high) && Number.isFinite(high)) {
-      initialMaxY = Math.max(initialMaxY, high);
-    }
+    if (!data[i] || data[i].length < 5) continue;
+    initialMinY = Math.min(initialMinY, data[i][1]); // low
+    initialMaxY = Math.max(initialMaxY, data[i][2]); // high
   }
-
-  // Handle cases where min/max couldn't be determined
   if (
     initialMinY === Infinity ||
     initialMaxY === -Infinity ||
     initialMinY <= 0
   ) {
-    // Try to get a fallback from the last candle's close price if available
     const lastCandle = data[data.length - 1];
     const lastClose =
       lastCandle && lastCandle.length >= 5 && Number.isFinite(lastCandle[4])
         ? lastCandle[4]
-        : 100; // Default fallback
+        : 100;
     initialMinY = lastClose * 0.9;
     initialMaxY = lastClose * 1.1;
-    console.warn(
-      "Could not determine initial Y range from visible data, using fallback range.",
-      { initialMinY, initialMaxY }
-    );
+    console.warn("[initializeChartView] Using fallback Y range.");
   }
-  // Ensure min is positive for log scale calculations later
-  initialMinY = Math.max(MIN_LOG_VALUE, initialMinY); // Use imported constant
+  initialMinY = Math.max(MIN_LOG_VALUE, initialMinY);
   if (initialMaxY <= initialMinY) {
-    initialMaxY = initialMinY * 1.1; // Ensure max > min
+    initialMaxY = initialMinY * 1.1;
   }
-
-  // --- Apply Padding based on Scale Type ---
   let initialMinPrice, initialMaxPrice;
-
   if (savedLogPref) {
-    // Log Scale: Apply multiplicative padding
     const logPadding = 1 + config.Y_AXIS_LOG_PADDING_FACTOR;
-    initialMinPrice = Math.max(MIN_LOG_VALUE, initialMinY / logPadding); // Use imported constant
-    initialMaxPrice = initialMaxY * logPadding; // Multiply max by (1 + factor)
-
-    // Ensure minimum range ratio for log scale
+    initialMinPrice = Math.max(MIN_LOG_VALUE, initialMinY / logPadding);
+    initialMaxPrice = initialMaxY * logPadding;
     if (initialMaxPrice / initialMinPrice < 1.01) {
       const midLog =
         (Math.log(initialMaxPrice) + Math.log(initialMinPrice)) / 2;
-      const halfRangeLog = Math.log(1.005); // ~0.5% range
+      const halfRangeLog = Math.log(1.005);
       initialMinPrice = Math.max(
         MIN_LOG_VALUE,
         Math.exp(midLog - halfRangeLog)
-      ); // Use imported constant
+      );
       initialMaxPrice = Math.exp(midLog + halfRangeLog);
     }
   } else {
-    // Linear Scale: Apply additive padding
     const linearPadding = Math.max(
-      config.MIN_PRICE_RANGE_SPAN * 0.1, // Ensure padding is at least something
+      config.MIN_PRICE_RANGE_SPAN * 0.1,
       (initialMaxY - initialMinY) * config.Y_AXIS_PRICE_PADDING_FACTOR
     );
-    initialMinPrice = Math.max(0, initialMinY - linearPadding); // Cannot go below 0
+    initialMinPrice = Math.max(0, initialMinY - linearPadding);
     initialMaxPrice = initialMaxY + linearPadding;
-
-    // Ensure minimum linear range span
     if (initialMaxPrice - initialMinPrice < config.MIN_PRICE_RANGE_SPAN) {
       const mid = (initialMaxPrice + initialMinPrice) / 2;
-      initialMinPrice = Math.max(0, mid - config.MIN_PRICE_RANGE_SPAN / 2); // Clamp at 0
+      initialMinPrice = Math.max(0, mid - config.MIN_PRICE_RANGE_SPAN / 2);
       initialMaxPrice = mid + config.MIN_PRICE_RANGE_SPAN / 2;
     }
   }
-
-  // Update the global state
   updateState({
     visibleStartIndex: initialStartIndex,
     visibleEndIndex: initialEndIndex,
@@ -3685,191 +3460,235 @@ function initializeChartView(data) {
     isLogScale: savedLogPref,
     is12HourFormat: savedTimeFormatPref,
   });
-
-  // Update UI toggles to match loaded state
   if (dom.logScaleToggle) dom.logScaleToggle.checked = savedLogPref;
   if (dom.timeFormatToggle) dom.timeFormatToggle.checked = savedTimeFormatPref;
-
-  console.log("Initialized chart view state:", {
-    startIndex: initialStartIndex,
-    endIndex: initialEndIndex,
-    minPrice: initialMinPrice,
-    maxPrice: initialMaxPrice,
-    isLog: savedLogPref,
-  });
+  console.log(
+    `[initializeChartView] Finished. State updated: StartIdx=${initialStartIndex}, EndIdx=${initialEndIndex}, MinPrice=${initialMinPrice.toFixed(
+      2
+    )}, MaxPrice=${initialMaxPrice.toFixed(2)}, Log=${savedLogPref}`
+  );
 }
 
 // --- Fetch/Redraw Chart Data ---
 function fetchAndRedraw(granularitySeconds) {
-  updateState({ currentGranularity: granularitySeconds });
-  const currentProductID = config.DEFAULT_PRODUCT_ID; // Use default for now
-  const apiUrl = `http://localhost:5000/api/candles?granularity=${granularitySeconds}&product_id=${currentProductID}`;
   console.log(
-    `Fetching chart data for ${currentProductID} at ${granularitySeconds}s interval from: ${apiUrl}`
-  );
-  if (dom.chartMessage) {
-    dom.chartMessage.textContent = `Loading ${currentProductID} ${Math.round(
-      granularitySeconds / 60
-    )}m data...`;
-    dom.chartMessage.style.display = "block";
-  }
-  closeWebSocket(); // Close previous connection before fetching new data
+    `[fetchAndRedraw] Called with granularity: ${granularitySeconds}s`
+  ); // Log entry
+  try {
+    updateState({ currentGranularity: granularitySeconds });
+    const currentProductID = config.DEFAULT_PRODUCT_ID;
+    const apiUrl = `http://localhost:5000/api/candles?granularity=${granularitySeconds}&product_id=${currentProductID}`;
+    console.log(`[fetchAndRedraw] API URL: ${apiUrl}`);
 
-  fetch(apiUrl)
-    .then((response) => {
-      if (!response.ok) {
-        // Try to get error details from response body
-        return response
-          .json()
-          .catch(() => ({
-            // Fallback if body isn't JSON
-            error: `HTTP error ${response.status} (${response.statusText})`,
-            details: response.statusText,
-          }))
-          .then((errData) => {
-            // Throw an error object with more info
-            const error = new Error(
-              errData.error || `API Error ${response.status}`
-            );
-            error.details = errData.details || `Status: ${response.status}`;
-            throw error;
-          });
-      }
-      return response.json();
-    })
-    .then((data) => {
-      if (!Array.isArray(data)) {
-        throw new Error("Invalid data format: API response was not an array.");
-      }
-      if (data.length === 0) {
-        console.warn(
-          `No chart data returned for ${currentProductID} at ${granularitySeconds}s interval.`
+    if (dom.chartMessage) {
+      dom.chartMessage.textContent = `Loading ${currentProductID} ${Math.round(
+        granularitySeconds / 60
+      )}m data...`;
+      dom.chartMessage.style.display = "block";
+      console.log("[fetchAndRedraw] Loading message displayed.");
+    } else {
+      console.warn("[fetchAndRedraw] Chart message element not found.");
+    }
+
+    console.log("[fetchAndRedraw] Closing WebSocket before fetch...");
+    closeWebSocket();
+
+    console.log(`[fetchAndRedraw] Starting fetch from ${apiUrl}...`);
+    fetch(apiUrl)
+      .then((response) => {
+        console.log(
+          `[fetchAndRedraw] Received response status: ${response.status}`
         );
-        updateState({ fullData: [] }); // Clear data
-        if (dom.chartMessage)
-          dom.chartMessage.textContent = `No data available for this interval.`;
-        redrawChart(); // Redraw empty chart
-        return; // Stop processing
-      }
+        if (!response.ok) {
+          // Try to parse error JSON, otherwise use status text
+          return response
+            .json()
+            .catch(() => ({
+              error: `HTTP error ${response.status} (${response.statusText})`,
+              details: response.statusText,
+            }))
+            .then((errData) => {
+              const error = new Error(
+                errData.error || `API Error ${response.status}`
+              );
+              error.details = errData.details || `Status: ${response.status}`;
+              console.error("[fetchAndRedraw] HTTP error details:", errData); // Log error details
+              throw error; // Important to re-throw
+            });
+        }
+        return response.json();
+      })
+      .then((data) => {
+        console.log("[fetchAndRedraw] Received JSON data.");
+        if (!Array.isArray(data)) {
+          throw new Error(
+            "Invalid data format: API response was not an array."
+          );
+        }
+        if (data.length === 0) {
+          console.warn(
+            `[fetchAndRedraw] No chart data returned for ${currentProductID} at ${granularitySeconds}s interval.`
+          );
+          updateState({ fullData: [] });
+          if (dom.chartMessage)
+            dom.chartMessage.textContent = `No data available for this interval.`;
+          requestAnimationFrame(redrawChart); // Still redraw empty chart
+          console.log("[fetchAndRedraw] Redrawing empty chart (no data).");
+          return;
+        }
 
-      console.log(
-        `Loaded ${data.length} chart data points for ${granularitySeconds}s interval.`
-      );
+        console.log(`[fetchAndRedraw] Loaded ${data.length} data points.`);
+        let processedData = data;
+        if (data.length > 1 && data[0][0] > data[data.length - 1][0]) {
+          console.warn(
+            "[fetchAndRedraw] Data received newest-first. Reversing."
+          );
+          processedData = data.slice().reverse();
+        }
+        updateState({ fullData: processedData });
+        console.log("[fetchAndRedraw] Updated state with fullData.");
 
-      // Data Format: [timestamp, low, high, open, close, volume]
-      // Ensure data is sorted oldest to newest (ascending timestamp)
-      let processedData = data;
-      if (data.length > 1 && data[0][0] > data[data.length - 1][0]) {
-        console.warn("Chart data received newest-first. Reversing array.");
-        processedData = data.slice().reverse(); // Create reversed copy
-      } else {
-        console.log("Chart data received oldest-first (expected).");
-      }
+        initializeChartView(processedData); // Set initial view based on data
 
-      // Update state with the new, sorted data
-      updateState({ fullData: processedData });
+        if (dom.chartMessage) dom.chartMessage.style.display = "none";
+        console.log(
+          "[fetchAndRedraw] Requesting animation frame for redraw..."
+        );
+        requestAnimationFrame(redrawChart); // <<< THE REDRAW CALL
+        console.log("[fetchAndRedraw] Requested animation frame.");
 
-      // Set up the initial view based on the new data and preferences
-      initializeChartView(processedData); // <<< THIS NOW HANDLES PADDING
-
-      // Hide loading message and redraw
-      if (dom.chartMessage) dom.chartMessage.style.display = "none";
-      requestAnimationFrame(redrawChart);
-
-      // Reconnect WebSocket for the current product ID
-      initializeWebSocket(currentProductID);
-    })
-    .catch((error) => {
-      console.error("Chart Data Fetch Error:", error);
-      if (dom.chartMessage) {
-        dom.chartMessage.textContent = `Error loading chart data: ${
-          error.message
-        }${error.details ? ` (${error.details})` : ""}`;
-        dom.chartMessage.style.display = "block";
-        dom.chartMessage.style.color = "red";
-      }
-      updateState({ fullData: [] }); // Clear data on error
-      redrawChart(); // Redraw empty chart
-    });
+        console.log("[fetchAndRedraw] Initializing WebSocket...");
+        initializeWebSocket(currentProductID); // Reconnect WebSocket AFTER processing data
+      })
+      .catch((error) => {
+        console.error(
+          "[fetchAndRedraw] Chart Data Fetch/Processing Error:",
+          error
+        );
+        if (dom.chartMessage) {
+          dom.chartMessage.textContent = `Error loading chart data: ${
+            error.message
+          }${error.details ? ` (${error.details})` : ""}`;
+          dom.chartMessage.style.display = "block";
+          dom.chartMessage.style.color = "red";
+        }
+        updateState({ fullData: [] });
+        requestAnimationFrame(redrawChart); // Redraw empty chart on error
+      });
+  } catch (err) {
+    console.error("[fetchAndRedraw] Synchronous error:", err);
+    if (dom.chartMessage) {
+      dom.chartMessage.textContent = `Error: ${err.message}`;
+      dom.chartMessage.style.display = "block";
+      dom.chartMessage.style.color = "red";
+    }
+  }
+  console.log("[fetchAndRedraw] Function end."); // Log sync function exit
 }
 
 // --- Main Execution ---
 document.addEventListener("DOMContentLoaded", () => {
+  console.log("[DOMContentLoaded] Starting initialization..."); // Log start
+
   if (!dom.checkElements()) {
-    console.error("Essential DOM elements missing. Aborting initialization.");
-    // Maybe display a user-facing error message here
-    document.body.innerHTML =
-      '<div style="padding: 20px; text-align: center; color: red; font-size: 1.2em;">Error: Application cannot start. Required HTML elements are missing. Check the console for details.</div>';
-    return;
+    console.error("[DOMContentLoaded] Aborting due to missing elements.");
+    return; // Stop if elements are missing
   }
+  console.log("[DOMContentLoaded] Element check passed.");
 
-  initializeTheme();
-  initializeSettingsMenu();
-  initializeTabs("#bottom-tab-bar", ".tab-content-area"); // This now handles order loading trigger
-  initializePromptTab();
-  // initializeVolumeChart(); // Initialize the volume chart module <-- COMMENTED OUT
-  attachInteractionListeners();
-  initializeResizer();
-  checkApiStatus(); // Check backend/credentials status
-  initializeBalances(); // Fetch account balances
+  try {
+    // Wrap initialization steps in try-catch for safety
+    initializeTheme();
+    console.log("[DOMContentLoaded] Theme initialized.");
+    initializeSettingsMenu();
+    console.log("[DOMContentLoaded] Settings menu initialized.");
+    initializeTabs("#bottom-tab-bar", ".tab-content-area");
+    console.log("[DOMContentLoaded] Tabs initialized.");
+    initializePromptTab();
+    console.log("[DOMContentLoaded] Prompt tab initialized.");
+    initializeVolumeChart();
+    console.log("[DOMContentLoaded] Volume chart initialized.");
+    attachInteractionListeners();
+    console.log("[DOMContentLoaded] Interactions attached.");
+    initializeResizer();
+    console.log("[DOMContentLoaded] Resizer initialized.");
+    checkApiStatus(); // Async
+    console.log("[DOMContentLoaded] API status check initiated.");
+    initializeBalances(); // Async
+    console.log("[DOMContentLoaded] Balance initialization initiated.");
 
-  // Setup Granularity Controls
-  if (dom.granularityControls) {
-    dom.granularityControls.addEventListener("click", (event) => {
-      if (event.target.tagName === "BUTTON" && !event.target.disabled) {
-        const newGranularity = parseInt(event.target.dataset.granularity, 10);
-        if (
-          !isNaN(newGranularity) &&
-          newGranularity !== state.currentGranularity
-        ) {
-          // Update UI
-          const currentActive =
-            dom.granularityControls.querySelector("button.active");
-          if (currentActive) currentActive.classList.remove("active");
-          event.target.classList.add("active");
-
-          // Fetch and redraw with new granularity
-          fetchAndRedraw(newGranularity);
+    // Setup Granularity Controls
+    if (dom.granularityControls) {
+      dom.granularityControls.addEventListener("click", (event) => {
+        if (event.target.tagName === "BUTTON" && !event.target.disabled) {
+          const newGranularity = parseInt(event.target.dataset.granularity, 10);
+          if (
+            !isNaN(newGranularity) &&
+            newGranularity !== state.currentGranularity
+          ) {
+            console.log(
+              `[Granularity] New selection: ${newGranularity}. Fetching...`
+            );
+            const currentActive =
+              dom.granularityControls.querySelector("button.active");
+            if (currentActive) currentActive.classList.remove("active");
+            event.target.classList.add("active");
+            fetchAndRedraw(newGranularity); // Fetch on click
+          }
         }
+      });
+      // Set initial active button
+      const initialActiveButton = dom.granularityControls.querySelector(
+        `button[data-granularity="${state.currentGranularity}"]`
+      );
+      if (
+        initialActiveButton &&
+        !initialActiveButton.classList.contains("active")
+      ) {
+        const currentActive =
+          dom.granularityControls.querySelector("button.active");
+        if (currentActive) currentActive.classList.remove("active");
+        initialActiveButton.classList.add("active");
+      } else if (!initialActiveButton) {
+        console.warn(
+          `No granularity button found for default: ${state.currentGranularity}`
+        );
+        const firstButton = dom.granularityControls.querySelector("button");
+        if (firstButton) firstButton.classList.add("active");
       }
+      console.log("[DOMContentLoaded] Granularity controls set up.");
+    } else {
+      console.warn(
+        "[DOMContentLoaded] Granularity controls element not found."
+      );
+    }
+
+    // --- Initial data fetch ---
+    console.log("[DOMContentLoaded] Performing initial data fetch..."); // Log before call
+    fetchAndRedraw(state.currentGranularity); // <<< THE INITIAL CALL SITE
+    console.log("[DOMContentLoaded] Initial data fetch function called."); // Log right after call
+
+    window.addEventListener("beforeunload", () => {
+      closeWebSocket();
     });
 
-    // Set initial active button based on default state granularity
-    const initialActiveButton = dom.granularityControls.querySelector(
-      `button[data-granularity="${state.currentGranularity}"]`
+    console.log(
+      "[DOMContentLoaded] GeminiTrader Frontend Initialization Sequence Complete."
+    ); // Final log
+  } catch (initError) {
+    console.error(
+      "[DOMContentLoaded] CRITICAL ERROR during initialization:",
+      initError
     );
-    if (
-      initialActiveButton &&
-      !initialActiveButton.classList.contains("active")
-    ) {
-      // Ensure only one is active if the default wasn't marked initially
-      const currentActive =
-        dom.granularityControls.querySelector("button.active");
-      if (currentActive) currentActive.classList.remove("active");
-      initialActiveButton.classList.add("active");
-    } else if (!initialActiveButton) {
-      console.warn(
-        `No granularity button found for default: ${state.currentGranularity}`
-      );
-      // Optionally activate the first button as a fallback
-      const firstButton = dom.granularityControls.querySelector("button");
-      if (firstButton) firstButton.classList.add("active");
+    // Display a user-facing error if possible
+    if (dom.chartMessage) {
+      dom.chartMessage.textContent = `Initialization Error: ${initError.message}`;
+      dom.chartMessage.style.display = "block";
+      dom.chartMessage.style.color = "red";
+    } else {
+      alert(`Application Initialization Error: ${initError.message}`);
     }
-  } else {
-    console.warn(
-      "Granularity controls element (#granularity-controls) not found."
-    );
   }
-
-  // Initial data fetch
-  fetchAndRedraw(state.currentGranularity);
-
-  // Add cleanup for WebSocket on page unload
-  window.addEventListener("beforeunload", () => {
-    closeWebSocket(); // Use the specific function, no argument needed
-  });
-
-  console.log("GeminiTrader Frontend Initialized.");
 });
 
 ```
@@ -4460,41 +4279,88 @@ export function initializeTabs(tabBarSelector, contentAreaSelector) {
 --- START FILE: js/theme.js ---
 ```js
 // js/theme.js
-import { themeToggle } from "./domElements.js";
+import * as dom from "./domElements.js"; // Import domElements
+import * as config from "./config.js"; // Import config for colors
 
+/**
+ * Applies the selected theme (light/dark) to the application.
+ * Sets the data-theme attribute and directly styles the body background.
+ * @param {string} theme - The theme to apply ('light' or 'dark').
+ */
+function applyTheme(theme) {
+  if (theme !== "light" && theme !== "dark") {
+    console.warn(`Invalid theme specified: ${theme}. Defaulting to light.`);
+    theme = "light";
+  }
+
+  // 1. Set data-theme attribute for CSS variable switching
+  document.documentElement.setAttribute("data-theme", theme);
+
+  // 2. Directly set body background color from config
+  const bgColor =
+    theme === "dark" ? config.DARK_MODE_BG_COLOR : config.LIGHT_MODE_BG_COLOR;
+  document.body.style.backgroundColor = bgColor;
+
+  // 3. Update toggle state if it exists
+  if (dom.themeToggle) {
+    dom.themeToggle.checked = theme === "dark";
+  }
+
+  console.log(`Theme applied: ${theme}, Background set to: ${bgColor}`);
+}
+
+/**
+ * Initializes the theme based on saved preference, system preference, or default.
+ * Attaches event listeners for theme changes.
+ */
 export function initializeTheme() {
   const userPrefersDark =
     window.matchMedia &&
     window.matchMedia("(prefers-color-scheme: dark)").matches;
-  const currentTheme = localStorage.getItem("theme");
-  let theme = "light";
-  if (currentTheme) {
-    theme = currentTheme;
+  const savedTheme = localStorage.getItem("theme"); // Could be 'light' or 'dark'
+
+  let initialTheme = "light"; // Default
+
+  if (savedTheme === "light" || savedTheme === "dark") {
+    initialTheme = savedTheme;
+    console.log(`Using saved theme preference: ${initialTheme}`);
   } else if (userPrefersDark) {
-    theme = "dark";
+    initialTheme = "dark";
+    console.log(`Using system theme preference: ${initialTheme}`);
+  } else {
+    console.log(`Using default theme: ${initialTheme}`);
   }
-  document.documentElement.setAttribute("data-theme", theme);
-  if (themeToggle && theme === "dark") {
-    themeToggle.checked = true;
-  }
-  if (themeToggle) {
-    themeToggle.addEventListener("change", function () {
-      if (this.checked) {
-        document.documentElement.setAttribute("data-theme", "dark");
-        localStorage.setItem("theme", "dark");
-      } else {
-        document.documentElement.setAttribute("data-theme", "light");
-        localStorage.setItem("theme", "light");
+
+  applyTheme(initialTheme); // Apply the determined initial theme
+
+  // Listener for the theme toggle checkbox
+  if (dom.themeToggle) {
+    dom.themeToggle.addEventListener("change", function () {
+      const newTheme = this.checked ? "dark" : "light";
+      applyTheme(newTheme);
+      try {
+        localStorage.setItem("theme", newTheme); // Save preference
+      } catch (e) {
+        console.error("Could not save theme preference to localStorage:", e);
       }
     });
+  } else {
+    console.warn("Theme toggle checkbox not found.");
   }
+
+  // Listener for changes in system preference (if no user preference is saved)
   window
     .matchMedia("(prefers-color-scheme: dark)")
     .addEventListener("change", (e) => {
+      // Only apply system change if the user hasn't explicitly set a theme via toggle
       if (!localStorage.getItem("theme")) {
-        const newTheme = e.matches ? "dark" : "light";
-        document.documentElement.setAttribute("data-theme", newTheme);
-        if (themeToggle) themeToggle.checked = newTheme === "dark";
+        const newSystemTheme = e.matches ? "dark" : "light";
+        console.log(`System theme changed to: ${newSystemTheme}. Applying...`);
+        applyTheme(newSystemTheme);
+      } else {
+        console.log(
+          "System theme changed, but user preference is set. Ignoring system change."
+        );
       }
     });
 }
@@ -4874,7 +4740,7 @@ export function formatQuantity(value) {
 ```js
 // js/volumeChart.js
 import * as dom from "./domElements.js";
-import state from "./state.js"; // Need state for visible range and data
+// No need to import state directly if passed into drawVolumeChart
 
 let ctx = null;
 let canvasWidth = 0;
@@ -4885,7 +4751,7 @@ let canvasHeight = 0;
  */
 export function initializeVolumeChart() {
   if (!dom.volumeChartCanvas) {
-    console.error("Volume chart canvas not found.");
+    console.error("Volume chart canvas not found. Cannot initialize.");
     return;
   }
   ctx = dom.volumeChartCanvas.getContext("2d");
@@ -4900,26 +4766,26 @@ export function initializeVolumeChart() {
  * Draws the volume bars based on the main chart's visible data.
  *
  * @param {object} mainChartState - The main chart's state (including fullData, visibleStartIndex, visibleEndIndex).
- * @param {number} mainChartWidth - The width of the main chart drawing area (needed for alignment).
+ * @param {number} mainDrawingAreaWidth - The width of the main chart's drawing area (needed for alignment).
  */
-export function drawVolumeChart(mainChartState, mainChartWidth) {
+export function drawVolumeChart(mainChartState, mainDrawingAreaWidth) {
   // Ensure context and canvas element exist before proceeding
-  if (!ctx || !dom.volumeChartCanvas) {
-    console.warn(
-      "Volume chart draw skipped: Context or Canvas element missing."
-    );
+  if (!ctx || !dom.volumeChartCanvas || !dom.volumeChartContainer) {
+    // console.warn("Volume chart draw skipped: Context or Canvas element missing."); // Less noise
     return;
   }
 
-  canvasWidth = dom.volumeChartCanvas.offsetWidth;
-  canvasHeight = dom.volumeChartCanvas.offsetHeight;
+  canvasWidth =
+    dom.volumeChartContainer.offsetWidth -
+    dom.volumeChartContainer.style.paddingLeft -
+    dom.volumeChartContainer.style.paddingRight -
+    55; // Calculate usable width (consider padding/axis)
+  canvasHeight = dom.volumeChartContainer.offsetHeight; // Use container height
 
   // Ensure canvas has valid dimensions to draw on
   if (canvasWidth <= 0 || canvasHeight <= 0) {
-    // console.warn("Volume chart draw skipped: Invalid canvas dimensions."); // Optional log
-    // Ensure canvas is clear if dimensions are invalid
     if (dom.volumeChartCanvas.width > 0 || dom.volumeChartCanvas.height > 0) {
-      dom.volumeChartCanvas.width = 0; // Explicitly clear if needed
+      dom.volumeChartCanvas.width = 0;
       dom.volumeChartCanvas.height = 0;
     }
     return;
@@ -4932,7 +4798,6 @@ export function drawVolumeChart(mainChartState, mainChartWidth) {
   ) {
     dom.volumeChartCanvas.width = canvasWidth;
     dom.volumeChartCanvas.height = canvasHeight;
-    // console.log("Resized volume canvas:", canvasWidth, canvasHeight); // Optional log
   }
 
   // Clear the canvas for redrawing
@@ -4946,16 +4811,14 @@ export function drawVolumeChart(mainChartState, mainChartWidth) {
     !fullData ||
     visibleCount <= 0 ||
     fullData.length === 0 ||
-    mainChartWidth <= 0
+    mainDrawingAreaWidth <= 0
   ) {
-    // console.warn("Volume chart draw skipped: No visible data or invalid main chart width."); // Optional log
     return; // Nothing to draw
   }
 
   // --- Calculate Volume Scale ---
   let maxVisibleVolume = 0;
   for (let i = visibleStartIndex; i < visibleEndIndex; i++) {
-    // Robust check: ensure array exists, has enough elements, and volume is a number
     if (
       fullData[i] &&
       fullData[i].length > 5 &&
@@ -4966,17 +4829,15 @@ export function drawVolumeChart(mainChartState, mainChartWidth) {
     }
   }
 
-  // Avoid division by zero if max volume is zero or less (shouldn't be <0, but safe check)
+  // Avoid division by zero
   if (maxVisibleVolume <= 0) {
-    // console.warn("Volume chart draw skipped: Max visible volume is zero or negative."); // Optional log
     return;
   }
-
-  // Calculate scale factor AFTER confirming maxVisibleVolume > 0
-  const volumeScaleY = canvasHeight / maxVisibleVolume;
+  const volumeScaleY = canvasHeight / maxVisibleVolume; // Scale based on canvas height
 
   // --- Calculate Bar Width and Alignment ---
-  const barTotalWidth = mainChartWidth / visibleCount;
+  // Use the main chart's drawing area width for alignment calculation
+  const barTotalWidth = mainDrawingAreaWidth / visibleCount;
   const barWidthRatio = 0.7;
   const barWidth = Math.max(1, barTotalWidth * barWidthRatio);
 
@@ -4985,62 +4846,85 @@ export function drawVolumeChart(mainChartState, mainChartWidth) {
   const colorUp = styles.getPropertyValue("--candle-up").trim();
   const colorDown = styles.getPropertyValue("--candle-down").trim();
   const barOpacity = parseFloat(
-    styles.getPropertyValue("--volume-bar-opacity").trim() || 0.7
-  );
+    styles.getPropertyValue("--volume-bar-opacity").trim() || 0.6
+  ); // Adjusted default
 
-  // Apply opacity once if using globalAlpha
   ctx.globalAlpha = barOpacity;
 
   // --- Draw Bars ---
   for (let i = 0; i < visibleCount; i++) {
     const dataIndex = visibleStartIndex + i;
-    // Basic bounds check (already somewhat covered by loop condition)
     if (dataIndex < 0 || dataIndex >= fullData.length) continue;
 
     const candle = fullData[dataIndex];
-    // More robust check for essential data points needed for coloring and volume
+    // Need open[3], close[4], volume[5]
     if (
       !candle ||
       candle.length < 6 ||
       typeof candle[3] !== "number" ||
-      isNaN(candle[3]) || // open
+      isNaN(candle[3]) ||
       typeof candle[4] !== "number" ||
-      isNaN(candle[4]) || // close
+      isNaN(candle[4]) ||
       typeof candle[5] !== "number" ||
-      isNaN(candle[5])
+      isNaN(candle[5]) ||
+      candle[5] <= 0
     ) {
-      // volume
-      // console.warn(`Skipping volume bar at index ${dataIndex}: Invalid candle data`, candle); // Debug log
-      continue;
+      continue; // Skip invalid or zero volume candles
     }
 
     const open = candle[3];
     const close = candle[4];
     const volume = candle[5];
-
-    // Skip drawing if volume is essentially zero
-    if (volume <= 1e-9) continue;
-
-    // Calculate height, ensuring a minimum visual height of 1px
     const barHeight = Math.max(1, volume * volumeScaleY);
     const isUp = close >= open;
 
-    // Calculate X position
+    // Calculate X position based on the main chart's drawing area width
     const barCenterX = (i + 0.5) * barTotalWidth;
     const barLeft = barCenterX - barWidth / 2;
 
-    // Set fill color
     ctx.fillStyle = isUp ? colorUp : colorDown;
 
-    // Draw the rectangle
-    // Prevent drawing outside canvas bounds (Y coordinate)
-    const yPos = Math.max(0, canvasHeight - barHeight); // Ensure Y doesn't go negative
-    const drawHeight = Math.min(barHeight, canvasHeight); // Ensure height doesn't exceed canvas height
+    const yPos = Math.max(0, canvasHeight - barHeight);
+    const drawHeight = Math.min(barHeight, canvasHeight - yPos); // Prevent drawing past bottom
     ctx.fillRect(barLeft, yPos, barWidth, drawHeight);
   }
 
-  // Reset global alpha after drawing all bars
   ctx.globalAlpha = 1.0;
+
+  // Optional: Draw Y-Axis Labels for Volume (Simple Example)
+  if (dom.volumeYAxisLabels) {
+    dom.volumeYAxisLabels.innerHTML = ""; // Clear old labels
+    const maxVolFormatted = formatVolumeLabel(maxVisibleVolume);
+    const midVolFormatted = formatVolumeLabel(maxVisibleVolume / 2);
+
+    // Max Label (Top)
+    const maxLabel = document.createElement("div");
+    maxLabel.className = "axis-label y-axis-label";
+    maxLabel.style.top = "2px"; // Position near top
+    maxLabel.textContent = maxVolFormatted;
+    dom.volumeYAxisLabels.appendChild(maxLabel);
+
+    // Mid Label (Approx Middle)
+    const midLabel = document.createElement("div");
+    midLabel.className = "axis-label y-axis-label";
+    midLabel.style.top = `${(canvasHeight / 2).toFixed(0)}px`;
+    midLabel.style.transform = "translateY(-50%)"; // Center vertically
+    midLabel.textContent = midVolFormatted;
+    dom.volumeYAxisLabels.appendChild(midLabel);
+
+    // Zero label is implicitly at the bottom
+  }
+}
+
+// Helper to format volume labels nicely (e.g., 1.23M, 543K)
+function formatVolumeLabel(volume) {
+  if (volume >= 1e6) {
+    return (volume / 1e6).toFixed(2) + "M";
+  } else if (volume >= 1e3) {
+    return (volume / 1e3).toFixed(1) + "K";
+  } else {
+    return volume.toFixed(0); // Show whole numbers for small volumes
+  }
 }
 
 ```
@@ -5380,19 +5264,23 @@ if __name__ == '__main__':
 ```css
 /* --- General Setup & CSS Variables --- */
 :root {
-  --bg-color: #f0f0f0;
+  --bg-color: #f0f0f0; /* Fallback/Initial BG */
   --text-color: #333;
   --subtle-text-color: #555;
-  --card-bg: #ffffff;
+  --card-bg: #ffffff; /* Used for distinct elements like header, dropdowns, textarea */
   --border-color: #e0e0e0;
   --grid-color: #eeeeee;
-  --axis-label-bg: rgba(255, 255, 255, 0.85);
+  --axis-label-bg: rgba(
+    255,
+    255,
+    255,
+    0.85
+  ); /* Semi-transparent for text readability */
   --switch-bg: #ccc;
   --switch-slider: #fff;
-  --switch-slider-checked: #26a69a; /* Active tab color */
+  --switch-slider-checked: #26a69a;
   --candle-up: #26a69a;
   --candle-down: #ef5350;
-  --candle-wick: #555;
   --shadow-color: rgba(0, 0, 0, 0.05);
   --border-radius-sm: 4px;
   --border-radius-md: 6px;
@@ -5404,28 +5292,33 @@ if __name__ == '__main__':
   --resizer-height: 6px;
   --min-pane-height: 100px;
   --tab-button-hover-bg: rgba(0, 0, 0, 0.05);
-  /* Volume/Depth variables removed */
+  /* Volume Chart Vars */
+  --volume-bar-opacity: 0.6;
+  --sub-chart-height: 80px;
+  --sub-chart-y-axis-width: 55px;
 }
 
 html[data-theme="dark"] {
-  --bg-color: #1e1e1e;
+  /* --bg-color is set by JS directly on body */
   --text-color: #e0e0e0;
   --subtle-text-color: #aaaaaa;
-  --card-bg: #2a2a2a;
+  --card-bg: #2a2a2a; /* Card background for specific elements */
   --border-color: #444444;
-  --grid-color: #383838;
-  --axis-label-bg: rgba(42, 42, 42, 0.85);
+  --grid-color: #383838; /* Grid lines */
+  --axis-label-bg: rgba(
+    42,
+    42,
+    42,
+    0.85
+  ); /* Semi-transparent for text readability */
   --switch-bg: #555;
   --switch-slider: #ccc;
-  /* --switch-slider-checked remains teal */
-  --candle-wick: #bbbbbb;
-  --shadow-color: rgba(0, 0, 0, 0.2);
+  --shadow-color: rgba(0, 0, 0, 0.4); /* Darker shadow on dark bg */
   --current-price-color: #448aff;
-  --current-price-text-color: #1e1e1e;
+  --current-price-text-color: #ffffff;
   --resizer-color: #444444;
   --resizer-hover-color: #666666;
   --tab-button-hover-bg: rgba(255, 255, 255, 0.08);
-  /* Volume/Depth variables removed */
 }
 
 /* --- Core Layout --- */
@@ -5436,15 +5329,16 @@ body {
   overflow: hidden;
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
     Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif;
-  background-color: var(--bg-color);
+  /* background-color is set by JavaScript in theme.js */
   color: var(--text-color);
-  transition: background-color 0.3s ease, color 0.3s ease;
+  transition: color 0.3s ease;
 }
 .main-layout {
   display: flex;
   flex-direction: column;
   height: 100%;
   width: 100%;
+  /* No background */
 }
 
 /* --- Header Area --- */
@@ -5452,7 +5346,7 @@ body {
   flex-shrink: 0;
   padding: 5px 15px;
   border-bottom: 1px solid var(--border-color);
-  background-color: var(--card-bg);
+  background-color: transparent !important; /* Explicitly transparent */
   position: relative;
   z-index: 110;
   box-shadow: 0 1px 3px var(--shadow-color);
@@ -5463,6 +5357,7 @@ body {
   flex-wrap: wrap;
   gap: 10px;
 }
+/* ... (rest of header styles remain the same) ... */
 .header-content {
   text-align: center;
   flex-grow: 1;
@@ -5515,12 +5410,10 @@ body {
 }
 .granularity-controls button.active {
   background-color: var(--switch-slider-checked);
-  color: var(--card-bg);
+  color: #ffffff;
   border-color: var(--switch-slider-checked);
   font-weight: 500;
 }
-
-/* --- Settings Button & Dropdown --- */
 .settings-group {
   position: relative;
 }
@@ -5537,7 +5430,7 @@ body {
 }
 .icon-button:hover {
   color: var(--text-color);
-  background-color: var(--grid-color);
+  background-color: var(--tab-button-hover-bg);
 }
 .dropdown-menu {
   position: absolute;
@@ -5658,23 +5551,21 @@ input:checked + .slider:before {
   overflow: hidden;
 }
 
-/* --- Chart Pane (Reverted to simple flex container) --- */
+/* --- Chart Pane --- */
 .chart-pane {
   flex-grow: 1;
   flex-shrink: 1;
   overflow: hidden;
   position: relative;
   min-height: var(--min-pane-height);
-  display: flex; /* Ensure chart-container fills it */
-  /* Removed flex-direction */
-  background-color: var(--card-bg);
+  display: flex;
+  flex-direction: column;
 }
 
 /* Main Candlestick Chart Container */
 .chart-container {
   width: 100%;
   flex-grow: 1;
-  background-color: var(--card-bg);
   border: none;
   padding: 10px 55px 40px 10px;
   box-sizing: border-box;
@@ -5683,8 +5574,9 @@ input:checked + .slider:before {
   cursor: grab;
   user-select: none;
   display: flex;
-  /* Removed min-height */
+  min-height: 150px;
 }
+/* ... (rest of chart container styles) ... */
 .chart-container.panning {
   cursor: grabbing;
 }
@@ -5721,6 +5613,8 @@ input:checked + .slider:before {
   height: 1px;
   left: 0;
 }
+
+/* --- Axis Label Areas --- */
 .y-axis-labels,
 .x-axis-labels {
   position: absolute;
@@ -5728,28 +5622,32 @@ input:checked + .slider:before {
   color: var(--subtle-text-color);
   z-index: 10;
   overflow: hidden;
-  background-color: var(--card-bg);
-  transition: background-color 0.3s ease, border-color 0.3s ease,
-    color 0.3s ease;
+  background-color: transparent; /* No background */
+  border-color: var(--border-color);
+  transition: border-color 0.3s ease, color 0.3s ease;
 }
 .y-axis-labels {
   top: 0;
   right: -55px;
-  width: 53px;
+  width: 55px;
   height: 100%;
   cursor: ns-resize;
   border-left: 1px solid var(--border-color);
   padding-left: 2px;
+  box-sizing: border-box;
 }
 .x-axis-labels {
   bottom: -40px;
   left: 0;
   width: 100%;
-  height: 38px;
+  height: 40px;
   cursor: ew-resize;
   border-top: 1px solid var(--border-color);
   padding-top: 2px;
+  box-sizing: border-box;
 }
+
+/* Individual Axis Labels (Text) */
 .axis-label {
   position: absolute;
   padding: 1px 4px;
@@ -5762,7 +5660,8 @@ input:checked + .slider:before {
   right: 5px;
   transform: translateY(-50%);
   background-color: var(--axis-label-bg);
-  transition: background-color 0.3s ease;
+  color: var(--text-color);
+  transition: background-color 0.3s ease, color 0.3s ease;
 }
 .x-axis-label {
   top: 2px;
@@ -5775,13 +5674,15 @@ input:checked + .slider:before {
   transform: translateX(-50%);
   color: var(--text-color);
   font-weight: 500;
-  background-color: var(--card-bg);
+  background-color: var(--axis-label-bg);
   padding: 1px 6px;
   z-index: 12;
   border: 1px solid var(--border-color);
   transition: background-color 0.3s ease, border-color 0.3s ease,
     color 0.3s ease;
 }
+
+/* ... (rest of chart styles) ... */
 .day-separator-line {
   position: absolute;
   top: 0;
@@ -5830,9 +5731,6 @@ input:checked + .slider:before {
   transition: top 0.1s linear;
   white-space: nowrap;
 }
-html[data-theme="dark"] .current-price-label {
-  color: var(--bg-color);
-}
 .crosshair-line-x {
   position: absolute;
   left: 0;
@@ -5852,7 +5750,7 @@ html[data-theme="dark"] .current-price-label {
   font-weight: 500;
   text-align: center;
   background-color: var(--subtle-text-color);
-  color: var(--card-bg);
+  color: var(--bg-color, #0f0f19);
   pointer-events: none;
   z-index: 21;
   border-radius: var(--border-radius-sm);
@@ -5871,7 +5769,6 @@ html[data-theme="dark"] .current-price-label {
   left: 50%;
   transform: translateX(-50%);
   width: 1px;
-  background-color: var(--candle-wick);
 }
 .body {
   position: absolute;
@@ -5880,10 +5777,16 @@ html[data-theme="dark"] .current-price-label {
   box-sizing: border-box;
   border-radius: 1px;
 }
-.color-up {
+.body.color-up {
   background-color: var(--candle-up);
 }
-.color-down {
+.body.color-down {
+  background-color: var(--candle-down);
+}
+.wick.color-up {
+  background-color: var(--candle-up);
+}
+.wick.color-down {
   background-color: var(--candle-down);
 }
 #chart-message {
@@ -5941,7 +5844,51 @@ html[data-theme="dark"] .current-price-label {
   margin-left: 5px;
 }
 
-/* Styles for volume chart container and canvas removed */
+/* --- UNCOMMENTED: Sub-Chart (Volume) Styles --- */
+.sub-chart-container {
+  width: 100%;
+  height: var(--sub-chart-height);
+  flex-shrink: 0; /* Prevent shrinking */
+  margin-top: 5px; /* Space between main chart and volume */
+  /* Adjust padding to align canvas correctly, considering axis width */
+  padding: 0px var(--sub-chart-y-axis-width) 0px 10px;
+  box-sizing: border-box;
+  position: relative;
+  overflow: hidden;
+  border-top: 1px solid var(--border-color); /* Separator line */
+}
+
+#volume-chart-canvas {
+  display: block;
+  position: absolute;
+  top: 0;
+  left: 10px; /* Match main chart's left padding */
+  /* Calculate width based on container's padding/axis */
+  width: calc(100% - 10px - var(--sub-chart-y-axis-width));
+  height: 100%;
+}
+
+#volume-y-axis-labels {
+  position: absolute;
+  top: 0;
+  right: 0; /* Position on the far right */
+  width: calc(var(--sub-chart-y-axis-width) - 1px); /* Width minus border */
+  height: 100%;
+  font-size: 10px;
+  color: var(--subtle-text-color);
+  border-left: 1px solid var(--border-color);
+  padding-left: 2px;
+  box-sizing: border-box;
+  overflow: hidden;
+  pointer-events: none;
+  background: transparent; /* Ensure no background */
+}
+#volume-y-axis-labels .axis-label.y-axis-label {
+  background-color: var(--axis-label-bg); /* Semi-transparent for readability */
+  color: var(--text-color); /* Use main text color */
+  right: 4px;
+}
+/* --- END UNCOMMENTED --- */
 
 /* --- Resizer Handle --- */
 .resizer {
@@ -5961,23 +5908,23 @@ html[data-theme="dark"] .current-price-label {
 .tab-container {
   flex-shrink: 0;
   overflow: hidden;
-  background-color: var(--card-bg);
   border-top: 1px solid var(--border-color);
   box-shadow: 0 -1px 3px var(--shadow-color);
   z-index: 40;
   display: flex;
   flex-direction: column;
   min-height: var(--min-pane-height);
-  transition: background-color 0.3s ease, border-color 0.3s ease;
+  transition: border-color 0.3s ease;
 }
 .tab-bar {
   display: flex;
   flex-shrink: 0;
   border-bottom: 1px solid var(--border-color);
   padding: 0 10px;
-  background-color: var(--card-bg);
-  transition: background-color 0.3s ease, border-color 0.3s ease;
+  background-color: transparent !important;
+  transition: border-color 0.3s ease;
 }
+/* ... (rest of tab styles) ... */
 .tab-button {
   padding: 8px 16px;
   font-size: 0.9em;
@@ -5990,6 +5937,7 @@ html[data-theme="dark"] .current-price-label {
   transition: color 0.2s ease, border-bottom-color 0.2s ease,
     background-color 0.2s ease;
   margin-bottom: -1px;
+  border-radius: var(--border-radius-sm) var(--border-radius-sm) 0 0;
 }
 .tab-button:hover {
   background-color: var(--tab-button-hover-bg);
@@ -5998,18 +5946,18 @@ html[data-theme="dark"] .current-price-label {
 .tab-button.active {
   color: var(--switch-slider-checked);
   border-bottom-color: var(--switch-slider-checked);
+  background-color: transparent;
 }
 .tab-content-area {
   flex-grow: 1;
   overflow: hidden;
-  position: relative;
+  position: relative; /* No background */
 }
 .tab-content {
   display: none;
   width: 100%;
   height: 100%;
   overflow: auto;
-  /* Removed default padding here, apply per-tab */
   box-sizing: border-box;
 }
 .tab-content.active {
@@ -6023,12 +5971,11 @@ html[data-theme="dark"] .current-price-label {
   height: 100%;
   color: var(--subtle-text-color);
   font-style: italic;
-  padding: 10px; /* Add padding back to placeholders */
+  padding: 10px;
 }
 .pane-placeholder p {
   margin-bottom: 5px;
 }
-/* Error style for placeholders */
 .pane-placeholder.error {
   color: var(--candle-down);
   font-style: normal;
@@ -6049,7 +5996,7 @@ html[data-theme="dark"] .current-price-label {
   height: 100%;
   box-sizing: border-box;
   resize: none;
-  background-color: var(--bg-color);
+  background-color: var(--card-bg);
   color: var(--text-color);
   border: 1px solid var(--border-color);
   border-radius: var(--border-radius-sm);
@@ -6144,7 +6091,8 @@ html[data-theme="dark"] .current-price-label {
   align-items: flex-end;
   font-size: 0.9em;
   transition: border-color 0.3s ease;
-  background-color: var(--card-bg);
+  background-color: transparent;
+  border-color: var(--border-color);
 }
 .balance-total span:first-child {
   color: var(--subtle-text-color);
@@ -6162,50 +6110,35 @@ html[data-theme="dark"] .current-price-label {
   font-style: italic;
   transition: color 0.3s ease;
 }
-
-/* --- Balance Dust Category Styles --- */
 .balance-list-dust-summary {
   cursor: pointer;
-  /* font-style: italic; Removed */
   color: var(--subtle-text-color);
-  border-top: 1px dashed var(--grid-color); /* Separator above dust */
-  /* margin-top: 5px; Removed */
-  /* padding-top: 5px; Removed */
-  /* Inherit default li padding instead */
+  border-top: 1px dashed var(--grid-color);
 }
 .balance-list-dust-summary .asset-code {
-  font-size: 0.9em; /* Slightly smaller font */
+  font-size: 0.9em;
   font-weight: 500;
-  /* font-style: normal; Removed */
 }
 .balance-list-dust-summary:hover {
   color: var(--text-color);
 }
-
-/* Remove triangle indicator */
-/* .balance-list-dust-summary::before { ... } REMOVED */
-/* .balance-list.dust-visible .balance-list-dust-summary::before { ... } REMOVED */
-
 .balance-list-dust-item {
-  display: none; /* Hidden by default */
-  /* Optional: add subtle style when visible */
+  display: none;
   opacity: 0.8;
-  font-size: 0.95em; /* Slightly smaller than main items */
+  font-size: 0.95em;
 }
-/* Show dust items when parent list has the 'dust-visible' class */
-/* Ensure this selector is specific enough */
 ul#balance-list.dust-visible .balance-list-dust-item {
-  display: flex; /* Or 'block' if preferred, should match normal li */
+  display: flex;
 }
-/* Explicitly hide when class is not present (for robustness) */
 ul#balance-list:not(.dust-visible) .balance-list-dust-item {
   display: none;
 }
 
-/* --- Orders Table Styling (in #open-orders-content) --- */
+/* Orders Table Styling */
 #open-orders-content {
-  padding: 10px; /* Add padding back to this specific tab */
+  padding: 10px;
 }
+/* ... (rest of orders table styles) ... */
 .orders-table {
   width: 100%;
   border-collapse: collapse;
@@ -6227,7 +6160,6 @@ ul#balance-list:not(.dust-visible) .balance-list-dust-item {
 .orders-table tbody tr:hover {
   background-color: var(--tab-button-hover-bg);
 }
-/* Specific column alignments / styles */
 .orders-table td.side-buy {
   color: var(--candle-up);
   font-weight: 500;
@@ -6236,16 +6168,37 @@ ul#balance-list:not(.dust-visible) .balance-list-dust-item {
   color: var(--candle-down);
   font-weight: 500;
 }
-.orders-table th:nth-child(5), /* Price */
+.orders-table th:nth-child(1),
+.orders-table td:nth-child(1) {
+  min-width: 110px;
+}
+.orders-table th:nth-child(5),
 .orders-table td:nth-child(5),
-.orders-table th:nth-child(6), /* Size */
+.orders-table th:nth-child(6),
 .orders-table td:nth-child(6),
-.orders-table th:nth-child(7), /* Filled */
+.orders-table th:nth-child(7),
 .orders-table td:nth-child(7) {
   text-align: right;
 }
+.orders-table td[class^="status-"] {
+  font-style: italic;
+  color: var(--subtle-text-color);
+}
+.orders-table td.status-open {
+  color: var(--text-color);
+  font-style: normal;
+}
+.orders-table td.status-pending {
+  color: orange;
+}
+.orders-table td.status-filled {
+  color: var(--candle-up);
+}
+.orders-table td.status-cancelled {
+  text-decoration: line-through;
+}
 
-/* --- Body cursor change during resize --- */
+/* Body cursor change during resize */
 body.resizing,
 body.resizing * {
   cursor: row-resize !important;

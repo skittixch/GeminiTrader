@@ -2,7 +2,7 @@
 venv/
 env/
 .venv/
-# *.env  # Can comment out or remove if no other .env files needed
+*.env  # Can comment out or remove if no other .env files needed
 
 # ... other ignores ...
 
