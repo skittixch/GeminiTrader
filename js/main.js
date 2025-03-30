@@ -1,4 +1,4 @@
-// js/main.js
+// FILE: js/main.js
 
 import * as dom from "./domElements.js";
 import state, { updateState } from "./state.js";
@@ -16,8 +16,10 @@ import { initializeResizer } from "./layout.js";
 import { initializeSettingsMenu } from "./settingsMenu.js";
 import { initializeTabs } from "./tabs.js";
 import { initializePromptTab } from "./promptTab.js";
-import { initializeVolumeChart } from "./volumeChart.js"; // Volume chart is back
+import { initializeVolumeChart } from "./volumeChart.js";
 import { MIN_LOG_VALUE } from "./utils.js";
+// Import fetchers directly
+import { fetchAndStorePlotOrders } from "./orders.js";
 
 // --- Status Indicator ---
 function updateApiStatusIndicator(loaded, message = null) {
@@ -74,20 +76,21 @@ function initializeChartView(data) {
   if (
     initialMinY === Infinity ||
     initialMaxY === -Infinity ||
-    initialMinY <= 0
+    initialMinY <= 0 // Check if non-positive before potential log
   ) {
     const lastCandle = data[data.length - 1];
     const lastClose =
       lastCandle && lastCandle.length >= 5 && Number.isFinite(lastCandle[4])
         ? lastCandle[4]
         : 100;
-    initialMinY = lastClose * 0.9;
-    initialMaxY = lastClose * 1.1;
+    // Ensure fallback values are positive
+    initialMinY = Math.max(MIN_LOG_VALUE, lastClose * 0.9);
+    initialMaxY = Math.max(MIN_LOG_VALUE * 1.1, lastClose * 1.1);
     console.warn("[initializeChartView] Using fallback Y range.");
   }
-  initialMinY = Math.max(MIN_LOG_VALUE, initialMinY);
+  initialMinY = Math.max(MIN_LOG_VALUE, initialMinY); // Ensure min is positive for log
   if (initialMaxY <= initialMinY) {
-    initialMaxY = initialMinY * 1.1;
+    initialMaxY = initialMinY * 1.1; // Ensure max > min
   }
   let initialMinPrice, initialMaxPrice;
   if (savedLogPref) {
@@ -95,6 +98,7 @@ function initializeChartView(data) {
     initialMinPrice = Math.max(MIN_LOG_VALUE, initialMinY / logPadding);
     initialMaxPrice = initialMaxY * logPadding;
     if (initialMaxPrice / initialMinPrice < 1.01) {
+      // Prevent extreme collapse on log
       const midLog =
         (Math.log(initialMaxPrice) + Math.log(initialMinPrice)) / 2;
       const halfRangeLog = Math.log(1.005);
@@ -109,9 +113,10 @@ function initializeChartView(data) {
       config.MIN_PRICE_RANGE_SPAN * 0.1,
       (initialMaxY - initialMinY) * config.Y_AXIS_PRICE_PADDING_FACTOR
     );
-    initialMinPrice = Math.max(0, initialMinY - linearPadding);
+    initialMinPrice = Math.max(0, initialMinY - linearPadding); // Clamp linear min at 0
     initialMaxPrice = initialMaxY + linearPadding;
     if (initialMaxPrice - initialMinPrice < config.MIN_PRICE_RANGE_SPAN) {
+      // Prevent extreme collapse on linear
       const mid = (initialMaxPrice + initialMinPrice) / 2;
       initialMinPrice = Math.max(0, mid - config.MIN_PRICE_RANGE_SPAN / 2);
       initialMaxPrice = mid + config.MIN_PRICE_RANGE_SPAN / 2;
@@ -134,157 +139,134 @@ function initializeChartView(data) {
   );
 }
 
-// --- Fetch/Redraw Chart Data ---
-function fetchAndRedraw(granularitySeconds) {
+// --- Function to fetch ONLY candle data and update state ---
+async function fetchCandleDataAndUpdateState(granularitySeconds) {
   console.log(
-    `[fetchAndRedraw] Called with granularity: ${granularitySeconds}s`
-  ); // Log entry
+    `[fetchCandleDataAndUpdateState] Called with granularity: ${granularitySeconds}s`
+  );
   try {
     updateState({ currentGranularity: granularitySeconds });
     const currentProductID = config.DEFAULT_PRODUCT_ID;
     const apiUrl = `http://localhost:5000/api/candles?granularity=${granularitySeconds}&product_id=${currentProductID}`;
-    console.log(`[fetchAndRedraw] API URL: ${apiUrl}`);
+    console.log(`[fetchCandleDataAndUpdateState] API URL: ${apiUrl}`);
 
     if (dom.chartMessage) {
       dom.chartMessage.textContent = `Loading ${currentProductID} ${Math.round(
         granularitySeconds / 60
       )}m data...`;
       dom.chartMessage.style.display = "block";
-      console.log("[fetchAndRedraw] Loading message displayed.");
-    } else {
-      console.warn("[fetchAndRedraw] Chart message element not found.");
     }
 
-    console.log("[fetchAndRedraw] Closing WebSocket before fetch...");
+    console.log(
+      "[fetchCandleDataAndUpdateState] Closing WebSocket before fetch..."
+    );
     closeWebSocket();
 
-    console.log(`[fetchAndRedraw] Starting fetch from ${apiUrl}...`);
-    fetch(apiUrl)
-      .then((response) => {
-        console.log(
-          `[fetchAndRedraw] Received response status: ${response.status}`
-        );
-        if (!response.ok) {
-          // Try to parse error JSON, otherwise use status text
-          return response
-            .json()
-            .catch(() => ({
-              error: `HTTP error ${response.status} (${response.statusText})`,
-              details: response.statusText,
-            }))
-            .then((errData) => {
-              const error = new Error(
-                errData.error || `API Error ${response.status}`
-              );
-              error.details = errData.details || `Status: ${response.status}`;
-              console.error("[fetchAndRedraw] HTTP error details:", errData); // Log error details
-              throw error; // Important to re-throw
-            });
-        }
-        return response.json();
-      })
-      .then((data) => {
-        console.log("[fetchAndRedraw] Received JSON data.");
-        if (!Array.isArray(data)) {
-          throw new Error(
-            "Invalid data format: API response was not an array."
-          );
-        }
-        if (data.length === 0) {
-          console.warn(
-            `[fetchAndRedraw] No chart data returned for ${currentProductID} at ${granularitySeconds}s interval.`
-          );
-          updateState({ fullData: [] });
-          if (dom.chartMessage)
-            dom.chartMessage.textContent = `No data available for this interval.`;
-          requestAnimationFrame(redrawChart); // Still redraw empty chart
-          console.log("[fetchAndRedraw] Redrawing empty chart (no data).");
-          return;
-        }
+    console.log(
+      `[fetchCandleDataAndUpdateState] Starting fetch from ${apiUrl}...`
+    );
+    const response = await fetch(apiUrl);
+    console.log(
+      `[fetchCandleDataAndUpdateState] Received response status: ${response.status}`
+    );
+    if (!response.ok) {
+      const errData = await response.json().catch(() => ({
+        error: `HTTP error ${response.status} (${response.statusText})`,
+        details: response.statusText,
+      }));
+      const error = new Error(errData.error || `API Error ${response.status}`);
+      error.details = errData.details || `Status: ${response.status}`;
+      console.error(
+        "[fetchCandleDataAndUpdateState] HTTP error details:",
+        errData
+      );
+      throw error;
+    }
 
-        console.log(`[fetchAndRedraw] Loaded ${data.length} data points.`);
-        let processedData = data;
-        if (data.length > 1 && data[0][0] > data[data.length - 1][0]) {
-          console.warn(
-            "[fetchAndRedraw] Data received newest-first. Reversing."
-          );
-          processedData = data.slice().reverse();
-        }
-        updateState({ fullData: processedData });
-        console.log("[fetchAndRedraw] Updated state with fullData.");
+    const data = await response.json();
+    console.log("[fetchCandleDataAndUpdateState] Received JSON data.");
+    if (!Array.isArray(data)) {
+      throw new Error("Invalid data format: API response was not an array.");
+    }
 
-        initializeChartView(processedData); // Set initial view based on data
+    if (data.length === 0) {
+      console.warn(
+        `[fetchCandleDataAndUpdateState] No chart data returned for ${currentProductID} at ${granularitySeconds}s interval.`
+      );
+      updateState({ fullData: [] });
+      if (dom.chartMessage)
+        dom.chartMessage.textContent = `No data available for this interval.`;
+      return true; // Still success, but with empty data
+    }
 
-        if (dom.chartMessage) dom.chartMessage.style.display = "none";
-        console.log(
-          "[fetchAndRedraw] Requesting animation frame for redraw..."
-        );
-        requestAnimationFrame(redrawChart); // <<< THE REDRAW CALL
-        console.log("[fetchAndRedraw] Requested animation frame.");
+    console.log(
+      `[fetchCandleDataAndUpdateState] Loaded ${data.length} data points.`
+    );
+    let processedData = data;
+    if (data.length > 1 && data[0][0] > data[data.length - 1][0]) {
+      console.warn(
+        "[fetchCandleDataAndUpdateState] Data received newest-first. Reversing."
+      );
+      processedData = data.slice().reverse();
+    }
+    updateState({ fullData: processedData });
+    console.log("[fetchCandleDataAndUpdateState] Updated state with fullData.");
 
-        console.log("[fetchAndRedraw] Initializing WebSocket...");
-        initializeWebSocket(currentProductID); // Reconnect WebSocket AFTER processing data
-      })
-      .catch((error) => {
-        console.error(
-          "[fetchAndRedraw] Chart Data Fetch/Processing Error:",
-          error
-        );
-        if (dom.chartMessage) {
-          dom.chartMessage.textContent = `Error loading chart data: ${
-            error.message
-          }${error.details ? ` (${error.details})` : ""}`;
-          dom.chartMessage.style.display = "block";
-          dom.chartMessage.style.color = "red";
-        }
-        updateState({ fullData: [] });
-        requestAnimationFrame(redrawChart); // Redraw empty chart on error
-      });
-  } catch (err) {
-    console.error("[fetchAndRedraw] Synchronous error:", err);
+    initializeChartView(processedData); // Set initial view based on data
+
+    if (dom.chartMessage) dom.chartMessage.style.display = "none";
+
+    console.log("[fetchCandleDataAndUpdateState] Initializing WebSocket...");
+    initializeWebSocket(currentProductID); // Reconnect WebSocket
+    return true; // Indicate success
+  } catch (error) {
+    console.error(
+      "[fetchCandleDataAndUpdateState] Chart Data Fetch/Processing Error:",
+      error
+    );
     if (dom.chartMessage) {
-      dom.chartMessage.textContent = `Error: ${err.message}`;
+      dom.chartMessage.textContent = `Error loading chart data: ${
+        error.message
+      }${error.details ? ` (${error.details})` : ""}`;
       dom.chartMessage.style.display = "block";
       dom.chartMessage.style.color = "red";
     }
+    updateState({ fullData: [] }); // Clear data on error
+    return false; // Indicate failure
+  } finally {
+    console.log("[fetchCandleDataAndUpdateState] Function end.");
   }
-  console.log("[fetchAndRedraw] Function end."); // Log sync function exit
 }
 
-// --- Main Execution ---
-document.addEventListener("DOMContentLoaded", () => {
-  console.log("[DOMContentLoaded] Starting initialization..."); // Log start
+// --- Main Execution (Async) ---
+document.addEventListener("DOMContentLoaded", async () => {
+  console.log("[DOMContentLoaded] Starting initialization...");
 
   if (!dom.checkElements()) {
     console.error("[DOMContentLoaded] Aborting due to missing elements.");
-    return; // Stop if elements are missing
+    return;
   }
   console.log("[DOMContentLoaded] Element check passed.");
 
   try {
-    // Wrap initialization steps in try-catch for safety
+    // Initialize synchronous parts
     initializeTheme();
-    console.log("[DOMContentLoaded] Theme initialized.");
     initializeSettingsMenu();
-    console.log("[DOMContentLoaded] Settings menu initialized.");
     initializeTabs("#bottom-tab-bar", ".tab-content-area");
-    console.log("[DOMContentLoaded] Tabs initialized.");
     initializePromptTab();
-    console.log("[DOMContentLoaded] Prompt tab initialized.");
     initializeVolumeChart();
-    console.log("[DOMContentLoaded] Volume chart initialized.");
     attachInteractionListeners();
-    console.log("[DOMContentLoaded] Interactions attached.");
     initializeResizer();
-    console.log("[DOMContentLoaded] Resizer initialized.");
-    checkApiStatus(); // Async
-    console.log("[DOMContentLoaded] API status check initiated.");
-    initializeBalances(); // Async
-    console.log("[DOMContentLoaded] Balance initialization initiated.");
+
+    // Asynchronous Initializations (Fire and forget where appropriate)
+    checkApiStatus();
+    initializeBalances().catch((err) =>
+      console.error("Error initializing balances:", err)
+    );
 
     // Setup Granularity Controls
     if (dom.granularityControls) {
-      dom.granularityControls.addEventListener("click", (event) => {
+      dom.granularityControls.addEventListener("click", async (event) => {
         if (event.target.tagName === "BUTTON" && !event.target.disabled) {
           const newGranularity = parseInt(event.target.dataset.granularity, 10);
           if (
@@ -298,7 +280,10 @@ document.addEventListener("DOMContentLoaded", () => {
               dom.granularityControls.querySelector("button.active");
             if (currentActive) currentActive.classList.remove("active");
             event.target.classList.add("active");
-            fetchAndRedraw(newGranularity); // Fetch on click
+
+            // Fetch candles FIRST, then fetch orders (which triggers redraw)
+            await fetchCandleDataAndUpdateState(newGranularity);
+            await fetchAndStorePlotOrders(); // This will trigger the redraw
           }
         }
       });
@@ -328,24 +313,44 @@ document.addEventListener("DOMContentLoaded", () => {
       );
     }
 
-    // --- Initial data fetch ---
-    console.log("[DOMContentLoaded] Performing initial data fetch..."); // Log before call
-    fetchAndRedraw(state.currentGranularity); // <<< THE INITIAL CALL SITE
-    console.log("[DOMContentLoaded] Initial data fetch function called."); // Log right after call
+    // --- Initial Data Fetch Sequence ---
+    console.log(
+      "[DOMContentLoaded] Performing initial data fetch (Candles & Orders)..."
+    );
 
+    // Fetch both in parallel, wait for both to finish
+    const [candleResult, orderResult] = await Promise.all([
+      fetchCandleDataAndUpdateState(state.currentGranularity),
+      fetchAndStorePlotOrders(), // This triggers its own redraw internally now
+    ]);
+
+    console.log(
+      `[DOMContentLoaded] Initial fetches complete. Candle success: ${candleResult}, Order success: ${orderResult}.`
+    );
+
+    // If the order fetch failed OR if the candle fetch failed,
+    // we might need an explicit redraw here just to be safe,
+    // as the redraw triggered by fetchAndStorePlotOrders might not have run.
+    if (!orderResult || !candleResult) {
+      console.log(
+        "[DOMContentLoaded] Triggering safety redraw due to fetch failure."
+      );
+      requestAnimationFrame(redrawChart);
+    }
+
+    // --- WebSocket and Unload Listener ---
     window.addEventListener("beforeunload", () => {
       closeWebSocket();
     });
 
     console.log(
       "[DOMContentLoaded] GeminiTrader Frontend Initialization Sequence Complete."
-    ); // Final log
+    );
   } catch (initError) {
     console.error(
       "[DOMContentLoaded] CRITICAL ERROR during initialization:",
       initError
     );
-    // Display a user-facing error if possible
     if (dom.chartMessage) {
       dom.chartMessage.textContent = `Initialization Error: ${initError.message}`;
       dom.chartMessage.style.display = "block";

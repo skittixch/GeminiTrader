@@ -98,610 +98,6 @@ The chart should load, fetch data from your local backend (which fetches from Co
 
 --- START ALL OTHER PROJECT FILES ---
 
---- START FILE: chart.js ---
-```js
-// Encapsulate chart logic in an IIFE
-(function () {
-  "use strict"; // Enable strict mode
-
-  // --- Theme Handling (Run this early) ---
-  const themeToggle = document.getElementById("theme-checkbox");
-  const userPrefersDark =
-    window.matchMedia &&
-    window.matchMedia("(prefers-color-scheme: dark)").matches;
-  const currentTheme = localStorage.getItem("theme");
-  let theme = "light"; // Default
-
-  if (currentTheme) {
-    theme = currentTheme;
-  } else if (userPrefersDark) {
-    theme = "dark";
-  }
-
-  document.documentElement.setAttribute("data-theme", theme);
-  if (themeToggle && theme === "dark") {
-    themeToggle.checked = true;
-  }
-
-  if (themeToggle) {
-    themeToggle.addEventListener("change", function () {
-      if (this.checked) {
-        document.documentElement.setAttribute("data-theme", "dark");
-        localStorage.setItem("theme", "dark");
-      } else {
-        document.documentElement.setAttribute("data-theme", "light");
-        localStorage.setItem("theme", "light");
-      }
-      // Redrawing isn't strictly necessary as CSS handles colors, but uncomment if needed
-      // requestAnimationFrame(redrawChart);
-    });
-  }
-
-  window
-    .matchMedia("(prefers-color-scheme: dark)")
-    .addEventListener("change", (e) => {
-      if (!localStorage.getItem("theme")) {
-        const newTheme = e.matches ? "dark" : "light";
-        document.documentElement.setAttribute("data-theme", newTheme);
-        if (themeToggle) themeToggle.checked = newTheme === "dark";
-      }
-    });
-  // --- End Theme Handling ---
-
-  // --- DOM Elements ---
-  const chartContainer = document.getElementById("chart-container");
-  const chartWrapper = chartContainer?.querySelector(".chart-wrapper");
-  const chartArea = document.getElementById("chart-area");
-  const gridContainer = document.getElementById("grid-container");
-  const yAxisLabelsContainer = document.getElementById("y-axis-labels");
-  const xAxisLabelsContainer = document.getElementById("x-axis-labels");
-  const chartMessage = document.getElementById("chart-message");
-
-  if (
-    !chartContainer ||
-    !chartWrapper ||
-    !chartArea ||
-    !gridContainer ||
-    !yAxisLabelsContainer ||
-    !xAxisLabelsContainer ||
-    !chartMessage
-  ) {
-    console.error("Chart initialization failed: DOM elements missing.");
-    if (chartMessage)
-      chartMessage.textContent = "Error: Chart elements missing!";
-    return;
-  }
-
-  // --- Chart State ---
-  let fullData = [];
-  let visibleStartIndex = 0;
-  let visibleEndIndex = 0;
-  let minVisiblePrice = 0;
-  let maxVisiblePrice = 1;
-  let isPanning = false;
-  let isDraggingYAxis = false;
-  let isDraggingXAxis = false; // Scaling X
-  let panStartX = 0;
-  let panStartY = 0;
-  let panStartVisibleIndex = 0;
-  let panStartVisibleCount = 0;
-  let panStartMinPrice = 0;
-  let panStartMaxPrice = 0;
-  let lastDrawTime = 0;
-
-  // --- Constants ---
-  const ZOOM_FACTOR_X = 0.1;
-  const ZOOM_FACTOR_Y = 0.1;
-  const MIN_VISIBLE_CANDLES = 5;
-  const DEFAULT_RESET_CANDLE_COUNT = 100;
-  const MIN_PRICE_RANGE_SPAN = 0.1;
-  const Y_AXIS_PRICE_PADDING_FACTOR = 0.05;
-  const Y_AXIS_DRAG_SENSITIVITY = 2.0;
-  const X_AXIS_DRAG_SENSITIVITY = 2.0;
-  const MOUSE_MOVE_THROTTLE = 16;
-  const DEBOUNCE_DELAY = 100;
-
-  // --- Utility Functions ---
-  function calculateNiceStep(range, maxTicks) {
-    if (range <= 0 || maxTicks <= 0) return 1;
-    const roughStep = range / maxTicks;
-    const magnitude = Math.pow(10, Math.floor(Math.log10(roughStep)));
-    const residual = roughStep / magnitude;
-    let niceStep;
-    if (residual > 5) niceStep = 10 * magnitude;
-    else if (residual > 2) niceStep = 5 * magnitude;
-    else if (residual > 1) niceStep = 2 * magnitude;
-    else niceStep = magnitude;
-    return Math.max(niceStep, Number.EPSILON * 10);
-  }
-
-  function formatTimestamp(timestamp) {
-    const date = new Date(timestamp * 1000);
-    const hours = date.getHours().toString().padStart(2, "0");
-    const minutes = date.getMinutes().toString().padStart(2, "0");
-    return `${hours}:${minutes}`;
-  }
-
-  // --- Main Drawing Function ---
-  function redrawChart() {
-    if (!fullData || !chartArea.offsetHeight || !chartArea.offsetWidth) {
-      return;
-    }
-    const chartHeight = chartArea.offsetHeight;
-    const chartWidth = chartArea.offsetWidth;
-    const priceRange = maxVisiblePrice - minVisiblePrice;
-    const visibleCount = visibleEndIndex - visibleStartIndex;
-
-    if (priceRange <= 0 || visibleCount <= 0) {
-      chartArea.innerHTML = "";
-      gridContainer.innerHTML = "";
-      yAxisLabelsContainer.innerHTML = "";
-      xAxisLabelsContainer.innerHTML = "";
-      return;
-    }
-
-    chartArea.innerHTML = "";
-    gridContainer.innerHTML = "";
-    yAxisLabelsContainer.innerHTML = "";
-    xAxisLabelsContainer.innerHTML = "";
-
-    const scaleY = chartHeight / priceRange;
-    const totalCandleWidthRatio = 0.85;
-    const candleWidth = Math.max(
-      1,
-      (chartWidth / visibleCount) * totalCandleWidthRatio
-    );
-    const candleMargin = Math.max(
-      0.5,
-      ((chartWidth / visibleCount) * (1 - totalCandleWidthRatio)) / 2
-    );
-    const candleTotalWidth = candleWidth + candleMargin * 2;
-
-    // Draw Gridlines and Axis Labels
-    try {
-      const yTickDensity = Math.max(3, Math.round(chartHeight / 40));
-      const yTicks = calculateNiceStep(priceRange, yTickDensity);
-      const firstYTick =
-        yTicks > Number.EPSILON
-          ? Math.ceil(minVisiblePrice / yTicks) * yTicks
-          : minVisiblePrice;
-      for (
-        let price = firstYTick;
-        price <= maxVisiblePrice + yTicks * 0.1;
-        price += yTicks
-      ) {
-        if (yTicks <= Number.EPSILON || price > maxVisiblePrice + priceRange)
-          break;
-        const y = chartHeight - (price - minVisiblePrice) * scaleY;
-        if (y >= -chartHeight && y <= chartHeight * 2) {
-          const hLine = document.createElement("div");
-          hLine.className = "grid-line horizontal";
-          hLine.style.top = `${y.toFixed(1)}px`;
-          gridContainer.appendChild(hLine);
-          if (y >= -5 && y <= chartHeight + 5) {
-            const yLabel = document.createElement("div");
-            yLabel.className = "axis-label y-axis-label";
-            yLabel.style.top = `${y.toFixed(1)}px`;
-            const decimals =
-              priceRange < 10 ? (price < 1 ? 4 : 2) : price < 100 ? 1 : 0;
-            yLabel.textContent = price.toFixed(decimals);
-            yAxisLabelsContainer.appendChild(yLabel);
-          }
-        }
-        if (price + yTicks <= price) break;
-      }
-
-      const xTickDensity = Math.max(3, Math.round(chartWidth / 70));
-      const xTicks = Math.max(1, calculateNiceStep(visibleCount, xTickDensity));
-      for (let i = 0; i < visibleCount; i++) {
-        const dataIndex = visibleStartIndex + i;
-        if (dataIndex >= 0 && dataIndex < fullData.length) {
-          const isTick = (i + Math.floor(xTicks / 4)) % xTicks === 0;
-          if (i === 0 || isTick || (xTicks === 1 && i % 5 === 0)) {
-            const candleData = fullData[dataIndex];
-            if (!candleData) continue;
-            const timestamp = candleData[0];
-            const x = i * candleTotalWidth + candleTotalWidth / 2;
-            if (x >= -candleTotalWidth && x <= chartWidth + candleTotalWidth) {
-              const xLabel = document.createElement("div");
-              xLabel.className = "axis-label x-axis-label";
-              xLabel.style.left = `${x.toFixed(1)}px`;
-              xLabel.textContent = formatTimestamp(timestamp);
-              xAxisLabelsContainer.appendChild(xLabel);
-            }
-          }
-        }
-      }
-    } catch (e) {
-      console.error("Error drawing axes/grid:", e);
-    }
-
-    // Draw Candles
-    try {
-      for (let i = 0; i < visibleCount; i++) {
-        const dataIndex = visibleStartIndex + i;
-        if (dataIndex >= 0 && dataIndex < fullData.length) {
-          const candle = fullData[dataIndex];
-          if (!candle || candle.length < 5) continue;
-          const [timestamp, open, high, low, close] = candle;
-          const wickHighY = chartHeight - (high - minVisiblePrice) * scaleY;
-          const wickLowY = chartHeight - (low - minVisiblePrice) * scaleY;
-          const bodyTopY =
-            chartHeight - (Math.max(open, close) - minVisiblePrice) * scaleY;
-          const bodyBottomY =
-            chartHeight - (Math.min(open, close) - minVisiblePrice) * scaleY;
-          const wickHeight = Math.max(1, wickLowY - wickHighY);
-          const bodyHeight = Math.max(1, bodyBottomY - bodyTopY);
-          const isUp = close >= open;
-
-          const candleElement = document.createElement("div");
-          candleElement.className = "candle";
-          candleElement.style.width = `${candleWidth}px`;
-          candleElement.style.marginLeft = `${
-            i === 0 ? candleMargin : candleMargin * 2
-          }px`;
-
-          const wickElement = document.createElement("div");
-          wickElement.className = "wick";
-          wickElement.style.top = `${wickHighY.toFixed(1)}px`;
-          wickElement.style.height = `${wickHeight.toFixed(1)}px`;
-
-          const bodyElement = document.createElement("div");
-          bodyElement.className = `body ${isUp ? "color-up" : "color-down"}`; // CSS handles color via these classes
-          bodyElement.style.top = `${bodyTopY.toFixed(1)}px`;
-          bodyElement.style.height = `${bodyHeight.toFixed(1)}px`;
-
-          candleElement.appendChild(wickElement);
-          candleElement.appendChild(bodyElement);
-          chartArea.appendChild(candleElement);
-        }
-      }
-    } catch (e) {
-      console.error("Error drawing candles:", e);
-    }
-  }
-
-  // --- Event Handlers ---
-  function handleZoom(event) {
-    event.preventDefault();
-    const chartRect = chartArea.getBoundingClientRect();
-    const mouseX = event.clientX - chartRect.left;
-    const mouseY = event.clientY - chartRect.top;
-    const chartHeight = chartArea.offsetHeight;
-    const chartWidth = chartArea.offsetWidth;
-    if (!chartHeight || !chartWidth) return;
-
-    const priceRange = maxVisiblePrice - minVisiblePrice;
-    if (priceRange <= 0) return;
-
-    // Y-Axis Zoom
-    const priceAtCursor = maxVisiblePrice - (mouseY / chartHeight) * priceRange;
-    const zoomAmountY =
-      event.deltaY < 0 ? 1 - ZOOM_FACTOR_Y : 1 + ZOOM_FACTOR_Y;
-    let newMinVisiblePrice =
-      priceAtCursor - (priceAtCursor - minVisiblePrice) * zoomAmountY;
-    let newMaxVisiblePrice =
-      priceAtCursor + (maxVisiblePrice - priceAtCursor) * zoomAmountY;
-    if (newMaxVisiblePrice - newMinVisiblePrice < MIN_PRICE_RANGE_SPAN) {
-      const mid = (newMaxVisiblePrice + newMinVisiblePrice) / 2;
-      newMinVisiblePrice = mid - MIN_PRICE_RANGE_SPAN / 2;
-      newMaxVisiblePrice = mid + MIN_PRICE_RANGE_SPAN / 2;
-    }
-
-    // X-Axis Zoom
-    const currentVisibleCount = visibleEndIndex - visibleStartIndex;
-    if (currentVisibleCount <= 0) return;
-    const indexAtCursor =
-      visibleStartIndex + (mouseX / chartWidth) * currentVisibleCount;
-    const zoomAmountX =
-      event.deltaY < 0 ? 1 - ZOOM_FACTOR_X : 1 + ZOOM_FACTOR_X;
-    let newVisibleCount = Math.round(currentVisibleCount * zoomAmountX);
-    newVisibleCount = Math.max(
-      MIN_VISIBLE_CANDLES,
-      Math.min(newVisibleCount, fullData.length * 2)
-    );
-    let newStartIndex = Math.round(
-      indexAtCursor - (mouseX / chartWidth) * newVisibleCount
-    );
-    let newEndIndex = newStartIndex + newVisibleCount;
-
-    // No clamping for infinite scroll
-    visibleStartIndex = newStartIndex;
-    visibleEndIndex = newEndIndex;
-    minVisiblePrice = newMinVisiblePrice;
-    maxVisiblePrice = newMaxVisiblePrice;
-
-    requestAnimationFrame(redrawChart);
-  }
-
-  function handleMouseDownChart(event) {
-    isPanning = true;
-    isDraggingYAxis = false;
-    isDraggingXAxis = false;
-    panStartX = event.clientX;
-    panStartY = event.clientY;
-    panStartVisibleIndex = visibleStartIndex;
-    panStartMinPrice = minVisiblePrice;
-    panStartMaxPrice = maxVisiblePrice;
-    panStartVisibleCount = visibleEndIndex - visibleStartIndex;
-    chartContainer.classList.add("panning");
-  }
-
-  function handleMouseDownYAxis(event) {
-    event.stopPropagation();
-    isDraggingYAxis = true;
-    isPanning = false;
-    isDraggingXAxis = false;
-    panStartY = event.clientY;
-    panStartMinPrice = minVisiblePrice;
-    panStartMaxPrice = maxVisiblePrice;
-  }
-
-  function handleMouseDownXAxis(event) {
-    event.stopPropagation();
-    isDraggingXAxis = true;
-    isPanning = false;
-    isDraggingYAxis = false;
-    panStartX = event.clientX;
-    panStartVisibleIndex = visibleStartIndex;
-    panStartVisibleCount = visibleEndIndex - visibleStartIndex;
-  }
-
-  function handleMouseMove(event) {
-    if (!isPanning && !isDraggingYAxis && !isDraggingXAxis) return;
-
-    const now = Date.now();
-    if (now - lastDrawTime < MOUSE_MOVE_THROTTLE) return;
-
-    let needsRedraw = false;
-
-    if (isDraggingYAxis) {
-      const deltaY = event.clientY - panStartY;
-      const chartHeight = chartArea.offsetHeight;
-      if (!chartHeight) return;
-      const initialRange = panStartMaxPrice - panStartMinPrice;
-      if (initialRange <= 0) return;
-      const midPrice = (panStartMaxPrice + panStartMinPrice) / 2;
-      const scaleFactor = Math.pow(
-        2,
-        (deltaY / chartHeight) * Y_AXIS_DRAG_SENSITIVITY
-      );
-      let newRange = initialRange * scaleFactor;
-      newRange = Math.max(MIN_PRICE_RANGE_SPAN, newRange);
-      const newMin = midPrice - newRange / 2;
-      const newMax = midPrice + newRange / 2;
-      if (
-        Math.abs(newMin - minVisiblePrice) > 1e-9 ||
-        Math.abs(newMax - maxVisiblePrice) > 1e-9
-      ) {
-        minVisiblePrice = newMin;
-        maxVisiblePrice = newMax;
-        needsRedraw = true;
-      }
-    } else if (isDraggingXAxis) {
-      const deltaX = event.clientX - panStartX;
-      const chartWidth = chartArea.offsetWidth;
-      if (!chartWidth || panStartVisibleCount <= 0) return;
-      const centerIndex = panStartVisibleIndex + panStartVisibleCount / 2;
-      const scaleFactor = Math.pow(
-        2,
-        (deltaX / chartWidth) * X_AXIS_DRAG_SENSITIVITY
-      );
-      let newVisibleCount = Math.round(panStartVisibleCount * scaleFactor);
-      newVisibleCount = Math.max(
-        MIN_VISIBLE_CANDLES,
-        Math.min(newVisibleCount, fullData.length * 2)
-      );
-      let newStartIndex = Math.round(centerIndex - newVisibleCount / 2);
-      let newEndIndex = newStartIndex + newVisibleCount;
-
-      if (
-        newStartIndex !== visibleStartIndex ||
-        newEndIndex !== visibleEndIndex
-      ) {
-        visibleStartIndex = newStartIndex;
-        visibleEndIndex = newEndIndex;
-        needsRedraw = true;
-      }
-    } else if (isPanning) {
-      const deltaX = event.clientX - panStartX;
-      const deltaY = event.clientY - panStartY;
-      const chartHeight = chartArea.offsetHeight;
-      const chartWidth = chartArea.offsetWidth;
-      if (!chartWidth || !chartHeight) return;
-
-      let changedX = false;
-      let changedY = false;
-
-      if (panStartVisibleCount > 0) {
-        const indexDelta = (deltaX / chartWidth) * panStartVisibleCount;
-        let newStartIndex = panStartVisibleIndex - Math.round(indexDelta);
-        if (newStartIndex !== visibleStartIndex) {
-          visibleStartIndex = newStartIndex;
-          visibleEndIndex = newStartIndex + panStartVisibleCount;
-          changedX = true;
-        }
-      }
-
-      const initialPriceRange = panStartMaxPrice - panStartMinPrice;
-      if (initialPriceRange > 0) {
-        const priceDelta = (deltaY / chartHeight) * initialPriceRange;
-        const newMinPrice = panStartMinPrice + priceDelta;
-        const newMaxPrice = panStartMaxPrice + priceDelta;
-        if (
-          Math.abs(newMinPrice - minVisiblePrice) > 1e-9 ||
-          Math.abs(newMaxPrice - maxVisiblePrice) > 1e-9
-        ) {
-          minVisiblePrice = newMinPrice;
-          maxVisiblePrice = newMaxPrice;
-          changedY = true;
-        }
-      }
-      needsRedraw = changedX || changedY;
-    }
-
-    if (needsRedraw) {
-      lastDrawTime = now;
-      requestAnimationFrame(redrawChart);
-    }
-  }
-
-  function handleMouseUpOrLeave(event) {
-    if (isPanning || isDraggingYAxis || isDraggingXAxis) {
-      isPanning = false;
-      isDraggingYAxis = false;
-      isDraggingXAxis = false;
-      chartContainer.classList.remove("panning");
-    }
-  }
-
-  let resizeTimeout;
-  function handleResize() {
-    clearTimeout(resizeTimeout);
-    resizeTimeout = setTimeout(() => {
-      requestAnimationFrame(redrawChart);
-    }, DEBOUNCE_DELAY);
-  }
-
-  function handleDoubleClick(event) {
-    if (!fullData.length) return;
-    const chartRect = chartArea.getBoundingClientRect();
-    const mouseX = event.clientX - chartRect.left;
-    const chartWidth = chartArea.offsetWidth;
-    if (!chartWidth) return;
-
-    const currentVisibleCount = visibleEndIndex - visibleStartIndex;
-    const fractionalIndex =
-      visibleStartIndex + (mouseX / chartWidth) * currentVisibleCount;
-    let targetIndex = Math.round(fractionalIndex);
-    targetIndex = Math.max(0, Math.min(targetIndex, fullData.length - 1));
-
-    let newVisibleCount = Math.min(DEFAULT_RESET_CANDLE_COUNT, fullData.length);
-    let newStartIndex = Math.round(targetIndex - newVisibleCount / 2);
-    newStartIndex = Math.max(
-      0,
-      Math.min(newStartIndex, fullData.length - newVisibleCount)
-    );
-    let newEndIndex = Math.min(
-      fullData.length,
-      newStartIndex + newVisibleCount
-    );
-    newStartIndex = Math.max(0, newEndIndex - newVisibleCount);
-
-    let newMin = Infinity,
-      newMax = -Infinity;
-    for (let i = newStartIndex; i < newEndIndex; i++) {
-      if (!fullData[i] || fullData[i].length < 4) continue;
-      newMin = Math.min(newMin, fullData[i][3]);
-      newMax = Math.max(newMax, fullData[i][2]);
-    }
-    if (newMin === Infinity) {
-      newMin = 0;
-      newMax = 1;
-    }
-
-    const padding = Math.max(
-      MIN_PRICE_RANGE_SPAN * 0.1,
-      (newMax - newMin) * Y_AXIS_PRICE_PADDING_FACTOR
-    );
-    let newMinPrice = Math.max(0, newMin - padding);
-    let newMaxPrice = newMax + padding;
-    if (newMaxPrice - newMinPrice < MIN_PRICE_RANGE_SPAN) {
-      const mid = (newMaxPrice + newMinPrice) / 2;
-      newMinPrice = mid - MIN_PRICE_RANGE_SPAN / 2;
-      newMaxPrice = mid + MIN_PRICE_RANGE_SPAN / 2;
-    }
-
-    visibleStartIndex = newStartIndex;
-    visibleEndIndex = newEndIndex;
-    minVisiblePrice = newMinPrice;
-    maxVisiblePrice = newMaxPrice;
-
-    requestAnimationFrame(redrawChart);
-  }
-
-  // --- Initialization ---
-  function initializeChart(data) {
-    fullData = data;
-    if (!fullData.length) {
-      chartMessage.textContent = "No data loaded.";
-      chartMessage.style.display = "block";
-      return;
-    }
-    const initialVisibleCount = Math.min(
-      DEFAULT_RESET_CANDLE_COUNT,
-      fullData.length
-    );
-    visibleStartIndex = Math.max(0, fullData.length - initialVisibleCount);
-    visibleEndIndex = fullData.length;
-
-    let initialMin = Infinity,
-      initialMax = -Infinity;
-    for (let i = visibleStartIndex; i < visibleEndIndex; i++) {
-      if (!fullData[i] || fullData[i].length < 4) continue;
-      initialMin = Math.min(initialMin, fullData[i][3]);
-      initialMax = Math.max(initialMax, fullData[i][2]);
-    }
-    if (initialMin === Infinity) {
-      initialMin = 0;
-      initialMax = 1;
-    }
-    const padding = Math.max(
-      MIN_PRICE_RANGE_SPAN * 0.1,
-      (initialMax - initialMin) * Y_AXIS_PRICE_PADDING_FACTOR
-    );
-    minVisiblePrice = Math.max(0, initialMin - padding);
-    maxVisiblePrice = initialMax + padding;
-    if (maxVisiblePrice - minVisiblePrice < MIN_PRICE_RANGE_SPAN) {
-      const mid = (maxVisiblePrice + minVisiblePrice) / 2;
-      minVisiblePrice = mid - MIN_PRICE_RANGE_SPAN / 2;
-      maxVisiblePrice = mid + MIN_PRICE_RANGE_SPAN / 2;
-    }
-
-    chartContainer.addEventListener("wheel", handleZoom, { passive: false });
-    chartContainer.addEventListener("mousedown", handleMouseDownChart);
-    yAxisLabelsContainer.addEventListener("mousedown", handleMouseDownYAxis);
-    xAxisLabelsContainer.addEventListener("mousedown", handleMouseDownXAxis);
-    window.addEventListener("mousemove", handleMouseMove);
-    window.addEventListener("mouseup", handleMouseUpOrLeave);
-    window.addEventListener("resize", handleResize);
-    chartContainer.addEventListener("dblclick", handleDoubleClick);
-
-    chartMessage.style.display = "none";
-    requestAnimationFrame(redrawChart);
-  }
-
-  // --- Data Fetching and Startup ---
-  document.addEventListener("DOMContentLoaded", () => {
-    fetch("btc_data.json")
-      .then((response) => {
-        if (!response.ok) {
-          throw new Error(
-            `HTTP error ${response.status} (${response.statusText}) loading btc_data.json`
-          );
-        }
-        return response.json();
-      })
-      .then((data) => {
-        if (Array.isArray(data)) {
-          console.log(`Loaded ${data.length} data points.`);
-          initializeChart(data.slice().reverse());
-        } else {
-          throw new Error("Loaded data is not an array.");
-        }
-      })
-      .catch((error) => {
-        console.error("Chart Error:", error);
-        chartMessage.textContent = `Error: ${error.message}. Check console & network tab. Ensure using web server.`;
-        chartMessage.style.display = "block";
-      });
-  });
-})(); // End IIFE
-
-```
---- END FILE: chart.js ---
-
-
 --- START FILE: create_context.sh ---
 ```sh
 #!/bin/bash
@@ -804,8 +200,8 @@ echo "Finished creating $OUTPUT_FILE"
 --- START FILE: credentials/cdp_api_key.json ---
 ```json
 {
-   "name": "organizations/be8ab444-9ab3-40f7-ae48-5cac5ea99bf7/apiKeys/384cfa64-a2de-4c9f-ac83-4aa59e394e89",
-   "privateKey": "-----BEGIN EC PRIVATE KEY-----\nMHcCAQEEICuKcV0qXSCOIXObz6jaMCjP+T+QxbHR8GS8uW6qSQeRoAoGCCqGSM49\nAwEHoUQDQgAEOCSdUfcZksYetcpjP9rmjOR5ighwLO309cWchcxnPZ99vo+U51fX\nF3T+N4snZD/14Yhr2RRVwEykKVA+ygmJFQ==\n-----END EC PRIVATE KEY-----\n"
+   "name": "organizations/be8ab444-9ab3-40f7-ae48-5cac5ea99bf7/apiKeys/d0668e60-1628-4fe3-ab6e-38009fc6d0bc",
+   "privateKey": "-----BEGIN EC PRIVATE KEY-----\nMHcCAQEEIEHYn6SfY+57j4HiYVCMFVC85SBt80ZZoAnpbb3u7I+uoAoGCCqGSM49\nAwEHoUQDQgAEzeuHrNC3T3SMwHXLj1S2eeCNw1ElsOPGMGsSSpgWdaQ2YFSP/RRl\nNk6c7pT61ZKDkjat1iMzCZ7dxFKcl01sLQ==\n-----END EC PRIVATE KEY-----\n"
 }
 ```
 --- END FILE: credentials/cdp_api_key.json ---
@@ -819,6 +215,138 @@ echo "Finished creating $OUTPUT_FILE"
 }
 ```
 --- END FILE: credentials/cdp_api_key_example.json ---
+
+
+--- START FILE: GeminiTrader_context.txt ---
+```txt
+--- START GIT COMMIT HISTORY (Last 15 commits) ---
+```text
+0328455 - Eric Bacus, 14 minutes ago : feat(axis): Implement Log Y-Axis with Linear Label Values
+70ae5ed - Eric Bacus, 8 hours ago : Fix .gitignore for API key and untrack sensitive file
+c94e46e - Eric Bacus, 8 hours ago : Fix .gitignore for API key and untrack sensitive file
+84908fc - Eric Bacus, 24 hours ago : brought back volume chart
+bd59d3f - Eric Bacus, 24 hours ago : fix: Restore rendering of candlesticks and Y-axis labels
+fec02a5 - Eric Bacus, 24 hours ago : fix: Correct wick colors and dark theme background layering
+fe57ada - Eric Bacus, 25 hours ago : feat: Display open orders in dedicated tab
+623b718 - Eric Bacus, 3 days ago : feat: Add throttled live updates for balance values
+8d63c0b - Eric Bacus, 3 days ago : feat: Improve chart rendering stability and double-click zoom
+f56e66d - Eric Bacus, 3 days ago : changed .gitignore to reflect better project management practices
+816a867 - Eric Bacus, 3 days ago : feat: Implement bottom pane display for all account balances
+1136b14 - Eric Bacus, 3 days ago : feat: Center candles and implement adaptive X-axis labels
+74bac94 - Eric Bacus, 4 days ago : feat: Reset chart view to most recent data on double-click
+77d79f9 - Eric Bacus, 4 days ago : Merge branch 'main' of https://github.com/skittixch/GeminiTrader
+b267979 - Eric Bacus, 4 days ago : feat: Add interactive hover tooltip for candle details
+```
+--- END GIT COMMIT HISTORY ---
+
+
+[ 'tree' command not found, skipping project tree generation. Install 'tree' (e.g., 'sudo apt install tree' or 'brew install tree') to include it. ]
+
+--- START FILE: README.md ---
+```markdown
+# GeminiTrader (Prototype)
+
+A web-based, interactive candlestick chart displaying cryptocurrency data (initially BTC-USD) fetched from a local backend proxying the Coinbase API, with live updates via WebSocket. Built with plain HTML, CSS, and vanilla JavaScript modules.
+
+## Features
+
+*   **Interactive Chart:**
+    *   Displays historical candlestick data (OHLCV).
+    *   Pan the chart by clicking and dragging the main chart area.
+    *   Zoom in/out using the mouse scroll wheel.
+    *   Scale the Y-axis (price) by clicking and dragging the price scale vertically.
+    *   Scale the X-axis (time) by clicking and dragging the time scale horizontally.
+    *   Double-click anywhere on the chart to reset the view to a default zoom level centered on the clicked time.
+*   **Live Data:**
+    *   Connects to Coinbase WebSocket feed for real-time price updates.
+    *   Displays the current ticker price as a line and label on the chart.
+    *   Updates the closing price and high/low of the *latest* candle in real-time.
+*   **Customization & UI:**
+    *   Selectable Candlestick Granularity (5m, 15m, 1h, 6h, 1d).
+    *   Logarithmic / Linear Y-axis scale toggle.
+    *   Dark / Light theme toggle (respects system preference, saves choice).
+    *   12-hour (AM/PM) / 24-hour time format toggle.
+    *   Date rollover labels and vertical separator lines on the X-axis.
+    *   Clean, minimal dashboard-like styling.
+*   **Backend Proxy:**
+    *   Simple Python Flask server (`server.py`) fetches historical data from the official Coinbase API, decoupling the frontend from direct API calls.
+
+## Project Goals (Future)
+
+*   [ ] Integrate basic trading features (e.g., placing market/limit orders - **requires authentication and careful security considerations**).
+*   [ ] integrate LLM interface to determine trading opportunities and general strategy management.
+*   [ ] Display additional data (e.g., volume bars, technical indicators).
+*   [ ] Allow selection of different trading pairs (product IDs).
+
+
+## Tech Stack
+
+*   **Frontend:** HTML5, CSS3, Vanilla JavaScript (ES Modules)
+*   **Backend:** Python, Flask, Flask-CORS, Requests
+*   **Data Source:** Coinbase Exchange API (REST for historical, WebSocket for live ticker)
+
+## Setup and Running
+
+**Prerequisites:**
+
+*   [Git](https://git-scm.com/)
+*   [Python 3](https://www.python.org/) (including `pip`)
+*   A modern web browser
+
+**Instructions:**
+
+1.  **Clone the Repository (if applicable):**
+    ```bash
+    git clone https://github.com/skittixch/GeminiTrader/tree/main.git
+    cd GeminiTrader
+    ```
+    *(If you haven't cloned it yet)*
+
+2.  **Navigate to Project Directory:**
+    Open your terminal or command prompt and `cd` into the project's root folder (the one containing `index.html`, `server.py`, etc.).
+
+3.  **Install Python Dependencies:**
+    ```bash
+    pip install Flask Flask-Cors requests
+    ```
+    *(Consider using a Python virtual environment: `python -m venv venv`, then activate it before installing)*
+
+4.  **Run the Backend Server:**
+    Open a terminal in the project directory and run:
+    ```bash
+    python server.py
+    ```
+    Leave this terminal running. You should see output indicating it's running on `http://0.0.0.0:5000/`.
+
+5.  **Run the Frontend Server:**
+    Open a *second* terminal in the *same* project directory and run Python's built-in HTTP server (or use VS Code's Live Server):
+    ```bash
+    python -m http.server 8000
+    ```
+    *(You can use a different port if 8000 is taken)*. Leave this terminal running.
+
+6.  **Access the Chart:**
+    Open your web browser and navigate to:
+    ```
+    http://localhost:8000
+    ```
+    *(Use the port number you specified for the frontend server)*.
+
+The chart should load, fetch data from your local backend (which fetches from Coinbase), connect to the WebSocket, and display the live price.
+
+## Code Structure
+
+```
+--- END FILE: README.md ---
+
+
+--- START ALL OTHER PROJECT FILES ---
+
+--- END ALL OTHER PROJECT FILES ---
+
+
+```
+--- END FILE: GeminiTrader_context.txt ---
 
 
 --- START FILE: index.html ---
@@ -1599,40 +1127,75 @@ import {
   formatTimestamp,
   formatDate,
   getYCoordinate,
+  getPriceFromYCoordinate, // Keep for interactions
   MIN_LOG_VALUE,
 } from "./utils.js";
 
 const SECONDS_PER_DAY = 86400;
-const MIN_PIXELS_PER_LABEL = 60; // Minimum space between labels
+const MIN_PIXELS_PER_LABEL = 60; // Minimum HORIZONTAL space between X labels
+const MIN_PIXELS_PER_LABEL_Y = 15; // Minimum VERTICAL space between Y labels
 const Y_AXIS_MAX_ITERATIONS = 500;
 
 // --- Live Price Indicator ---
 function updateLivePriceIndicatorUI(price, chartHeight) {
-  /* ... no changes ... */
+  if (!dom.currentPriceLabel || !dom.currentPriceLine || isNaN(price)) {
+    if (dom.currentPriceLabel) dom.currentPriceLabel.style.display = "none";
+    if (dom.currentPriceLine) dom.currentPriceLine.style.display = "none";
+    return;
+  }
+  // getYCoordinate respects the current state.isLogScale internally
+  const y = getYCoordinate(price, chartHeight);
+
+  if (y !== null && !isNaN(y)) {
+    const decimals = price < 1 ? 4 : price < 100 ? 2 : price < 10000 ? 1 : 0;
+    dom.currentPriceLine.style.top = `${y.toFixed(1)}px`;
+    dom.currentPriceLine.style.display = "block";
+    dom.currentPriceLabel.textContent = price.toFixed(decimals);
+    dom.currentPriceLabel.style.top = `${y.toFixed(1)}px`;
+    dom.currentPriceLabel.style.display = "block";
+    if (
+      dom.yAxisLabelsContainer &&
+      dom.currentPriceLabel.parentNode !== dom.yAxisLabelsContainer
+    ) {
+      dom.yAxisLabelsContainer.appendChild(dom.currentPriceLabel);
+    }
+  } else {
+    dom.currentPriceLabel.style.display = "none";
+    dom.currentPriceLine.style.display = "none";
+  }
 }
 
 // --- Helper to draw a single Y-axis tick/label ---
-function drawYTick(priceValue, chartHeight, minVisible, maxVisible) {
-  // Keep previous logging inside this helper for Y-axis issues if they return
-  // console.log(`[drawYTick] Trying price: ${priceValue}`);
-  if (priceValue <= MIN_LOG_VALUE) {
-    return;
-  }
-  const y = getYCoordinate(priceValue, chartHeight);
-  // console.log(`[drawYTick] Calculated Y for ${priceValue}: ${y}`);
+function drawYTick(
+  priceValue,
+  y,
+  chartHeight,
+  minVisible,
+  maxVisible,
+  labelContainer,
+  gridContainer,
+  lastLabelYRef
+) {
+  // priceValue: The linear value to display
+  // y: The calculated pixel position (can be linear or log based on state)
   if (y === null || !Number.isFinite(y)) {
-    return;
+    return false;
   }
-  if (y >= -chartHeight * 0.1 && y <= chartHeight * 1.1) {
+  if (Math.abs(y - lastLabelYRef.y) < MIN_PIXELS_PER_LABEL_Y) {
+    return false; // Skip if too close vertically
+  }
+  // Draw Grid Line at position y
+  if (gridContainer && y >= -chartHeight * 0.1 && y <= chartHeight * 1.1) {
     const hLine = document.createElement("div");
     hLine.className = "grid-line horizontal";
     hLine.style.top = `${y.toFixed(1)}px`;
-    dom.gridContainer.appendChild(hLine);
+    gridContainer.appendChild(hLine);
   }
-  if (y >= -5 && y <= chartHeight + 5) {
+  // Draw Label with linear priceValue at position y
+  if (labelContainer && y >= -10 && y <= chartHeight + 10) {
     const yLabel = document.createElement("div");
     yLabel.className = "axis-label y-axis-label";
-    yLabel.style.top = `${y.toFixed(1)}px`;
+    yLabel.style.top = `${y.toFixed(1)}px`; // Position based on calculated y
     let decimals = 0;
     if (priceValue < 0.01) decimals = 6;
     else if (priceValue < 1) decimals = 4;
@@ -1640,23 +1203,27 @@ function drawYTick(priceValue, chartHeight, minVisible, maxVisible) {
     else if (priceValue < 10000) decimals = 1;
     else decimals = 0;
     decimals = Math.max(0, decimals);
-    yLabel.textContent = priceValue.toFixed(decimals);
+    yLabel.textContent = priceValue.toFixed(decimals); // Display the linear value
     try {
-      // Wrap appendChild for safety
-      dom.yAxisLabelsContainer.appendChild(yLabel);
-      // console.log(`[drawYTick] Appended label for ${priceValue}`);
+      labelContainer.appendChild(yLabel);
+      lastLabelYRef.y = y; // Update last drawn position
+      return true;
     } catch (e) {
-      console.error(
-        `[drawYTick] Error appending Y label for ${priceValue}:`,
-        e
-      );
+      console.error(`Error appending Y label for ${priceValue}:`, e);
+      return false;
     }
   }
+  return false;
 }
 
 // --- Main Chart Redraw ---
 export function redrawChart() {
-  // console.log(`[redrawChart] Function called.`); // Reduce noise
+  // Clear previous drawings
+  if (dom.chartArea) dom.chartArea.innerHTML = "";
+  if (dom.gridContainer) dom.gridContainer.innerHTML = "";
+  if (dom.yAxisLabelsContainer) dom.yAxisLabelsContainer.innerHTML = "";
+  if (dom.xAxisLabelsContainer) dom.xAxisLabelsContainer.innerHTML = "";
+  if (dom.volumeYAxisLabels) dom.volumeYAxisLabels.innerHTML = "";
 
   if (
     !dom.chartArea ||
@@ -1664,35 +1231,33 @@ export function redrawChart() {
     !dom.yAxisLabelsContainer ||
     !dom.xAxisLabelsContainer
   ) {
-    console.error("[redrawChart] Missing drawing containers.");
+    console.error("[redrawChart] Missing drawing containers after clear.");
     return;
   }
-
-  dom.chartArea.innerHTML = "";
-  dom.gridContainer.innerHTML = "";
-  dom.yAxisLabelsContainer.innerHTML = "";
-  dom.xAxisLabelsContainer.innerHTML = "";
-  if (dom.volumeYAxisLabels) dom.volumeYAxisLabels.innerHTML = "";
 
   const chartHeight = dom.chartArea.offsetHeight;
   const chartWidth = dom.chartArea.offsetWidth;
 
-  if (!state.fullData || state.fullData.length === 0) {
-    console.warn("[redrawChart] No data.");
-    return;
-  }
   if (chartHeight <= 0 || chartWidth <= 0) {
     console.warn(`[redrawChart] Invalid dimensions.`);
+    return;
+  }
+
+  if (!state.fullData || state.fullData.length === 0) {
+    console.warn("[redrawChart] No data to draw.");
     return;
   }
 
   const {
     minVisiblePrice,
     maxVisiblePrice,
-    isLogScale,
+    isLogScale, // isLogScale only affects getYCoordinate now
     visibleStartIndex,
     visibleEndIndex,
+    fullData,
+    currentGranularity,
   } = state;
+
   const visibleCount = visibleEndIndex - visibleStartIndex;
 
   if (
@@ -1700,12 +1265,15 @@ export function redrawChart() {
     isNaN(maxVisiblePrice) ||
     !Number.isFinite(minVisiblePrice) ||
     !Number.isFinite(maxVisiblePrice) ||
-    maxVisiblePrice <= minVisiblePrice ||
-    (isLogScale && minVisiblePrice <= 0)
+    maxVisiblePrice <= minVisiblePrice
+    // Removed: (isLogScale && minVisiblePrice <= 0) - Min price check done below
   ) {
     console.error("[redrawChart] Invalid price range.");
     return;
   }
+  // Ensure min price is valid for potential log calculation later
+  const safeMinVisiblePriceForLog = Math.max(MIN_LOG_VALUE, minVisiblePrice);
+
   if (visibleCount <= 0) {
     console.warn(`[redrawChart] visibleCount is ${visibleCount}.`);
     return;
@@ -1720,121 +1288,181 @@ export function redrawChart() {
   try {
     const yTickDensity = Math.max(3, Math.round(chartHeight / 40));
     let iterationCount = 0;
-    const linearRange = maxVisiblePrice - minVisiblePrice;
-    const linearTicks =
-      linearRange > 0 && Number.isFinite(linearRange)
-        ? calculateNiceStep(linearRange, yTickDensity)
-        : 1;
-    if (!linearTicks || linearTicks <= 0 || !Number.isFinite(linearTicks)) {
-      /* Handle error */
-    } else {
-      let firstLinearTick;
-      if (minVisiblePrice >= 0) {
-        firstLinearTick =
-          linearTicks > 0
-            ? Math.ceil(minVisiblePrice / linearTicks) * linearTicks
-            : minVisiblePrice;
-      } else {
-        firstLinearTick =
-          linearTicks > 0
-            ? Math.floor(minVisiblePrice / linearTicks) * linearTicks
-            : minVisiblePrice;
-      }
-      if (
-        linearTicks > 0 &&
-        firstLinearTick - minVisiblePrice > linearTicks * 0.99
-      ) {
-        firstLinearTick -= linearTicks;
-      }
-      if (minVisiblePrice > 0 && firstLinearTick < 0) {
-        firstLinearTick = 0;
-      }
-      const loopUpperBound = maxVisiblePrice + linearTicks * 0.1;
-      for (
-        let currentPrice = firstLinearTick;
-        currentPrice <= loopUpperBound &&
-        iterationCount < Y_AXIS_MAX_ITERATIONS;
-        currentPrice =
-          linearTicks > 0 ? currentPrice + linearTicks : loopUpperBound + 1
-      ) {
-        iterationCount++;
-        drawYTick(currentPrice, chartHeight, minVisiblePrice, maxVisiblePrice);
-        if (
-          linearTicks > Number.EPSILON &&
-          currentPrice + linearTicks <= currentPrice
-        ) {
-          break;
+    const minPrice = minVisiblePrice; // Use actual min for range calculation
+    const maxPrice = maxVisiblePrice;
+    let lastLabelYRef = { y: Infinity };
+
+    // *** Always calculate ticks based on LINEAR range ***
+    const linearRange = maxPrice - minPrice;
+    if (linearRange > 0 && Number.isFinite(linearRange)) {
+      const linearStep = calculateNiceStep(linearRange, yTickDensity); // Get nice linear step
+
+      if (linearStep > 0 && Number.isFinite(linearStep)) {
+        let currentPrice = Math.ceil(minPrice / linearStep) * linearStep; // Start tick value
+        if (currentPrice - minPrice > linearStep * 0.9) {
+          currentPrice -= linearStep;
         }
+        // Ensure start is non-negative if min price is non-negative
+        if (minPrice >= 0 && currentPrice < 0) {
+          currentPrice = 0;
+        }
+        // Adjust for very small min prices close to zero
+        else if (
+          minPrice > 0 &&
+          minPrice < linearStep &&
+          currentPrice > linearStep
+        ) {
+          currentPrice = 0; // Start at 0 if min is small positive and first tick is > step
+        }
+
+        const loopUpperBound = maxPrice + linearStep * 0.1; // Iterate slightly beyond max visible
+
+        for (
+          ;
+          currentPrice <= loopUpperBound &&
+          iterationCount < Y_AXIS_MAX_ITERATIONS;
+          currentPrice += linearStep
+        ) {
+          iterationCount++;
+
+          // *** Get Y position using the CURRENT scale (linear OR log) ***
+          const y = getYCoordinate(currentPrice, chartHeight);
+
+          // *** Draw tick with LINEAR value but at calculated Y position ***
+          drawYTick(
+            currentPrice, // The linear value for the label text
+            y, // The calculated pixel Y (respects isLogScale)
+            chartHeight,
+            minPrice,
+            maxPrice,
+            dom.yAxisLabelsContainer,
+            dom.gridContainer,
+            lastLabelYRef
+          );
+
+          // Prevent infinite/stuck loops
+          if (
+            linearStep <= Number.EPSILON ||
+            currentPrice + linearStep <= currentPrice
+          )
+            break;
+        }
+      } else {
+        // Fallback: Draw min/max if step calculation fails
+        drawYTick(
+          minPrice,
+          getYCoordinate(minPrice, chartHeight),
+          chartHeight,
+          minPrice,
+          maxPrice,
+          dom.yAxisLabelsContainer,
+          dom.gridContainer,
+          lastLabelYRef
+        );
+        drawYTick(
+          maxPrice,
+          getYCoordinate(maxPrice, chartHeight),
+          chartHeight,
+          minPrice,
+          maxPrice,
+          dom.yAxisLabelsContainer,
+          dom.gridContainer,
+          lastLabelYRef
+        );
       }
+    } else {
+      // Fallback: Draw min/max if range is invalid
+      drawYTick(
+        minPrice,
+        getYCoordinate(minPrice, chartHeight),
+        chartHeight,
+        minPrice,
+        maxPrice,
+        dom.yAxisLabelsContainer,
+        dom.gridContainer,
+        lastLabelYRef
+      );
+      drawYTick(
+        maxPrice,
+        getYCoordinate(maxPrice, chartHeight),
+        chartHeight,
+        minPrice,
+        maxPrice,
+        dom.yAxisLabelsContainer,
+        dom.gridContainer,
+        lastLabelYRef
+      );
     }
   } catch (e) {
     console.error("[redrawChart] Error drawing Y grid/axis:", e);
   }
 
-  // --- Draw X-Axis & Separators ---
+  // === Draw X-Axis & Separators ===
   let xAxisLabelsDrawnCount = 0;
   try {
-    // console.log("[redrawChart] Drawing X-Axis..."); // Reduce noise
     const xTickDensity = Math.max(3, Math.round(chartWidth / 70));
-    const xTicks =
-      visibleCount > 0
-        ? Math.max(1, calculateNiceStep(visibleCount, xTickDensity))
-        : 1;
+    const xTickCandleInterval = Math.max(
+      1,
+      Math.round(visibleCount / xTickDensity)
+    );
     let lastLabelX = -Infinity;
+
+    const lastDataIndex = fullData.length - 1;
+    const lastCandleTimestamp =
+      lastDataIndex >= 0 ? fullData[lastDataIndex]?.[0] : null;
+    const hasValidLastTimestamp =
+      typeof lastCandleTimestamp === "number" && !isNaN(lastCandleTimestamp);
 
     for (let i = 0; i < visibleCount; i++) {
       const dataIndex = visibleStartIndex + i;
-      if (dataIndex < 0 || dataIndex >= state.fullData.length) continue;
-      const candleData = state.fullData[dataIndex];
-      if (!candleData || candleData.length < 1 || isNaN(candleData[0]))
+      const x = (i + 0.5) * candleTotalWidth;
+
+      let currentTimestamp = null;
+      if (dataIndex >= 0 && dataIndex <= lastDataIndex) {
+        const candleData = fullData[dataIndex];
+        if (
+          candleData?.[0] !== undefined &&
+          typeof candleData[0] === "number" &&
+          !isNaN(candleData[0])
+        ) {
+          currentTimestamp = candleData[0];
+        }
+      } else if (
+        dataIndex > lastDataIndex &&
+        hasValidLastTimestamp &&
+        currentGranularity > 0
+      ) {
+        const candlesPastEnd = dataIndex - lastDataIndex;
+        currentTimestamp =
+          lastCandleTimestamp + candlesPastEnd * currentGranularity;
+      }
+
+      if (currentTimestamp === null) {
         continue;
-      const timestamp = candleData[0];
+      }
 
-      const isFirst = i === 0;
-      const isLast = i === visibleCount - 1;
-      const isTickCandidate =
-        xTicks > 0 && (i + Math.floor(xTicks / 2)) % xTicks === 0;
+      const isTickCandidate = i % xTickCandleInterval === 0;
+      const spacingCondition = x - lastLabelX > MIN_PIXELS_PER_LABEL;
 
-      if (isFirst || isLast || isTickCandidate) {
-        const x = (i + 0.5) * candleTotalWidth;
-        const spacingCondition = x - lastLabelX > MIN_PIXELS_PER_LABEL;
+      if (isTickCandidate && spacingCondition) {
+        if (x >= -candleTotalWidth && x <= chartWidth + candleTotalWidth) {
+          const xLabel = document.createElement("div");
+          xLabel.className = "axis-label x-axis-label";
+          xLabel.style.left = `${x.toFixed(1)}px`;
 
-        if (spacingCondition || isFirst || isLast) {
-          if (x >= -candleTotalWidth && x <= chartWidth + candleTotalWidth) {
-            const xLabel = document.createElement("div");
-            xLabel.className = "axis-label x-axis-label";
-            xLabel.style.left = `${x.toFixed(1)}px`;
-
-            // <<< Wrap formatTimestamp and appendChild in try...catch >>>
-            try {
-              const formattedTime = formatTimestamp(timestamp);
-              if (formattedTime && formattedTime !== "Time Error") {
-                // Check for valid formatted time
-                xLabel.textContent = formattedTime;
-                dom.xAxisLabelsContainer.appendChild(xLabel);
-                xAxisLabelsDrawnCount++;
-                lastLabelX = x;
-                // console.log(`[X-Axis Tick ${i}] Appended label "${formattedTime}" at X=${x.toFixed(1)}`); // Optional log on success
-              } else {
-                console.warn(
-                  `[X-Axis Tick ${i}] formatTimestamp returned invalid: "${formattedTime}" for timestamp ${timestamp}`
-                );
-              }
-            } catch (labelError) {
-              console.error(
-                `[X-Axis Tick ${i}] Error formatting or appending label for timestamp ${timestamp}:`,
-                labelError
-              );
-              // Continue to the next iteration even if one label fails
+          try {
+            const formattedTime = formatTimestamp(currentTimestamp);
+            if (formattedTime && formattedTime !== "Time Error") {
+              xLabel.textContent = formattedTime;
+              dom.xAxisLabelsContainer.appendChild(xLabel);
+              xAxisLabelsDrawnCount++;
+              lastLabelX = x;
             }
-            // <<< End try...catch wrapper >>>
-          }
+          } catch (labelError) {}
         }
       }
     }
-    // console.log(`[redrawChart] X-Axis drawing finished. Appended Label Count: ${xAxisLabelsDrawnCount}`); // Reduce noise
   } catch (e) {
-    // Catch errors in the main X-axis loop setup (less likely now)
     console.error("[redrawChart] Error drawing X grid/axis:", e);
   }
 
@@ -1845,8 +1473,11 @@ export function redrawChart() {
     const fragment = document.createDocumentFragment();
     for (let i = 0; i < visibleCount; i++) {
       const dataIndex = visibleStartIndex + i;
-      if (dataIndex < 0 || dataIndex >= state.fullData.length) continue;
-      const candle = state.fullData[dataIndex];
+      if (dataIndex < 0 || dataIndex >= fullData.length) {
+        continue;
+      }
+
+      const candle = fullData[dataIndex];
       if (
         !candle ||
         candle.length < 5 ||
@@ -1854,6 +1485,7 @@ export function redrawChart() {
       ) {
         continue;
       }
+
       const [timestamp, low, high, open, close] = candle;
       const isUp = close >= open;
       const wickHighY = getYCoordinate(high, chartHeight);
@@ -1871,35 +1503,32 @@ export function redrawChart() {
         !Number.isFinite(bodyCloseY)
       ) {
         candlesSkippedInvalidCoords++;
-        continue; // Skip this candle
+        continue;
       }
+
       const bodyTopY = Math.min(bodyOpenY, bodyCloseY);
       const bodyBottomY = Math.max(bodyOpenY, bodyCloseY);
-      const wickHeight = Math.max(1, wickLowY - wickHighY);
+      const wickHeight = Math.max(0, wickLowY - wickHighY);
       const bodyHeight = Math.max(1, bodyBottomY - bodyTopY);
+
       const candleElement = document.createElement("div");
       candleElement.className = "candle";
       candleElement.style.width = `${candleWidth.toFixed(1)}px`;
       const candleLeft = i * candleTotalWidth + candleMargin;
       candleElement.style.left = `${candleLeft.toFixed(1)}px`;
-      let wickElement = null;
+
       if (wickHeight >= 1 && wickLowY >= wickHighY) {
-        wickElement = document.createElement("div");
+        const wickElement = document.createElement("div");
         wickElement.className = `wick ${isUp ? "color-up" : "color-down"}`;
         wickElement.style.top = `${wickHighY.toFixed(1)}px`;
         wickElement.style.height = `${wickHeight.toFixed(1)}px`;
+        candleElement.appendChild(wickElement);
       }
-      let bodyElement = null;
       if (bodyHeight >= 1 && bodyBottomY >= bodyTopY) {
-        bodyElement = document.createElement("div");
+        const bodyElement = document.createElement("div");
         bodyElement.className = `body ${isUp ? "color-up" : "color-down"}`;
         bodyElement.style.top = `${bodyTopY.toFixed(1)}px`;
         bodyElement.style.height = `${bodyHeight.toFixed(1)}px`;
-      }
-      if (wickElement) {
-        candleElement.appendChild(wickElement);
-      }
-      if (bodyElement) {
         candleElement.appendChild(bodyElement);
       }
       if (candleElement.childNodes.length > 0) {
@@ -1908,20 +1537,25 @@ export function redrawChart() {
       }
     }
     dom.chartArea.appendChild(fragment);
-    // console.log(`[redrawChart] Candle drawing finished. Drawn: ${candlesDrawn}, Skipped: ${candlesSkippedInvalidCoords}`); // Reduce noise
   } catch (e) {
     console.error("[redrawChart] Error drawing candles:", e);
   }
 
   // --- Update Live Price Indicator ---
-  let priceForIndicator = state.lastTickerPrice; /* ... existing logic ... */
+  let priceForIndicator = state.lastTickerPrice;
+  const lastDataIndexForPrice = fullData.length - 1;
+  if (priceForIndicator === null && lastDataIndexForPrice >= 0) {
+    const lastCandle = fullData[lastDataIndexForPrice];
+    if (lastCandle && lastCandle.length >= 5 && !isNaN(lastCandle[4])) {
+      priceForIndicator = lastCandle[4];
+    }
+  }
   if (priceForIndicator !== null && Number.isFinite(priceForIndicator)) {
     updateLivePriceIndicatorUI(priceForIndicator, chartHeight);
   } else {
     if (dom.currentPriceLabel) dom.currentPriceLabel.style.display = "none";
     if (dom.currentPriceLine) dom.currentPriceLine.style.display = "none";
   }
-  // console.log(`[redrawChart] Live price indicator updated/hidden.`); // Reduce noise
 
   // --- Draw Volume Chart ---
   try {
@@ -1930,18 +1564,14 @@ export function redrawChart() {
     console.error("[redrawChart] Error calling drawVolumeChart:", e);
     if (dom.volumeChartCanvas && dom.volumeChartCanvas.getContext) {
       const volCtx = dom.volumeChartCanvas.getContext("2d");
-      if (volCtx) {
-        volCtx.clearRect(
-          0,
-          0,
-          dom.volumeChartCanvas.width,
-          dom.volumeChartCanvas.height
-        );
-      }
+      volCtx?.clearRect(
+        0,
+        0,
+        dom.volumeChartCanvas.width,
+        dom.volumeChartCanvas.height
+      );
     }
   }
-
-  // console.log(`[redrawChart] Function finished completely.`); // Reduce noise
 } // End of redrawChart function
 
 ```
@@ -1979,7 +1609,7 @@ function safeLog(value) {
 }
 
 // --- Tooltip Functions ---
-// ... (showTooltip, hideTooltip - no changes needed) ...
+// ... (showTooltip, hideTooltip - original versions from the start) ...
 function showTooltip(dataIndex, mouseX, mouseY) {
   if (!dom.chartTooltip || !dom.chartArea) return;
 
@@ -2089,7 +1719,6 @@ function hideTooltip() {
 }
 
 // --- Crosshair Update Functions ---
-// ... (updateCrosshair, hideCrosshair - no changes needed) ...
 function updateCrosshair(mouseX, mouseY, chartHeight, chartWidth) {
   if (
     !dom.crosshairLineX ||
@@ -2137,7 +1766,6 @@ function hideCrosshair() {
 }
 
 // --- Interaction Handlers ---
-// ... (handleMouseMoveForTooltip, handleMouseLeaveChartArea - no changes needed) ...
 function handleMouseMoveForTooltip(event) {
   if (!dom.chartArea) return;
 
@@ -2248,7 +1876,6 @@ function handleMouseLeaveChartArea(event) {
 }
 
 // --- Chart Interaction Handlers (Zoom, Pan, Scale, Resize, DoubleClick) ---
-// ... (handleZoom, handleMouseMove, handleMouseDownChart, etc. - no changes needed) ...
 export function handleZoom(event) {
   event.preventDefault();
   if (!dom.chartArea) return;
@@ -2332,27 +1959,23 @@ export function handleZoom(event) {
     newVisibleCount = Math.max(
       config.MIN_VISIBLE_CANDLES,
       // Limit zoom out to maybe 5x the total data length? Prevents excessive range.
-      Math.min(newVisibleCount, state.fullData.length * 5)
+      // *** Allow zooming out beyond available data (for future space) ***
+      // Math.min(newVisibleCount, state.fullData.length * 5) // OLD
+      newVisibleCount // NEW - No upper limit based on data length here
     );
-    // Clamp further to not exceed total data length when zooming in fully
-    newVisibleCount = Math.min(newVisibleCount, state.fullData.length);
+    // Clamp minimum visible candles
+    newVisibleCount = Math.max(config.MIN_VISIBLE_CANDLES, newVisibleCount);
 
     // Calculate new start index to keep the index under the cursor stationary
     let newStartIndex = Math.round(
       indexAtCursorFloat - (mouseX / chartWidth) * newVisibleCount
     );
 
-    // Clamp start/end indices to valid range [0, fullData.length]
+    // *** Clamp ONLY the lower bound (cannot view before index 0) ***
     newStartIndex = Math.max(0, newStartIndex);
-    let newEndIndex = newStartIndex + newVisibleCount;
 
-    // Adjust if end index exceeds data bounds
-    if (newEndIndex > state.fullData.length) {
-      newEndIndex = state.fullData.length;
-      newStartIndex = Math.max(0, newEndIndex - newVisibleCount); // Recalculate start index based on clamped end
-    }
-    // Final clamp on start index (shouldn't be needed if logic above is correct, but safe)
-    newStartIndex = Math.max(0, newStartIndex);
+    // *** End index is simply start + count (can exceed data length) ***
+    let newEndIndex = newStartIndex + newVisibleCount;
 
     newState.visibleStartIndex = newStartIndex;
     newState.visibleEndIndex = newEndIndex;
@@ -2462,21 +2085,22 @@ export function handleMouseMove(event) {
     );
 
     let newVisibleCount = Math.round(state.panStartVisibleCount * scaleFactor);
-    // Clamp new count: min candles, max data length * factor, max total data length
+    // Clamp new count: min candles, but no upper bound based on data length
     newVisibleCount = Math.max(config.MIN_VISIBLE_CANDLES, newVisibleCount);
-    newVisibleCount = Math.min(newVisibleCount, state.fullData.length * 5); // Limit zoom out
-    newVisibleCount = Math.min(newVisibleCount, state.fullData.length); // Cannot show more than exist
+    // newVisibleCount = Math.min(newVisibleCount, state.fullData.length * 5); // OLD Limit zoom out
+    // newVisibleCount = Math.min(newVisibleCount, state.fullData.length); // OLD Cannot show more than exist
 
     let newStartIndex = Math.round(centerIndex - newVisibleCount / 2);
 
-    // Clamp start/end indices
+    // Clamp start/end indices - ONLY clamp start index at 0
     newStartIndex = Math.max(0, newStartIndex);
     let newEndIndex = newStartIndex + newVisibleCount;
-    if (newEndIndex > state.fullData.length) {
-      newEndIndex = state.fullData.length;
-      newStartIndex = Math.max(0, newEndIndex - newVisibleCount);
-    }
-    newStartIndex = Math.max(0, newStartIndex); // Final start clamp
+    // *** REMOVED upper clamp based on fullData.length ***
+    // if (newEndIndex > state.fullData.length) {
+    //   newEndIndex = state.fullData.length;
+    //   newStartIndex = Math.max(0, newEndIndex - newVisibleCount);
+    // }
+    // newStartIndex = Math.max(0, newStartIndex); // Final start clamp
 
     // Check if indices changed
     if (
@@ -2498,23 +2122,28 @@ export function handleMouseMove(event) {
     let changedX = false;
     let changedY = false;
 
-    // Pan X (Time)
+    // ===>>> Pan X (Time) Modification <<<===
     if (state.panStartVisibleCount > 0) {
       const indexDelta = (deltaX / chartWidth) * state.panStartVisibleCount;
       let newStartIndex = state.panStartVisibleIndex - Math.round(indexDelta);
 
-      // Clamp panning within data bounds [0, N - visibleCount]
-      const maxStartIndex = state.fullData.length - state.panStartVisibleCount;
-      newStartIndex = Math.max(0, Math.min(newStartIndex, maxStartIndex));
+      // Clamp panning ONLY at the beginning (index 0)
+      newStartIndex = Math.max(0, newStartIndex);
+
+      // *** REMOVE the upper clamp based on data length ***
+      // const maxStartIndex = state.fullData.length - state.panStartVisibleCount;
+      // newStartIndex = Math.min(newStartIndex, maxStartIndex); // <-- REMOVED
 
       if (newStartIndex !== state.visibleStartIndex) {
         newState.visibleStartIndex = newStartIndex;
+        // Calculate end index based on the (potentially unclamped right) start index
         newState.visibleEndIndex = newStartIndex + state.panStartVisibleCount;
         changedX = true;
       }
     }
+    // ===>>> End Pan X Modification <<<===
 
-    // Pan Y (Price)
+    // Pan Y (Price) - Unchanged
     if (state.isLogScale) {
       const logMinStart = safeLog(state.panStartMinPrice);
       const logMaxStart = safeLog(state.panStartMaxPrice);
@@ -2528,7 +2157,6 @@ export function handleMouseMove(event) {
         const newMin = Math.max(MIN_LOG_VALUE, exp(newLogMin));
         const newMax = exp(newLogMax);
 
-        // Check for significant change
         if (
           Math.abs(newMin - state.minVisiblePrice) > 1e-9 ||
           Math.abs(newMax - state.maxVisiblePrice) > 1e-9
@@ -2539,14 +2167,12 @@ export function handleMouseMove(event) {
         }
       }
     } else {
-      // Linear Scale Pan Y
       const initialPriceRange = state.panStartMaxPrice - state.panStartMinPrice;
       if (initialPriceRange > 0 && Number.isFinite(initialPriceRange)) {
         const priceDelta = (deltaY / chartHeight) * initialPriceRange;
         const newMinPrice = state.panStartMinPrice + priceDelta;
         const newMaxPrice = state.panStartMaxPrice + priceDelta;
 
-        // Check for significant change
         if (
           Math.abs(newMinPrice - state.minVisiblePrice) > 1e-9 ||
           Math.abs(newMaxPrice - state.maxVisiblePrice) > 1e-9
@@ -2573,13 +2199,16 @@ export function handleMouseDownChart(event) {
   const target = event.target;
   if (!dom.chartArea || !dom.chartWrapper || !dom.gridContainer) return;
 
-  if (
+  // Check if target is chartArea, chartWrapper, gridContainer, or a candle/its children
+  const isChartElement =
     target === dom.chartArea ||
     target === dom.chartWrapper ||
     target === dom.gridContainer ||
-    target.classList.contains("grid-line") ||
-    target.classList.contains("candle")
-  ) {
+    target.classList.contains("grid-line") || // Direct click on grid line
+    target.classList.contains("candle") || // Direct click on candle div
+    target.closest(".candle"); // Click on wick or body inside candle div
+
+  if (isChartElement) {
     updateState({
       isPanning: true,
       isDraggingYAxis: false,
@@ -2657,19 +2286,24 @@ export function handleDoubleClick(event) {
   if (!chartHeight || chartHeight <= 0) return; // Need height for scaling
 
   // --- Reset X-Axis (Time) ---
+  // Reset view to show DEFAULT_RESET_CANDLE_COUNT candles ending at the *last available data point*
   const totalDataCount = state.fullData.length;
   let newVisibleCount = Math.min(
     config.DEFAULT_RESET_CANDLE_COUNT,
-    totalDataCount
+    totalDataCount // Cannot show more than we have data for on reset
   );
-  let newEndIndex = totalDataCount; // Show up to the latest candle
+  // End index is the end of available data
+  let newEndIndex = totalDataCount;
+  // Start index is calculated based on end and count, clamped at 0
   let newStartIndex = Math.max(0, newEndIndex - newVisibleCount);
-  newVisibleCount = newEndIndex - newStartIndex; // Recalculate actual count
+  // Recalculate actual count based on clamping
+  newVisibleCount = newEndIndex - newStartIndex;
 
   // --- Find Actual Data Range (Y-Axis) in the New Time Window ---
   let newMinY = Infinity,
     newMaxY = -Infinity;
   for (let i = newStartIndex; i < newEndIndex; i++) {
+    // This loop uses valid indices based on the reset calculation above
     if (!state.fullData[i] || state.fullData[i].length < 5) continue;
     const low = state.fullData[i][1];
     const high = state.fullData[i][2];
@@ -2683,7 +2317,7 @@ export function handleDoubleClick(event) {
 
   // Handle cases where range couldn't be determined or is invalid
   let dataRangeY;
-  const minValidRange = 1e-9; // A very small number to represent effectively zero range
+  const minValidRange = 1e-9; // A very small number
 
   if (
     newMinY === Infinity ||
@@ -2700,24 +2334,22 @@ export function handleDoubleClick(event) {
         ? lastCandle[4]
         : (state.minVisiblePrice + state.maxVisiblePrice) / 2 || 100;
 
-    // Use a small default span based on scale type
     if (state.isLogScale) {
-      newMinY = Math.max(MIN_LOG_VALUE, centerPrice / 1.01); // +/- 1%
+      newMinY = Math.max(MIN_LOG_VALUE, centerPrice / 1.01);
       newMaxY = centerPrice * 1.01;
     } else {
       const halfSpan = config.MIN_PRICE_RANGE_SPAN / 2 || 0.05;
       newMinY = Math.max(0, centerPrice - halfSpan);
       newMaxY = centerPrice + halfSpan;
     }
-    dataRangeY = newMaxY - newMinY; // Recalculate data range for fallback
-    if (dataRangeY < minValidRange) dataRangeY = minValidRange; // Ensure positive range
+    dataRangeY = newMaxY - newMinY;
+    if (dataRangeY < minValidRange) dataRangeY = minValidRange;
   } else {
     dataRangeY = newMaxY - newMinY;
   }
 
-  // Ensure minimums are positive for log scale calculations
   newMinY = Math.max(MIN_LOG_VALUE, newMinY);
-  newMaxY = Math.max(newMinY + minValidRange, newMaxY); // Ensure max > min
+  newMaxY = Math.max(newMinY + minValidRange, newMaxY);
 
   // --- Calculate Required Total Y-Range for Target Fill ---
   let newMinPrice, newMaxPrice;
@@ -2725,14 +2357,11 @@ export function handleDoubleClick(event) {
   const inverseFill = 1.0 / targetFill;
 
   if (state.isLogScale) {
-    // Log Scale Calculation
     const safeMinY = Math.max(MIN_LOG_VALUE, newMinY);
-    const safeMaxY = Math.max(safeMinY * 1.0001, newMaxY); // Ensure Max > Min slightly
-
+    const safeMaxY = Math.max(safeMinY * 1.0001, newMaxY);
     const logDataRangeY = safeLog(safeMaxY) - safeLog(safeMinY);
 
     if (!Number.isFinite(logDataRangeY) || logDataRangeY <= 0) {
-      // Fallback if log range calculation fails
       console.warn(
         "Log range calculation failed in reset, using simple padding."
       );
@@ -2743,14 +2372,10 @@ export function handleDoubleClick(event) {
       const logTotalRange = logDataRangeY * inverseFill;
       const logPaddingTotal = logTotalRange - logDataRangeY;
       const logPaddingAmount = logPaddingTotal / 2.0;
-
       const newLogMin = safeLog(safeMinY) - logPaddingAmount;
       const newLogMax = safeLog(safeMaxY) + logPaddingAmount;
-
       newMinPrice = Math.max(MIN_LOG_VALUE, exp(newLogMin));
       newMaxPrice = exp(newLogMax);
-
-      // Ensure minimum range ratio after calculation
       if (newMaxPrice / newMinPrice < 1.01) {
         const midLog = (newLogMax + newLogMin) / 2;
         const halfRangeLog = Math.log(1.005);
@@ -2761,7 +2386,6 @@ export function handleDoubleClick(event) {
   } else {
     // Linear Scale Calculation
     if (dataRangeY <= 0) {
-      // Should be handled by fallback above, but double check
       console.warn("Linear range is zero in reset, using simple padding.");
       const halfSpan = config.MIN_PRICE_RANGE_SPAN / 2 || 0.05;
       newMinPrice = Math.max(0, newMinY - halfSpan);
@@ -2770,11 +2394,8 @@ export function handleDoubleClick(event) {
       const totalRange = dataRangeY * inverseFill;
       const paddingTotal = totalRange - dataRangeY;
       const paddingAmount = paddingTotal / 2.0;
-
-      newMinPrice = Math.max(0, newMinY - paddingAmount); // Clamp at 0
+      newMinPrice = Math.max(0, newMinY - paddingAmount);
       newMaxPrice = newMaxY + paddingAmount;
-
-      // Ensure minimum linear range span
       if (newMaxPrice - newMinPrice < config.MIN_PRICE_RANGE_SPAN) {
         const mid = (newMaxPrice + newMinPrice) / 2;
         newMinPrice = Math.max(0, mid - config.MIN_PRICE_RANGE_SPAN / 2);
@@ -2786,13 +2407,11 @@ export function handleDoubleClick(event) {
   // Update state with new X and Y ranges
   updateState({
     visibleStartIndex: newStartIndex,
-    visibleEndIndex: newEndIndex,
+    visibleEndIndex: newEndIndex, // Ensure end index matches calculated start+count
     minVisiblePrice: newMinPrice,
     maxVisiblePrice: newMaxPrice,
-    // DO NOT reset isLogScale or is12HourFormat here
   });
 
-  // Request redraw with the new state
   requestAnimationFrame(redrawChart);
 }
 // --- End of Double Click Handler ---
@@ -2818,19 +2437,16 @@ export function handleLogScaleToggle() {
       // Switching TO Log
       const linearRange = currentMax - currentMin;
       const logCenter = safeLog(centerPrice);
-      // Estimate equivalent log range (this is approximate)
-      const logRangeEstimate = safeLog(currentMax) - safeLog(currentMin); // Use current log range
+      const logRangeEstimate = safeLog(currentMax) - safeLog(currentMin);
 
       if (Number.isFinite(logRangeEstimate) && logRangeEstimate > 0) {
         const halfLogRange = logRangeEstimate / 2;
         newMin = Math.max(MIN_LOG_VALUE, exp(logCenter - halfLogRange));
         newMax = exp(logCenter + halfLogRange);
       } else {
-        // Fallback if range fails
         newMin = Math.max(MIN_LOG_VALUE, centerPrice / 1.1);
         newMax = centerPrice * 1.1;
       }
-      // Ensure min log ratio
       if (newMax / newMin < 1.01) {
         const midLog = (safeLog(newMax) + safeLog(newMin)) / 2;
         newMin = Math.max(MIN_LOG_VALUE, exp(midLog - Math.log(1.005)));
@@ -2839,18 +2455,16 @@ export function handleLogScaleToggle() {
     } else {
       // Switching TO Linear
       const logRange = safeLog(currentMax) - safeLog(currentMin);
-      // Estimate equivalent linear range based on center price (approximate)
-      const linearRatio = currentMax / currentMin; // Ratio
-      const linearRangeEstimate = centerPrice * (linearRatio - 1); // Very rough estimate
+      const linearRatio = currentMax / currentMin;
+      const linearRangeEstimate = centerPrice * (linearRatio - 1);
       let halfLinearRange = linearRangeEstimate / 2;
 
-      // Use a more stable fallback if estimate is bad
       if (
         !Number.isFinite(halfLinearRange) ||
         halfLinearRange <= config.MIN_PRICE_RANGE_SPAN / 2
       ) {
         halfLinearRange =
-          (currentMax - currentMin) / 2 || config.MIN_PRICE_RANGE_SPAN; // Use current linear diff or default
+          (currentMax - currentMin) / 2 || config.MIN_PRICE_RANGE_SPAN;
       }
       halfLinearRange = Math.max(
         config.MIN_PRICE_RANGE_SPAN / 2,
@@ -2859,14 +2473,12 @@ export function handleLogScaleToggle() {
 
       newMin = Math.max(0, centerPrice - halfLinearRange);
       newMax = centerPrice + halfLinearRange;
-      // Ensure min linear span
       if (newMax - newMin < config.MIN_PRICE_RANGE_SPAN) {
         const mid = (newMax + newMin) / 2;
         newMin = Math.max(0, mid - config.MIN_PRICE_RANGE_SPAN / 2);
         newMax = mid + config.MIN_PRICE_RANGE_SPAN / 2;
       }
     }
-
     updateState({ minVisiblePrice: newMin, maxVisiblePrice: newMax });
   } else {
     console.warn("Could not get center price for scale toggle adjustment.");
@@ -2885,10 +2497,10 @@ export function handleTimeFormatToggle() {
 // --- Attach Listeners ---
 export function attachInteractionListeners() {
   if (
-    !dom.chartContainer ||
+    !dom.chartContainer || // Use the main chart container for panning/zoom/dblclick
     !dom.yAxisLabelsContainer ||
     !dom.xAxisLabelsContainer ||
-    !dom.chartArea
+    !dom.chartArea // Use chartArea for tooltip/crosshair move/leave
   ) {
     console.error(
       "Cannot attach interaction listeners: Essential chart DOM elements missing."

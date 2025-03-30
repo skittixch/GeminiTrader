@@ -1,5 +1,5 @@
-// js/tabs.js
-import { loadAndDisplayOpenOrders } from "./orders.js"; // Import the function
+// FILE: js/tabs.js
+import { loadAndDisplayOpenOrders } from "./orders.js"; // Keep the import
 
 /**
  * Initializes tab switching functionality for a given container.
@@ -74,30 +74,25 @@ export function initializeTabs(tabBarSelector, contentAreaSelector) {
 
     console.log(`Switched tab to: ${targetId}`);
 
-    // --- Trigger fetch/refresh logic when a tab becomes active ---
+    // --- Trigger data refresh logic when specific tabs become active ---
     if (targetId === "open-orders-content") {
-      // Call the function to load and display orders for this specific tab
-      loadAndDisplayOpenOrders();
+      // Fetch/update orders when tab is clicked (good for refresh)
+      // loadAndDisplayOpenOrders will handle rendering the table
+      // and updating the plot state, then trigger a redraw.
+      console.log("Open Orders tab activated, refreshing data...");
+      loadAndDisplayOpenOrders(); // Keep this call for refresh
     }
     // Example for future:
     // else if (targetId === 'order-history-content') {
     //   loadAndDisplayOrderHistory();
     // }
     // else if (targetId === 'positions-content') {
-    // Optional: Re-fetch balances if needed, though they update via WS now
-    // initializeBalances(); // Or a refresh function
+    // Optional: Re-fetch balances if needed
+    // initializeBalances();
     // }
   });
 
   console.log(`Tabs initialized for container: ${tabBarSelector}`);
 
-  // Optional: Load data for the initially active tab immediately?
-  const initiallyActiveButton = tabBar.querySelector(".tab-button.active");
-  if (initiallyActiveButton) {
-    const initialTargetId = initiallyActiveButton.dataset.target;
-    if (initialTargetId === "open-orders-content") {
-      // Only load if the default active tab is the orders tab
-      // loadAndDisplayOpenOrders(); // Decided against preload, load on click is fine.
-    }
-  }
+  // No initial load trigger from here - main.js handles that
 }

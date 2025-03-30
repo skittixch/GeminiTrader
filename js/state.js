@@ -1,4 +1,4 @@
-// js/state.js
+// FILE: js/state.js
 import * as config from "./config.js";
 
 const chartState = {
@@ -22,6 +22,7 @@ const chartState = {
   lastDrawTime: 0,
   lastTickerPrice: null, // Store last known ticker price (for main chart indicator)
   latestPrices: new Map(), // <<<--- ADDED: Map to store latest price for each asset { 'BTC': 65000.12, 'ETH': 3400.50, ... }
+  ordersToPlot: [], // <--- ADDED: Array to store orders for plotting on the chart { time: unixSeconds, price: number, side: 'BUY'/'SELL' }
 };
 
 export function updateState(newState) {
