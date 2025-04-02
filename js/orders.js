@@ -3,17 +3,27 @@
 import * as dom from "./domElements.js";
 import { formatTimestamp, formatCurrency, formatQuantity } from "./utils.js";
 import { updateState } from "./state.js";
-import { redrawChart } from "./drawing.js"; // Keep import
+import { redrawChart } from "./drawing.js";
+
+// --- REMOVE Column Resizing State Variables ---
+// let isResizingColumn = false;
+// let resizingCol = null;
+// let nextCol = null;
+// let startX = 0;
+// let startWidth = 0;
+// let nextStartWidth = 0;
+// const MIN_COLUMN_WIDTH = 50;
+// const RESIZE_HANDLE_SENSITIVITY = 8;
 
 // --- Fetch Function ---
 async function fetchOpenOrders() {
+  // ... implementation unchanged ...
   console.log("[fetchOpenOrders] Starting fetch...");
   const url = "http://localhost:5000/api/open_orders";
   try {
     const response = await fetch(url);
     console.log(`[fetchOpenOrders] Response status: ${response.status}`);
     const result = await response.json();
-
     if (!response.ok) {
       console.error(
         `[fetchOpenOrders] Error fetching open orders: ${response.status} ${response.statusText}`,
@@ -24,7 +34,6 @@ async function fetchOpenOrders() {
         result.details ? { cause: result.details } : undefined
       );
     }
-
     if (result && Array.isArray(result.orders)) {
       console.log(`[fetchOpenOrders] Received ${result.orders.length} orders.`);
       return result.orders;
@@ -44,26 +53,21 @@ async function fetchOpenOrders() {
       dom.openOrdersContent &&
       dom.openOrdersContent.classList.contains("active")
     ) {
-      dom.openOrdersContent.innerHTML = `
-              <div class="pane-placeholder error">
-                  <p>Error loading open orders.</p>
-                  <small>${error.message} ${
-        error.cause ? `(${error.cause})` : ""
-      }</small>
-              </div>`;
+      dom.openOrdersContent.innerHTML = `<div class="pane-placeholder error"><p>Error loading open orders.</p><small>${
+        error.message
+      } ${error.cause ? `(${error.cause})` : ""}</small></div>`;
     }
-    return null; // Indicate failure
+    return null;
   }
 }
 
-// --- Rendering Function ---
+// --- Rendering Function (Simplified - No Colgroup, No Widths) ---
 function renderOpenOrdersTable(orders) {
-  // ... (implementation unchanged) ...
   if (!dom.openOrdersContent) {
     console.error("Cannot render orders: Target DOM element not found.");
     return;
   }
-  dom.openOrdersContent.innerHTML = ""; // Clear previous
+  dom.openOrdersContent.innerHTML = "";
   if (orders === null) {
     if (!dom.openOrdersContent.innerHTML) {
       dom.openOrdersContent.innerHTML = `<div class="pane-placeholder error"><p>Error loading orders data.</p></div>`;
@@ -74,8 +78,13 @@ function renderOpenOrdersTable(orders) {
     dom.openOrdersContent.innerHTML = `<div class="pane-placeholder"><p>No open orders found.</p></div>`;
     return;
   }
+
   const table = document.createElement("table");
   table.className = "orders-table";
+
+  // *** REMOVE <colgroup> creation ***
+
+  // Create table header
   const thead = table.createTHead();
   const headerRow = thead.insertRow();
   const headers = [
@@ -91,8 +100,13 @@ function renderOpenOrdersTable(orders) {
   headers.forEach((text) => {
     const th = document.createElement("th");
     th.textContent = text;
+    th.style.textAlign = "left"; // Keep headers left-aligned
+    // *** REMOVE style.width setting ***
     headerRow.appendChild(th);
+    // *** REMOVE listener attachment from here ***
   });
+
+  // Create table body (unchanged)
   const tbody = table.createTBody();
   orders.forEach((order) => {
     const row = tbody.insertRow();
@@ -173,6 +187,12 @@ function renderOpenOrdersTable(orders) {
     cells.forEach((content, index) => {
       const cell = row.insertCell();
       cell.textContent = content;
+      if (![4, 5, 6].includes(index)) {
+        cell.style.textAlign = "left";
+      } else {
+        cell.style.textAlign = "right";
+        cell.style.fontFamily = "monospace";
+      }
       if (index === 3)
         cell.classList.add(
           side === "BUY"
@@ -181,20 +201,19 @@ function renderOpenOrdersTable(orders) {
             ? "side-sell"
             : "side-unknown"
         );
-      if ([4, 5, 6].includes(index)) {
-        cell.style.textAlign = "right";
-        cell.style.fontFamily = "monospace";
-      }
       if (index === 7) cell.classList.add(`status-${status.toLowerCase()}`);
     });
   });
+
   dom.openOrdersContent.appendChild(table);
+  // *** REMOVE call to initializeColumnResizing ***
+  console.log("Orders table rendered (no column resizing).");
 }
 
 // --- Store Plot Data Function ---
-// This function ONLY updates the state. It does NOT trigger redraw.
 function storeOrdersForPlotting(orders) {
-  let ordersToPlot = []; // Default to empty
+  // ... implementation unchanged ...
+  let ordersToPlot = [];
   if (Array.isArray(orders)) {
     ordersToPlot = orders
       .map((order) => {
@@ -238,27 +257,25 @@ function storeOrdersForPlotting(orders) {
       })
       .filter((order) => order !== null);
   }
-
   console.log(
     `[storeOrdersForPlotting] Storing ${ordersToPlot.length} BUY orders in state.`
   );
-  updateState({ ordersToPlot: ordersToPlot }); // Update the state
-
-  // *** NO redraw trigger here ***
+  updateState({ ordersToPlot: ordersToPlot });
 }
 
 // --- Function for initial fetch & store ---
 export async function fetchAndStorePlotOrders() {
+  // ... implementation unchanged ...
   console.log("[fetchAndStorePlotOrders] Fetching orders for initial plot...");
   const orders = await fetchOpenOrders();
-  // Process and store data in state. Redraw will happen later in main.js
-  storeOrdersForPlotting(orders);
+  storeOrdersForPlotting(orders); // Store data in state
   console.log("[fetchAndStorePlotOrders] Order data stored in state.");
   return orders !== null; // Return success based on fetch result
 }
 
 // --- Load/Display Function (for Tab Click) ---
 export async function loadAndDisplayOpenOrders() {
+  // ... implementation unchanged ...
   if (dom.openOrdersContent && !dom.openOrdersContent.hasChildNodes()) {
     dom.openOrdersContent.innerHTML = `<div class="pane-placeholder"><p>Loading open orders...</p></div>`;
   } else if (!dom.openOrdersContent) {
@@ -267,16 +284,16 @@ export async function loadAndDisplayOpenOrders() {
     );
     return;
   }
-
   const orders = await fetchOpenOrders();
-
-  // 1. Render the table in the "Open Orders" tab
-  renderOpenOrdersTable(orders);
-
-  // 2. Process and store/update data for plotting
-  storeOrdersForPlotting(orders);
-
-  // 3. Explicitly trigger redraw AFTER tab data is processed
+  renderOpenOrdersTable(orders); // Renders table
+  storeOrdersForPlotting(orders); // Update plot state
   console.log("[loadAndDisplayOpenOrders] Requesting redraw after tab update.");
-  requestAnimationFrame(redrawChart);
+  requestAnimationFrame(redrawChart); // Redraw chart
 }
+
+// --- REMOVE ALL Column Resizing Handlers ---
+// function handleMouseDownHeader(e) { ... }
+// function handleMouseMoveResizeColumn(e) { ... }
+// function handleMouseUpResizeColumn() { ... }
+// function handleMouseMoveHeader(e) { ... }
+// function initializeColumnResizing(tableElement) { ... }

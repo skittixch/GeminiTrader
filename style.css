@@ -1,17 +1,14 @@
+/* FILE: style.css */
+
 /* --- General Setup & CSS Variables --- */
 :root {
-  --bg-color: #f0f0f0; /* Fallback/Initial BG */
+  --bg-color: #f0f0f0;
   --text-color: #333;
   --subtle-text-color: #555;
-  --card-bg: #ffffff; /* Used for distinct elements like header, dropdowns, textarea */
+  --card-bg: #ffffff;
   --border-color: #e0e0e0;
   --grid-color: #eeeeee;
-  --axis-label-bg: rgba(
-    255,
-    255,
-    255,
-    0.85
-  ); /* Semi-transparent for text readability */
+  --axis-label-bg: rgba(255, 255, 255, 0.85);
   --switch-bg: #ccc;
   --switch-slider: #fff;
   --switch-slider-checked: #26a69a;
@@ -32,29 +29,25 @@
   --volume-bar-opacity: 0.6;
   --sub-chart-height: 80px;
   --sub-chart-y-axis-width: 55px;
+  /* Column Resize Vars Removed */
 }
 
 html[data-theme="dark"] {
-  /* --bg-color is set by JS directly on body */
   --text-color: #e0e0e0;
   --subtle-text-color: #aaaaaa;
-  --card-bg: #2a2a2a; /* Card background for specific elements */
+  --card-bg: #2a2a2a;
   --border-color: #444444;
-  --grid-color: #383838; /* Grid lines */
-  --axis-label-bg: rgba(
-    42,
-    42,
-    42,
-    0.85
-  ); /* Semi-transparent for text readability */
+  --grid-color: #383838;
+  --axis-label-bg: rgba(42, 42, 42, 0.85);
   --switch-bg: #555;
   --switch-slider: #ccc;
-  --shadow-color: rgba(0, 0, 0, 0.4); /* Darker shadow on dark bg */
+  --shadow-color: rgba(0, 0, 0, 0.4);
   --current-price-color: #448aff;
   --current-price-text-color: #ffffff;
   --resizer-color: #444444;
   --resizer-hover-color: #666666;
   --tab-button-hover-bg: rgba(255, 255, 255, 0.08);
+  /* Column Resize Vars Removed */
 }
 
 /* --- Core Layout --- */
@@ -65,7 +58,6 @@ body {
   overflow: hidden;
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
     Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif;
-  /* background-color is set by JavaScript in theme.js */
   color: var(--text-color);
   transition: color 0.3s ease;
 }
@@ -74,7 +66,6 @@ body {
   flex-direction: column;
   height: 100%;
   width: 100%;
-  /* No background */
 }
 
 /* --- Header Area --- */
@@ -82,7 +73,7 @@ body {
   flex-shrink: 0;
   padding: 5px 15px;
   border-bottom: 1px solid var(--border-color);
-  background-color: transparent !important; /* Explicitly transparent */
+  background-color: transparent !important;
   position: relative;
   z-index: 110;
   box-shadow: 0 1px 3px var(--shadow-color);
@@ -93,7 +84,6 @@ body {
   flex-wrap: wrap;
   gap: 10px;
 }
-/* ... (rest of header styles remain the same) ... */
 .header-content {
   text-align: center;
   flex-grow: 1;
@@ -312,7 +302,6 @@ input:checked + .slider:before {
   display: flex;
   min-height: 150px;
 }
-/* ... (rest of chart container styles) ... */
 .chart-container.panning {
   cursor: grabbing;
 }
@@ -358,7 +347,7 @@ input:checked + .slider:before {
   color: var(--subtle-text-color);
   z-index: 10;
   overflow: hidden;
-  background-color: transparent; /* No background */
+  background-color: transparent;
   border-color: var(--border-color);
   transition: border-color 0.3s ease, color 0.3s ease;
 }
@@ -417,8 +406,6 @@ input:checked + .slider:before {
   transition: background-color 0.3s ease, border-color 0.3s ease,
     color 0.3s ease;
 }
-
-/* ... (rest of chart styles) ... */
 .day-separator-line {
   position: absolute;
   top: 0;
@@ -580,35 +567,45 @@ input:checked + .slider:before {
   margin-left: 5px;
 }
 
-/* --- UNCOMMENTED: Sub-Chart (Volume) Styles --- */
+/* Order Ray Styling */
+.order-ray {
+  position: absolute;
+  height: 3px;
+  pointer-events: none;
+  z-index: 16;
+  transform: translateY(-50%);
+  opacity: 0.7;
+}
+.order-ray.buy {
+  background-color: var(--candle-up);
+}
+/* .order-ray.sell { background-color: var(--candle-down); } */
+
+/* --- Sub-Chart (Volume) Styles --- */
 .sub-chart-container {
   width: 100%;
   height: var(--sub-chart-height);
-  flex-shrink: 0; /* Prevent shrinking */
-  margin-top: 5px; /* Space between main chart and volume */
-  /* Adjust padding to align canvas correctly, considering axis width */
+  flex-shrink: 0;
+  margin-top: 5px;
   padding: 0px var(--sub-chart-y-axis-width) 0px 10px;
   box-sizing: border-box;
   position: relative;
   overflow: hidden;
-  border-top: 1px solid var(--border-color); /* Separator line */
+  border-top: 1px solid var(--border-color);
 }
-
 #volume-chart-canvas {
   display: block;
   position: absolute;
   top: 0;
-  left: 10px; /* Match main chart's left padding */
-  /* Calculate width based on container's padding/axis */
+  left: 10px;
   width: calc(100% - 10px - var(--sub-chart-y-axis-width));
   height: 100%;
 }
-
 #volume-y-axis-labels {
   position: absolute;
   top: 0;
-  right: 0; /* Position on the far right */
-  width: calc(var(--sub-chart-y-axis-width) - 1px); /* Width minus border */
+  right: 0;
+  width: calc(var(--sub-chart-y-axis-width) - 1px);
   height: 100%;
   font-size: 10px;
   color: var(--subtle-text-color);
@@ -617,14 +614,13 @@ input:checked + .slider:before {
   box-sizing: border-box;
   overflow: hidden;
   pointer-events: none;
-  background: transparent; /* Ensure no background */
+  background: transparent;
 }
 #volume-y-axis-labels .axis-label.y-axis-label {
-  background-color: var(--axis-label-bg); /* Semi-transparent for readability */
-  color: var(--text-color); /* Use main text color */
+  background-color: var(--axis-label-bg);
+  color: var(--text-color);
   right: 4px;
 }
-/* --- END UNCOMMENTED --- */
 
 /* --- Resizer Handle --- */
 .resizer {
@@ -660,7 +656,6 @@ input:checked + .slider:before {
   background-color: transparent !important;
   transition: border-color 0.3s ease;
 }
-/* ... (rest of tab styles) ... */
 .tab-button {
   padding: 8px 16px;
   font-size: 0.9em;
@@ -687,7 +682,7 @@ input:checked + .slider:before {
 .tab-content-area {
   flex-grow: 1;
   overflow: hidden;
-  position: relative; /* No background */
+  position: relative;
 }
 .tab-content {
   display: none;
@@ -870,29 +865,45 @@ ul#balance-list:not(.dust-visible) .balance-list-dust-item {
   display: none;
 }
 
-/* Orders Table Styling */
+/* --- Orders Table Styling --- */
 #open-orders-content {
   padding: 10px;
+  overflow-x: auto; /* Add horizontal scroll if table becomes wider */
 }
-/* ... (rest of orders table styles) ... */
 .orders-table {
-  width: 100%;
+  width: 100%; /* Let browser decide width initially */
   border-collapse: collapse;
   font-size: 0.85em;
+  /* REMOVED table-layout: fixed; */
 }
 .orders-table th,
 .orders-table td {
   padding: 6px 8px;
-  text-align: left;
+  text-align: left; /* Default left alignment */
   border-bottom: 1px solid var(--grid-color);
-  white-space: nowrap;
+  white-space: nowrap; /* Keep content on one line */
+  /* Allow content to determine width, remove overflow/ellipsis for now */
+  /* overflow: hidden; */
+  /* text-overflow: ellipsis; */
+  box-sizing: border-box;
 }
 .orders-table th {
   font-weight: 600;
   color: var(--subtle-text-color);
   border-bottom-width: 2px;
   border-bottom-color: var(--border-color);
+  position: relative; /* Keep for potential future absolute elements */
 }
+
+/* --- Column Resize Styles REMOVED --- */
+/*
+.orders-table th:not(:last-child) { ... }
+.orders-table th:not(:last-child):hover { ... }
+body.resizing-column,
+body.resizing-column * { ... }
+*/
+/* --- End Column Resize --- */
+
 .orders-table tbody tr:hover {
   background-color: var(--tab-button-hover-bg);
 }
@@ -904,17 +915,18 @@ ul#balance-list:not(.dust-visible) .balance-list-dust-item {
   color: var(--candle-down);
   font-weight: 500;
 }
-.orders-table th:nth-child(1),
+.orders-table th:nth-child(1), /* Created */
 .orders-table td:nth-child(1) {
-  min-width: 110px;
+  /* Browser will auto-size */
+  /* min-width: 110px; */
 }
-.orders-table th:nth-child(5),
+.orders-table th:nth-child(5), /* Price */
 .orders-table td:nth-child(5),
-.orders-table th:nth-child(6),
+.orders-table th:nth-child(6), /* Size */
 .orders-table td:nth-child(6),
-.orders-table th:nth-child(7),
+.orders-table th:nth-child(7), /* Filled */
 .orders-table td:nth-child(7) {
-  text-align: right;
+  text-align: right; /* Keep numeric right aligned */
 }
 .orders-table td[class^="status-"] {
   font-style: italic;
@@ -934,48 +946,7 @@ ul#balance-list:not(.dust-visible) .balance-list-dust-item {
   text-decoration: line-through;
 }
 
-/* --- REMOVE Order Marker Styling --- */
-/*
-.order-marker {
-  position: absolute;
-  width: 8px;
-  height: 8px;
-  background-color: red;
-  border-radius: 50%;
-  border: 1px solid rgba(255, 255, 255, 0.7);
-  box-shadow: 0 0 3px rgba(0, 0, 0, 0.5);
-  pointer-events: none;
-  z-index: 16;
-  transform: translate(-50%, -50%);
-  opacity: 0.8;
-}
-*/
-
-/* --- ADD Order Ray Styling --- */
-.order-ray {
-  position: absolute;
-  /* height: 2px; */ /* Old value */
-  height: 3px; /* << INCREASED THICKNESS >> */
-  pointer-events: none; /* Don't interfere with chart interactions */
-  z-index: 16; /* Above candles, below crosshair/tooltips */
-  transform: translateY(-50%); /* Center the line vertically on the price */
-  opacity: 0.7; /* Make it slightly transparent */
-  /* Width is set dynamically via JS */
-}
-
-/* Style BUY rays (Green) */
-.order-ray.buy {
-  background-color: var(--candle-up); /* Use the candle up color (green) */
-}
-
-/* Optional: Style SELL rays (Red) if you implement them later */
-/*
-.order-ray.sell {
-   background-color: var(--candle-down);
-}
-*/
-
-/* Body cursor change during resize */
+/* --- Body cursor change during PANE resize --- */
 body.resizing,
 body.resizing * {
   cursor: row-resize !important;
