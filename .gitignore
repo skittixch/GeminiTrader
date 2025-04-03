@@ -1,18 +1,60 @@
-# ... other ignores ...
-venv/
-env/
-.venv/
-/.venv
-*.env  # Can comment out or remove if no other .env files needed
+node_modules
 
-# ... other ignores ...
+# Output
+.output
+.vercel
+.netlify
+.wrangler
+/.svelte-kit
+/build
 
-# Ignore the specific keyfile necessary for coinbase API access
-cdp_api_key.json
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.*
+!.env.example
+!.env.test
+
+# Vite
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+
+# Dependencies
+/node_modules
+/.pnpm-store
+
+# Build outputs
+/build
+/.svelte-kit
+
+# Log files
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment variables
+.env
+.env*.local
+
+# IDE directories / files
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.code-workspace
+.idea
+
+# Operating System Files
+.DS_Store
+Thumbs.db
+
 credentials/cdp_api_key.json
+cdp_api_key.json
+*/cdp_api_key.json
 
-#These files have to do with the development process and communications with AI development helpers
-create_context.sh
-GeminiTrader.txt
-# ...
 
