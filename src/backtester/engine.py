@@ -28,11 +28,11 @@ try:
     # Load config for strategy params, fees
     from config.settings import load_config
 except ImportError as e:
+    # This block raises a standard ImportError if imports fail here
     print(
         f"ERROR: Could not import project modules for Backtester. Error: {e}")
     print(f"Project Root (calculated for path): {_project_root_for_path}")
     print(f"System Path: {sys.path}")
-    # Backtester relies heavily on other modules, raise error if imports fail
     raise ImportError(
         "Failed to import required project modules for Backtester.") from e
 # --- End Project Imports ---
@@ -609,6 +609,7 @@ class Backtester:
             # Example: convert price/qty/fee back to string if needed by downstream tools
             for col in ['price', 'quantity', 'fee']:
                 if col in trades_df.columns:
+                    # Ensure conversion handles potential non-Decimal types gracefully if they sneak in
                     trades_df[col] = trades_df[col].apply(
                         lambda d: str(d) if isinstance(d, Decimal) else d)
 
@@ -623,8 +624,10 @@ class Backtester:
 # --- Example Usage / Testing Block ---
 if __name__ == '__main__':
     from pathlib import Path
-    from src.utils.formatting import to_decimal  # Need this in test block too
-    from src.analysis.indicators import calculate_atr  # Need this here too
+    # Ensure these imports are available if running this block directly
+    from src.utils.formatting import to_decimal
+    from src.analysis.indicators import calculate_atr
+    from config.settings import load_config  # Need config for testing block
 
     # Use the real setup_logging if available
     project_root = os.path.dirname(os.path.dirname(
@@ -752,20 +755,33 @@ if __name__ == '__main__':
         sys.exit(1)
 
     # --- Mock Configs ---
+    # Load config to get parameters used by backtester (e.g., fees, could also get strategy params)
+    app_config = load_config()
+    if not app_config:
+        logger.error(
+            "Failed to load app configuration for backtest defaults. Exiting.")
+        sys.exit(1)
+
     test_symbol_bt = 'BTCUSD'
-    # Use strategy config similar to previous tests
-    test_strategy_config_bt = {
-        'base_order_size_usd': '100.00',  # Slightly larger for backtest
+    # Get strategy params from config OR use test defaults
+    test_strategy_config_bt = app_config.get('strategies', {}).get('geometric_grid', {
+        # Fallback defaults if not in config
+        'base_order_size_usd': '100.00',
         'grid_spacing_atr_multiplier': '0.4',
         'grid_spacing_geometric_factor': '1.1',
         'order_size_geometric_factor': '1.2',
         'max_grid_levels': 5,
         'max_total_grid_quantity_base': '0.5',
-        'atr_length': atr_len_test,  # Ensure consistency
-        'tp_method': 'percentage',  # Take profit method
-        'tp_value': '0.015'  # Take profit target (1.5%)
-    }
-    # Use filters similar to previous tests
+        'atr_length': atr_len_test,
+        'tp_method': 'percentage',
+        'tp_value': '0.015'
+    })
+    # Ensure values are Decimal if loaded from config without conversion (though load_config should handle it)
+    for k, v in test_strategy_config_bt.items():
+        if isinstance(v, str) and k not in ['tp_method']:  # Example check
+            test_strategy_config_bt[k] = to_decimal(v)
+
+    # Use filters similar to previous tests - needed by backtester
     test_filters_bt = {
         'symbol': test_symbol_bt,
         'filters': [
@@ -776,7 +792,12 @@ if __name__ == '__main__':
             {'filterType': 'MIN_NOTIONAL', 'minNotional': '10.0'}  # Simplified
         ]
     }
-    initial_cash_bt = Decimal('20000.00')
+    # Get initial cash and fees from loaded config, with defaults
+    initial_cash_bt = app_config.get('portfolio', {}).get(
+        'initial_cash', Decimal('20000.00'))
+    maker_fee = app_config.get('fees', {}).get('maker', Decimal('0.001'))
+    taker_fee = app_config.get('fees', {}).get('taker', Decimal('0.001'))
+
     test_b_id = f"test_run_{int(time.time())}"
 
     # --- Optional: Initialize DBManager ---
@@ -790,6 +811,8 @@ if __name__ == '__main__':
             strategy_config=test_strategy_config_bt,
             exchange_filters=test_filters_bt,
             initial_cash=initial_cash_bt,
+            maker_fee=maker_fee,
+            taker_fee=taker_fee,
             db_manager=db_manager_instance,  # Pass instance or None
             backtest_id=test_b_id
         )
@@ -814,8 +837,9 @@ if __name__ == '__main__':
             logger.error(
                 f"Backtest ended with error: {results['metrics']['Error']}")
         else:
+            # Use print for direct output in terminal test runs
             for k, v in results["metrics"].items():
-                print(f"  {k}: {v}")  # Print metrics directly
+                print(f"  {k}: {v}")
 
         # Check equity curve
         equity_curve_df = results.get("equity_curve")
@@ -823,10 +847,15 @@ if __name__ == '__main__':
             logger.info(f"\nEquity Curve has {len(equity_curve_df)} points.")
             # Optional: print head/tail or save to CSV for inspection
             # print(equity_curve_df.head().to_markdown(numalign="right", stralign="right"))
-            # equity_curve_path = Path(project_root) / "data" / "backtests" / f"{test_b_id}_equity.csv"
-            # equity_curve_path.parent.mkdir(parents=True, exist_ok=True)
-            # equity_curve_df.to_csv(equity_curve_path)
-            # logger.info(f"Saved equity curve to {equity_curve_path}")
+            equity_curve_path = Path(
+                project_root) / "data" / "backtests" / f"{test_b_id}_equity.csv"
+            equity_curve_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                equity_curve_df.to_csv(equity_curve_path)
+                logger.info(f"Saved equity curve to {equity_curve_path}")
+            except Exception as save_e:
+                logger.error(f"Failed to save equity curve: {save_e}")
+
         else:
             logger.info("\nEquity Curve is empty or missing.")
 
@@ -836,10 +865,14 @@ if __name__ == '__main__':
             logger.info(f"\nTrades Log has {len(trades_df_res)} entries.")
             # Optional: print head/tail or save to CSV
             # print(trades_df_res.head().to_markdown(index=False, numalign="right", stralign="right"))
-            # trades_log_path = Path(project_root) / "data" / "backtests" / f"{test_b_id}_trades.csv"
-            # trades_log_path.parent.mkdir(parents=True, exist_ok=True)
-            # trades_df_res.to_csv(trades_log_path, index=False)
-            # logger.info(f"Saved trades log to {trades_log_path}")
+            trades_log_path = Path(project_root) / "data" / \
+                "backtests" / f"{test_b_id}_trades.csv"
+            trades_log_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                trades_df_res.to_csv(trades_log_path, index=False)
+                logger.info(f"Saved trades log to {trades_log_path}")
+            except Exception as save_e:
+                logger.error(f"Failed to save trades log: {save_e}")
         else:
             logger.info("\nTrades Log is empty or missing.")
 
