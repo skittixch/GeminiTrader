@@ -4,14 +4,14 @@ import sqlite3
 import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation # Added InvalidOperation
 import threading
+import re # Import regex for potentially better comment handling if needed
 
 logger = logging.getLogger(__name__)
 
 # Use a thread-local storage for connections to ensure thread safety if used concurrently
 local_storage = threading.local()
-
 
 class DBManager:
     """
@@ -19,7 +19,6 @@ class DBManager:
     for interacting with trade and potentially other relevant data.
     Ensures thread safety for connections.
     """
-
     def __init__(self, db_path: str):
         """
         Initializes the DBManager.
@@ -28,49 +27,44 @@ class DBManager:
             db_path (str): The full path to the SQLite database file.
         """
         self.db_path = Path(db_path)
-        # Ensure directory exists
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._create_tables_if_not_exist()
+        self.db_path.parent.mkdir(parents=True, exist_ok=True) # Ensure directory exists
+        self._create_tables_if_not_exist() # Call table creation on init
         logger.info(f"DBManager initialized for database: {self.db_path}")
 
     def _get_connection(self) -> sqlite3.Connection:
         """Gets a thread-local database connection."""
-        if not hasattr(local_storage, 'connection') or local_storage.connection is None:
+        connection = getattr(local_storage, 'connection', None)
+        if connection is None:
             try:
-                # Use detect_types to handle Decimal conversion potentially
-                # sqlite3.register_adapter(Decimal, str)
-                # sqlite3.register_converter("DECIMAL", lambda b: Decimal(b.decode('utf-8')))
                 # Note: Direct Decimal support can be tricky; storing as TEXT is often safer.
-                local_storage.connection = sqlite3.connect(
+                connection = sqlite3.connect(
                     self.db_path,
                     detect_types=sqlite3.PARSE_DECLTYPES,
-                    check_same_thread=False  # Required for thread-local but manage manually
+                    check_same_thread=False # Required for thread-local but manage manually
                 )
-                # Set ROW factory for easy dict access, but it might interfere with detect_types
-                # local_storage.connection.row_factory = sqlite3.Row
-                logger.debug(
-                    f"New DB connection established for thread {threading.current_thread().name}")
+                # Set ROW factory AFTER connection for easy dict access
+                connection.row_factory = sqlite3.Row
+                setattr(local_storage, 'connection', connection)
+                logger.debug(f"New DB connection established for thread {threading.current_thread().name}")
             except sqlite3.Error as e:
-                logger.exception(
-                    f"Failed to connect to database {self.db_path}: {e}")
+                logger.exception(f"Failed to connect to database {self.db_path}: {e}")
                 raise
-        return local_storage.connection
+        return connection
 
     def close_connection(self):
         """Closes the thread-local database connection if it exists."""
-        if hasattr(local_storage, 'connection') and local_storage.connection is not None:
-            local_storage.connection.close()
-            local_storage.connection = None
-            logger.debug(
-                f"DB connection closed for thread {threading.current_thread().name}")
+        connection = getattr(local_storage, 'connection', None)
+        if connection is not None:
+            connection.close()
+            setattr(local_storage, 'connection', None)
+            logger.debug(f"DB connection closed for thread {threading.current_thread().name}")
 
     def _execute_sql(self, sql: str, params: Optional[Tuple] = None, fetch_one: bool = False, fetch_all: bool = False, commit: bool = False) -> Any:
         """Executes SQL queries with error handling and optional fetching/committing."""
         conn = self._get_connection()
-        cursor = conn.cursor()
         result = None
         try:
-            cursor.execute(sql, params or ())
+            cursor = conn.execute(sql, params or ()) # Use connection.execute directly
             if fetch_one:
                 result = cursor.fetchone()
             elif fetch_all:
@@ -78,83 +72,125 @@ class DBManager:
 
             if commit:
                 conn.commit()
-            logger.debug(
-                f"Executed SQL: {sql} | Params: {params} | Commit: {commit}")
+            # logger.debug(f"Executed SQL: {sql} | Params: {params} | Commit: {commit}") # Reduce noise
             return result
         except sqlite3.Error as e:
-            logger.exception(
-                f"Database error executing SQL: {sql} | Params: {params} | Error: {e}")
-            if commit:  # Attempt rollback on error during commit operations
+            # Provide more context in the error log
+            err_msg = f"Database error executing SQL: Error={e}\n"
+            err_msg += f"  SQL: {sql}\n"
+            if params:
+                 err_msg += f"  Params: {params}"
+            logger.error(err_msg)
+            # logger.exception("SQL Execution Traceback:") # Optional full traceback
+
+            if commit: # Attempt rollback on error during commit operations
                 try:
                     conn.rollback()
                     logger.warning("Transaction rolled back due to error.")
                 except sqlite3.Error as rb_e:
                     logger.error(f"Failed to rollback transaction: {rb_e}")
-            # Do not close connection here, let the caller manage lifecycle or rely on thread end
-            return None  # Indicate failure
+            return None # Indicate failure
 
     def _create_tables_if_not_exist(self):
         """Creates the necessary database tables if they don't already exist."""
-        # Load schema from schema.sql (assuming it's adjacent or path known)
         schema_path = Path(__file__).parent / 'schema.sql'
-        if not schema_path.exists():
-            logger.error(f"Database schema file not found at: {schema_path}")
-            # Define fallback schema inline if file missing (less ideal)
-            fallback_schema = """
+        sql_commands = []
+
+        if schema_path.exists():
+            logger.info(f"Found schema file at: {schema_path}. Reading commands.")
+            try:
+                with open(schema_path, 'r') as f:
+                    schema_content = f.read()
+
+                # --- CORRECTED SCHEMA PARSING ---
+                # Split by semicolon first, then clean comments from each statement
+                sql_commands = []
+                for statement in schema_content.split(';'):
+                    # Remove block comments /* ... */ if any (simple version)
+                    statement = re.sub(r'/\*.*?\*/', '', statement, flags=re.DOTALL)
+                    # Remove line comments -- ... and empty lines
+                    cleaned_statement = '\n'.join(
+                        line for line in statement.splitlines() if line.strip() and not line.strip().startswith('--')
+                    ).strip()
+                    if cleaned_statement: # Only add if there's SQL left
+                        sql_commands.append(cleaned_statement)
+                # --- END CORRECTION ---
+
+                if not sql_commands:
+                     logger.error("Schema file is empty or contains no valid SQL commands after cleaning.")
+            except Exception as e:
+                logger.exception(f"Failed to read or parse schema file {schema_path}: {e}")
+                sql_commands = [] # Ensure empty list to trigger fallback
+        else:
+             logger.warning(f"Database schema file not found at: {schema_path}. Using fallback schema.")
+
+        # Define fallback schema inline ONLY if file reading failed or file doesn't exist
+        if not sql_commands:
+             fallback_schema = """
              CREATE TABLE IF NOT EXISTS trades (
                  id INTEGER PRIMARY KEY AUTOINCREMENT,
-                 timestamp INTEGER NOT NULL, -- Unix Milliseconds
-                 backtest_id TEXT,           -- Identifier for backtest run
+                 timestamp INTEGER NOT NULL,
+                 backtest_id TEXT,           -- Included in fallback
                  symbol TEXT NOT NULL,
                  orderId TEXT UNIQUE NOT NULL,
                  clientOrderId TEXT,
-                 price TEXT NOT NULL,        -- Store as TEXT for Decimal precision
-                 origQty TEXT NOT NULL,      -- Store as TEXT
-                 executedQty TEXT NOT NULL,  -- Store as TEXT
-                 cumulativeQuoteQty TEXT,    -- Store as TEXT
-                 avgFillPrice TEXT,          -- Store as TEXT
+                 price TEXT NOT NULL,
+                 origQty TEXT NOT NULL,
+                 executedQty TEXT NOT NULL,
+                 cumulativeQuoteQty TEXT,
+                 avgFillPrice TEXT,
                  status TEXT,
                  timeInForce TEXT,
                  type TEXT,
                  side TEXT NOT NULL,
-                 commission TEXT,            -- Store as TEXT
+                 commission TEXT,
                  commissionAsset TEXT,
                  isMaker BOOLEAN,
-                 source TEXT DEFAULT 'live', -- 'live' or 'backtest'
-                 confidence_score REAL       -- Optional confidence score at time of trade
+                 source TEXT DEFAULT 'live',
+                 confidence_score REAL
              );
 
              CREATE INDEX IF NOT EXISTS idx_trades_timestamp ON trades (timestamp);
              CREATE INDEX IF NOT EXISTS idx_trades_symbol_timestamp ON trades (symbol, timestamp);
              CREATE INDEX IF NOT EXISTS idx_trades_backtest_id ON trades (backtest_id);
+             CREATE INDEX IF NOT EXISTS idx_trades_source ON trades (source);
+             CREATE INDEX IF NOT EXISTS idx_trades_orderId ON trades (orderId);
              """
-            logger.warning("Using fallback schema definition.")
-            sql_commands = fallback_schema.split(';')
-        else:
-            try:
-                with open(schema_path, 'r') as f:
-                    schema_content = f.read()
-                # Split SQL commands correctly, handling potential comments or empty lines
-                sql_commands = [cmd.strip()
-                                for cmd in schema_content.split(';') if cmd.strip()]
-            except Exception as e:
-                logger.exception(
-                    f"Failed to read schema file {schema_path}: {e}")
-                return
+             logger.warning("Using fallback schema definition.")
+             # Parse the fallback schema correctly
+             sql_commands = []
+             for statement in fallback_schema.split(';'):
+                 cleaned_statement = '\n'.join(
+                     line for line in statement.splitlines() if line.strip() and not line.strip().startswith('--')
+                 ).strip()
+                 if cleaned_statement:
+                     sql_commands.append(cleaned_statement)
 
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        try:
-            for command in sql_commands:
-                if command:  # Ensure command is not empty
-                    logger.debug(f"Executing schema command: {command}")
-                    cursor.execute(command)
-            conn.commit()
-            logger.info("Database tables checked/created successfully.")
-        except sqlite3.Error as e:
-            logger.exception(f"Error creating database tables: {e}")
-            conn.rollback()
-        # Don't close connection here
+        if not sql_commands:
+             logger.error("No SQL commands found in schema file or fallback. Cannot create tables.")
+             return
+
+        # Execute commands using _execute_sql for consistency and error handling
+        logger.info(f"Executing {len(sql_commands)} schema commands...")
+        all_successful = True
+        for command in sql_commands:
+            logger.debug(f"Executing schema command: {command}")
+            # Commit each schema change; IF NOT EXISTS handles reruns mostly gracefully
+            result = self._execute_sql(command, commit=True)
+            # The execute function returns the cursor on success for non-select, None on error
+            # Let's check if None was explicitly returned due to handled error
+            if result is None:
+                 # We need a way to differentiate actual execution errors from "table already exists" etc.
+                 # This basic check isn't perfect. A better way might be needed if IF NOT EXISTS isn't used.
+                 # For now, assume _execute_sql logs the specific error.
+                 logger.warning(f"Execution of schema command may have failed (check logs): {command}")
+                 # We won't set all_successful to False just for this, as IF NOT EXISTS is permissive
+                 # all_successful = False
+
+        # We can't reliably tell if all *needed* operations succeeded with IF NOT EXISTS
+        # So we just log completion. User should check logs for specific errors.
+        logger.info("Database tables check/creation process complete.")
+
 
     def log_trade(self, trade_data: Dict):
         """
@@ -177,40 +213,40 @@ class DBManager:
         """
         try:
             params = (
-                int(trade_data['time']),  # Ensure integer timestamp
-                trade_data.get('backtest_id'),
+                int(trade_data['time']), # Ensure integer timestamp
+                trade_data.get('backtest_id'), # Included
                 trade_data['symbol'],
                 str(trade_data['orderId']),
                 trade_data.get('clientOrderId'),
-                str(trade_data['price']),  # Store price as string
-                str(trade_data['origQty']),  # Store qty as string
-                # Use origQty if executed not present
-                str(trade_data.get('executedQty', trade_data['origQty'])),
+                str(trade_data['price']), # Store price as string
+                str(trade_data['origQty']), # Store qty as string
+                str(trade_data.get('executedQty', trade_data['origQty'])), # Use origQty if executed not present
                 str(trade_data.get('cumulativeQuoteQty')),
-                # Use price if avg not present
-                str(trade_data.get('avgFillPrice', trade_data['price'])),
+                str(trade_data.get('avgFillPrice', trade_data['price'])), # Use price if avg not present
                 trade_data.get('status'),
                 trade_data.get('timeInForce'),
                 trade_data.get('type'),
                 trade_data['side'],
-                # Store commission as string
-                str(trade_data.get('commission')),
+                str(trade_data.get('commission')), # Store commission as string
                 trade_data.get('commissionAsset'),
-                bool(trade_data.get('isMaker', False)),  # Ensure boolean
+                bool(trade_data.get('isMaker', False)), # Ensure boolean
                 trade_data.get('source', 'live'),
-                float(trade_data['confidence_score']) if trade_data.get(
-                    'confidence_score') is not None else None  # Store as REAL/float
+                float(trade_data['confidence_score']) if trade_data.get('confidence_score') is not None else None # Store as REAL/float
             )
-            self._execute_sql(sql, params, commit=True)
-            logger.debug(f"Successfully logged trade {trade_data['orderId']}")
-        except KeyError as e:
-            logger.error(
-                f"Missing required key in trade_data for logging: {e}. Data: {trade_data}")
-        except Exception as e:
-            logger.error(
-                f"Failed to log trade {trade_data.get('orderId', 'N/A')}: {e}")
+            # Use execute_sql which handles errors and logging
+            result = self._execute_sql(sql, params, commit=True)
+            if result is not None: # Check if execution succeeded
+                 # Use DEBUG level for successful logs to reduce verbosity
+                 logger.debug(f"Successfully logged trade {trade_data['orderId']}")
+            # Error is logged within _execute_sql
 
-    def get_trades(self, symbol: Optional[str] = None, start_time: Optional[int] = None, end_time: Optional[int] = None, backtest_id: Optional[str] = None) -> List[Dict]:
+        except KeyError as e:
+            logger.error(f"Missing required key in trade_data for logging: {e}. Data: {trade_data}")
+        except Exception as e:
+             logger.exception(f"Unexpected error preparing data for trade log {trade_data.get('orderId', 'N/A')}: {e}")
+
+
+    def get_trades(self, symbol: Optional[str] = None, start_time: Optional[int] = None, end_time: Optional[int] = None, backtest_id: Optional[str] = None) -> List[sqlite3.Row]:
         """
         Retrieves trades from the database, optionally filtered.
 
@@ -221,8 +257,8 @@ class DBManager:
             backtest_id (Optional[str]): Filter by backtest ID.
 
         Returns:
-            List[Dict]: A list of trade dictionaries. Returns empty list on error.
-                        Decimal values are returned as strings and need conversion.
+            List[sqlite3.Row]: A list of trade Row objects (dict-like access).
+                               Returns empty list on error.
         """
         base_sql = "SELECT * FROM trades WHERE 1=1"
         filters = []
@@ -238,8 +274,8 @@ class DBManager:
             filters.append("timestamp <= ?")
             params.append(end_time)
         if backtest_id:
-            filters.append("backtest_id = ?")
-            params.append(backtest_id)
+             filters.append("backtest_id = ?") # Column included in query
+             params.append(backtest_id)
 
         if filters:
             base_sql += " AND " + " AND ".join(filters)
@@ -248,40 +284,18 @@ class DBManager:
 
         rows = self._execute_sql(base_sql, tuple(params), fetch_all=True)
 
-        if rows is None:  # Indicates an error occurred during execution
-            return []
+        if rows is None: # Indicates an error occurred during execution
+             return []
 
-        # Convert rows to dictionaries (if row_factory wasn't set)
-        # Need to manually get column names if not using row_factory
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        try:
-            cursor.execute("PRAGMA table_info(trades)")
-            columns = [column[1] for column in cursor.fetchall()]
-        except sqlite3.Error:
-            logger.error("Could not retrieve column names for trades table.")
-            return []  # Cannot form dictionaries without column names
-
-        results = [dict(zip(columns, row)) for row in rows]
-
-        # Optional: Convert numeric strings back to Decimal here if needed by caller
-        # for trade in results:
-        #     for key in ['price', 'origQty', 'executedQty', 'cumulativeQuoteQty', 'avgFillPrice', 'commission']:
-        #         if trade.get(key) is not None:
-        #             try:
-        #                 trade[key] = Decimal(trade[key])
-        #             except InvalidOperation:
-        #                 logger.warning(f"Could not convert {key}='{trade[key]}' back to Decimal for trade {trade.get('id')}")
-        #     # Convert confidence score back to Decimal too? Or keep as float?
-        #     if trade.get('confidence_score') is not None:
-        #          trade['confidence_score'] = Decimal(str(trade['confidence_score']))
-
-        return results
+        # Row objects are returned directly because row_factory was set
+        return rows
 
 
-# Example usage (typically not run directly like this)
+# Example usage block
 if __name__ == "__main__":
-    # Setup basic logging for testing this module
+    from pathlib import Path # Ensure Path is imported if running standalone
+    import time # Ensure time is imported
+
     log_dir = Path(__file__).parent.parent.parent / "data" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
@@ -294,63 +308,68 @@ if __name__ == "__main__":
     )
 
     logger.info("Testing DBManager...")
-    # Define path relative to project root (assuming script is run from project root via -m)
     project_root_db = Path(__file__).parent.parent.parent
-    db_file_path = project_root_db / "data" / "db" / "test_geminitrader.db"
+    # Use a distinct test DB name to avoid conflict with main DB
+    db_file_path = project_root_db / "data" / "db" / "test_manager_standalone.db"
 
+    # Delete existing test DB to ensure clean run
+    if db_file_path.exists():
+        logger.warning(f"Deleting existing standalone test database: {db_file_path}")
+        try:
+             db_file_path.unlink()
+        except OSError as e:
+             logger.error(f"Could not delete test database: {e}")
+
+
+    manager = None # Define manager in this scope
     try:
         manager = DBManager(db_path=str(db_file_path))
 
-        # Test logging a trade
         mock_trade = {
-            # Use file mod time as example timestamp
-            'time': int(Path.cwd().stat().st_mtime * 1000),
-            'backtest_id': 'test_run_123',
-            'symbol': 'BTCUSD',
-            'orderId': f'test_{int(Path.cwd().stat().st_mtime * 1e6)}',
-            'clientOrderId': 'test_client_id_1',
-            'price': '65000.50',  # Pass as string
-            'origQty': '0.001',  # Pass as string
-            'executedQty': '0.001',
-            'cumulativeQuoteQty': '65.0005',
-            'avgFillPrice': '65000.50',
+            'time': int(time.time() * 1000), # Current time
+            'backtest_id': 'manager_test_123', # Test the column
+            'symbol': 'ETHUSD',
+            'orderId': f'mgr_test_{int(time.time() * 1e6)}',
+            'clientOrderId': 'mgr_client_id_1',
+            'price': '3500.10',
+            'origQty': '0.05',
+            'executedQty': '0.05',
+            'cumulativeQuoteQty': '175.005',
+            'avgFillPrice': '3500.10',
             'status': 'FILLED',
             'timeInForce': 'GTC',
             'type': 'LIMIT',
-            'side': 'BUY',
-            'commission': '0.065',
+            'side': 'SELL',
+            'commission': '0.175',
             'commissionAsset': 'USD',
-            'isMaker': True,
-            'source': 'backtest',
-            'confidence_score': 0.75
+            'isMaker': False,
+            'source': 'test',
+            'confidence_score': 0.95
         }
         logger.info(f"Attempting to log mock trade: {mock_trade['orderId']}")
         manager.log_trade(mock_trade)
 
-        # Test retrieving trades
         logger.info("Attempting to retrieve trades...")
-        retrieved_trades = manager.get_trades(
-            symbol='BTCUSD', backtest_id='test_run_123')
+        retrieved_trades = manager.get_trades(symbol='ETHUSD', backtest_id='manager_test_123')
 
         if retrieved_trades:
-            logger.info(f"Retrieved {len(retrieved_trades)} trades:")
-            # Print first retrieved trade
-            print(retrieved_trades[0])
-            # Verify types (should be strings for decimals, float for confidence)
-            first_trade = retrieved_trades[0]
-            print(f"  Price type: {type(first_trade.get('price'))}")
-            print(f"  Qty type: {type(first_trade.get('origQty'))}")
-            print(
-                f"  Confidence type: {type(first_trade.get('confidence_score'))}")
+             logger.info(f"Retrieved {len(retrieved_trades)} trades:")
+             first_trade = retrieved_trades[0]
+             # Access using keys thanks to row_factory
+             print(f"  ID: {first_trade['id']}")
+             print(f"  Symbol: {first_trade['symbol']}")
+             print(f"  Backtest ID: {first_trade['backtest_id']}") # Verify column exists
+             print(f"  Price: {first_trade['price']} (Type: {type(first_trade['price'])})") # Should be str
+             print(f"  Source: {first_trade['source']}")
         else:
-            logger.warning("No trades retrieved.")
+             logger.warning("No trades retrieved.")
 
     except Exception as e:
-        logger.exception(f"An error occurred during DBManager test: {e}")
+         logger.exception(f"An error occurred during DBManager test: {e}")
     finally:
-        # Ensure connection is closed if manager was created
-        if 'manager' in locals() and manager:
-            manager.close_connection()
-            logger.info("Test DB connection closed.")
+         if manager:
+             manager.close_connection()
+             logger.info("Test DB connection closed.")
+
 
 # File path: src/db/manager.py

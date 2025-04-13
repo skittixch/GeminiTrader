@@ -14,7 +14,7 @@ import sys
 _project_root_for_path = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _project_root_for_path not in sys.path:
-    sys.path.insert(0, _project_root_for_path)
+    sys.path.insert(0, str(_project_root_for_path))
 # --- End sys.path modification ---
 
 # --- Project Imports ---
@@ -89,7 +89,7 @@ class Backtester:
         self.initial_cash = to_decimal(initial_cash, Decimal('10000.0'))
         self.maker_fee = to_decimal(maker_fee, Decimal('0.001'))
         self.taker_fee = to_decimal(taker_fee, Decimal('0.001'))
-        self.db_manager = db_manager
+        self.db_manager = db_manager  # Store the passed DB manager instance
         self.backtest_id = backtest_id
 
         # --- Portfolio State ---
@@ -128,7 +128,7 @@ class Backtester:
         else:
             try:
                 atr_len = int(atr_length_config)
-            except ValueError:
+            except (ValueError, TypeError):
                 logger.error(
                     f"Invalid non-integer value for 'atr_length' in config: {atr_length_config}. Using default 14.")
                 atr_len = 14
@@ -280,6 +280,7 @@ class Backtester:
             self.filled_trades.append(trade_info)
 
             # Log to Database if manager is provided
+            # This is where the db_manager passed during __init__ is used
             if self.db_manager:
                 try:
                     # Prepare data for log_trade function signature
@@ -312,12 +313,14 @@ class Backtester:
                         'backtest_id': trade_info['backtest_id'],
                         'confidence_score': None  # Placeholder, add later
                     }
+                    # Call the log_trade method on the DBManager instance
                     self.db_manager.log_trade(trade_data_for_db)
                     logger.debug(
                         f"Logged trade {trade_info['order_id']} to database.")
-                except Exception as e:
+                except Exception as db_log_e:
+                    # Catch errors specific to DB logging without crashing the backtest simulation
                     logger.error(
-                        f"Failed to log trade {trade_info['order_id']} to database: {e}")
+                        f"Failed to log trade {trade_info['order_id']} to database: {db_log_e}")
 
         except (TypeError, InvalidOperation) as calc_e:
             logger.error(
@@ -337,7 +340,8 @@ class Backtester:
 
         # Check BUY orders (fill if order price >= low_price)
         filled_buy_indices = []
-        for i, buy_order in enumerate(self.open_buy_orders):
+        # Iterate over a copy for safe removal
+        for i, buy_order in enumerate(list(self.open_buy_orders)):
             order_price = buy_order.get('price')  # Should be Decimal
             if order_price is None:
                 continue  # Skip invalid orders
@@ -347,16 +351,21 @@ class Backtester:
                 self._simulate_order_fill(buy_order, fill_price, timestamp)
                 filled_buy_indices.append(i)
 
-        # Remove filled buy orders (iterate in reverse to avoid index issues)
+        # Remove filled buy orders (iterate in reverse to avoid index issues on original list)
         if filled_buy_indices:
             logger.debug(
-                f"[{timestamp}] Filled BUY orders at indices: {filled_buy_indices}")
+                f"[{timestamp}] Filled BUY orders at original indices: {filled_buy_indices}")
             for i in sorted(filled_buy_indices, reverse=True):
-                del self.open_buy_orders[i]
+                try:
+                    del self.open_buy_orders[i]
+                except IndexError:
+                    logger.error(
+                        f"Error removing filled buy order at index {i}. List length: {len(self.open_buy_orders)}")
 
         # Check SELL orders (fill if order price <= high_price)
         filled_sell_indices = []
-        for i, sell_order in enumerate(self.open_sell_orders):
+        # Iterate over a copy for safe removal
+        for i, sell_order in enumerate(list(self.open_sell_orders)):
             order_price = sell_order.get('price')  # Should be Decimal
             if order_price is None:
                 continue
@@ -365,12 +374,16 @@ class Backtester:
                 self._simulate_order_fill(sell_order, fill_price, timestamp)
                 filled_sell_indices.append(i)
 
-        # Remove filled sell orders
+        # Remove filled sell orders (iterate in reverse)
         if filled_sell_indices:
             logger.debug(
-                f"[{timestamp}] Filled SELL orders at indices: {filled_sell_indices}")
+                f"[{timestamp}] Filled SELL orders at original indices: {filled_sell_indices}")
             for i in sorted(filled_sell_indices, reverse=True):
-                del self.open_sell_orders[i]
+                try:
+                    del self.open_sell_orders[i]
+                except IndexError:
+                    logger.error(
+                        f"Error removing filled sell order at index {i}. List length: {len(self.open_sell_orders)}")
 
     def _calculate_performance_metrics(self):
         """Calculates performance metrics after the backtest."""
@@ -434,7 +447,7 @@ class Backtester:
         equity_curve['Drawdown'] = equity_curve['Peak'] - equity_curve['Value']
         # Handle potential division by zero if peak is 0 or NaN
         equity_curve['DrawdownPct'] = (
-            equity_curve['Drawdown'] / equity_curve['Peak']).replace([np.inf, -np.inf, np.nan], 0) * 100
+            equity_curve['Drawdown'] / equity_curve['Peak']).replace([np.inf, -np.inf, np.nan], 0).fillna(0) * 100
         max_drawdown_pct_float = equity_curve['DrawdownPct'].max()
         max_drawdown_abs_float = equity_curve['Drawdown'].max()
 
@@ -628,6 +641,7 @@ if __name__ == '__main__':
     from src.utils.formatting import to_decimal
     from src.analysis.indicators import calculate_atr
     from config.settings import load_config  # Need config for testing block
+    from src.db.manager import DBManager  # Need DBManager for the test block
 
     # Use the real setup_logging if available
     project_root = os.path.dirname(os.path.dirname(
@@ -651,13 +665,23 @@ if __name__ == '__main__':
 
     # --- Load Mock Data (Replace with actual data loading) ---
     logger.info("Loading mock historical data...")
+    # Load config first to get data path
+    app_config = load_config()
+    if not app_config:
+        logger.error("Failed to load app configuration for backtest. Exiting.")
+        sys.exit(1)
+
     mock_data = None
-    try:
-        # Attempt to load previously fetched data if available
-        # Ensure path is correct relative to project root
-        data_path = Path(project_root) / "data" / "cache" / \
-            "BTCUSD_1h_Jan2024.csv"  # Example path
-        if data_path.exists():
+    data_path_str = app_config.get('data', {}).get('primary_kline_csv')
+    if not data_path_str:
+        logger.error("Missing 'data.primary_kline_csv' path in config.yaml")
+        sys.exit(1)
+
+    data_path = Path(project_root) / data_path_str
+    logger.info(f"Attempting to load data from configured path: {data_path}")
+
+    if data_path.exists():
+        try:
             logger.info(f"Attempting to load data from {data_path}...")
             temp_df = pd.read_csv(
                 data_path, index_col='Timestamp', parse_dates=True)
@@ -668,7 +692,6 @@ if __name__ == '__main__':
             conversion_errors = 0
             for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
                 if col in temp_df.columns:
-                    # Use our robust to_decimal converter
                     converted_col = temp_df[col].apply(
                         lambda x: to_decimal(x, default=None))
                     mock_data[col] = converted_col
@@ -682,7 +705,6 @@ if __name__ == '__main__':
 
             logger.info(
                 f"Converted numerics to Decimal (Total conversion errors: {conversion_errors}).")
-            # Drop rows where essential price data conversion failed
             initial_rows = len(mock_data)
             mock_data.dropna(
                 subset=['Open', 'High', 'Low', 'Close'], inplace=True)
@@ -694,94 +716,62 @@ if __name__ == '__main__':
             if mock_data.empty:
                 logger.error(
                     "Data became empty after dropping rows with invalid price data.")
-                mock_data = None  # Force creation of synthetic data
+                sys.exit(1)
             else:
                 logger.info(
                     f"Data has {len(mock_data)} valid rows after loading and cleaning.")
-        else:
-            logger.warning(
-                f"Mock data file not found at {data_path}. Creating minimal sample.")
-            # mock_data remains None
+        except Exception as load_e:
+            logger.exception(
+                f"Error loading or processing configured data file {data_path}: {load_e}")
+            sys.exit(1)
+    else:
+        logger.error(f"Configured data file not found: {data_path}")
+        logger.error(f"Please run the fetch script first. Example:")
+        logger.error(
+            f"python scripts/fetch_historical_data.py --symbol BTCUSD --interval 1h --start \"90 days ago UTC\" --end \"now UTC\" --output {data_path_str}")
+        sys.exit(1)
 
-    except FileNotFoundError:
-        logger.warning(
-            f"File not found at {data_path}. Creating synthetic data...")
-        mock_data = None
-    except Exception as e:
-        logger.exception(
-            f"Could not load from file ({data_path}): {e}, creating synthetic data...")
-        mock_data = None  # Ensure it's None before synthetic creation
+    # --- Calculate ATR for loaded data ---
+    atr_len_test = 14  # Match strategy config or default from config if possible
+    atr_len_conf = app_config.get('strategies', {}).get(
+        'geometric_grid', {}).get('atr_length')
+    if atr_len_conf:
+        try:
+            atr_len_test = int(atr_len_conf)
+        except:
+            pass  # Keep default if config value invalid
 
-    if mock_data is None:
-        logger.info("Creating synthetic data...")
-        # Pandas >= 2.2 warning for 'H', use 'h'
-        freq = 'h'  # Use lowercase 'h' for hourly frequency
-        periods = 100  # Number of bars for synthetic data
-        dates = pd.date_range(start='2024-01-01 00:00',
-                              periods=periods, freq=freq, tz='UTC')
-        mock_data = pd.DataFrame(index=dates)
-        # Create data directly as Decimal
-        opens = [Decimal(str(42000 + i*10 + np.random.randn()*50)
-                         ).quantize(Decimal('0.01')) for i in range(periods)]
-        mock_data['Open'] = opens
-        mock_data['High'] = [
-            o + Decimal(str(abs(np.random.randn()*50))).quantize(Decimal('0.01')) for o in opens]
-        mock_data['Low'] = [
-            o - Decimal(str(abs(np.random.randn()*50))).quantize(Decimal('0.01')) for o in opens]
-        mock_data['Close'] = [
-            o + Decimal(str(np.random.randn()*20)).quantize(Decimal('0.01')) for o in opens]
-        # Ensure High >= Open/Close and Low <= Open/Close
-        mock_data['High'] = mock_data[['High', 'Open', 'Close']].max(axis=1)
-        mock_data['Low'] = mock_data[['Low', 'Open', 'Close']].min(axis=1)
-        mock_data['Volume'] = [Decimal(str(
-            10 + abs(np.random.randn()*5))).quantize(Decimal('0.001')) for _ in range(periods)]
-        logger.info(f"Synthetic data with {periods} bars created.")
-
-    # --- Calculate ATR for mock data ---
-    atr_len_test = 14  # Match strategy config or default
     mock_data = calculate_atr(mock_data, length=atr_len_test)
     atr_col_name_test = f'ATR_{atr_len_test}'
     if atr_col_name_test not in mock_data.columns or mock_data[atr_col_name_test].isnull().all():
         logger.error(
-            "Failed to calculate ATR on mock data. Cannot run backtest.")
+            f"Failed to calculate {atr_col_name_test} on loaded data.")
         sys.exit(1)
     # Drop initial rows where ATR is NaN
     initial_len = len(mock_data)
     mock_data.dropna(subset=[atr_col_name_test], inplace=True)
     logger.info(
-        f"Prepared mock data with {len(mock_data)} bars after dropping {initial_len - len(mock_data)} NaN ATR rows.")
+        f"Prepared loaded data with {len(mock_data)} bars after dropping {initial_len - len(mock_data)} NaN ATR rows.")
     if mock_data.empty:
-        logger.error("Mock data is empty after dropping NaN ATR rows.")
+        logger.error("Loaded data is empty after dropping NaN ATR rows.")
         sys.exit(1)
 
-    # --- Mock Configs ---
-    # Load config to get parameters used by backtester (e.g., fees, could also get strategy params)
-    app_config = load_config()
-    if not app_config:
-        logger.error(
-            "Failed to load app configuration for backtest defaults. Exiting.")
+    # --- Get Configs for Backtester ---
+    test_symbol_bt = 'BTCUSD'  # Should match loaded data symbol ideally
+    test_strategy_config_bt = app_config.get(
+        'strategies', {}).get('geometric_grid', {})
+    if not test_strategy_config_bt:
+        logger.error("Geometric grid strategy config missing from app_config.")
         sys.exit(1)
-
-    test_symbol_bt = 'BTCUSD'
-    # Get strategy params from config OR use test defaults
-    test_strategy_config_bt = app_config.get('strategies', {}).get('geometric_grid', {
-        # Fallback defaults if not in config
-        'base_order_size_usd': '100.00',
-        'grid_spacing_atr_multiplier': '0.4',
-        'grid_spacing_geometric_factor': '1.1',
-        'order_size_geometric_factor': '1.2',
-        'max_grid_levels': 5,
-        'max_total_grid_quantity_base': '0.5',
-        'atr_length': atr_len_test,
-        'tp_method': 'percentage',
-        'tp_value': '0.015'
-    })
-    # Ensure values are Decimal if loaded from config without conversion (though load_config should handle it)
+    # Ensure required values are Decimal
     for k, v in test_strategy_config_bt.items():
-        if isinstance(v, str) and k not in ['tp_method']:  # Example check
+        if isinstance(v, str) and k not in ['tp_method']:
             test_strategy_config_bt[k] = to_decimal(v)
+    # Ensure consistent ATR length
+    test_strategy_config_bt['atr_length'] = atr_len_test
 
     # Use filters similar to previous tests - needed by backtester
+    # In a real scenario, fetch/cache these properly. For test, use mock.
     test_filters_bt = {
         'symbol': test_symbol_bt,
         'filters': [
@@ -792,16 +782,36 @@ if __name__ == '__main__':
             {'filterType': 'MIN_NOTIONAL', 'minNotional': '10.0'}  # Simplified
         ]
     }
-    # Get initial cash and fees from loaded config, with defaults
     initial_cash_bt = app_config.get('portfolio', {}).get(
         'initial_cash', Decimal('20000.00'))
     maker_fee = app_config.get('fees', {}).get('maker', Decimal('0.001'))
     taker_fee = app_config.get('fees', {}).get('taker', Decimal('0.001'))
 
-    test_b_id = f"test_run_{int(time.time())}"
+    # Unique ID for this test run
+    test_b_id = f"test_engine_{int(time.time())}"
 
-    # --- Optional: Initialize DBManager ---
-    db_manager_instance = None  # Keep it simple for initial test
+    # --- MODIFIED: Initialize DBManager for logging ---
+    db_manager_instance = None  # Default to None
+    db_manager = None  # Define db_manager in this scope
+    try:
+        db_conf = app_config.get('database', {})
+        db_path_str = db_conf.get('path')
+        # Use different name for test?
+        db_filename = db_conf.get('filename', 'test_backtest_db.db')
+        if db_path_str and db_filename:
+            db_full_path = Path(project_root) / db_path_str / db_filename
+            # Assign to db_manager
+            db_manager = DBManager(db_path=str(db_full_path))
+            db_manager_instance = db_manager  # Use this variable to pass to Backtester
+            logger.info(f"DBManager initialized for logging to {db_full_path}")
+        else:
+            logger.warning(
+                "Database path or filename missing in config. Cannot initialize DBManager.")
+    except Exception as e:
+        logger.error(
+            f"Could not initialize DBManager: {e}. Running without DB logging.")
+        db_manager_instance = None
+        db_manager = None  # Ensure it's None if init failed
 
     # --- Initialize Backtester ---
     try:
@@ -813,11 +823,14 @@ if __name__ == '__main__':
             initial_cash=initial_cash_bt,
             maker_fee=maker_fee,
             taker_fee=taker_fee,
-            db_manager=db_manager_instance,  # Pass instance or None
+            # Pass the initialized instance (or None)
+            db_manager=db_manager_instance,
             backtest_id=test_b_id
         )
     except Exception as init_e:
         logger.exception(f"Failed to initialize Backtester: {init_e}")
+        if db_manager:
+            db_manager.close_connection()  # Close DB if init failed
         sys.exit(1)
 
     # --- Run Backtest ---
@@ -827,6 +840,11 @@ if __name__ == '__main__':
         results = backtester.run()
     except Exception as run_e:
         logger.exception(f"An error occurred during backtester.run(): {run_e}")
+    finally:
+        # Ensure DB connection is closed after run, regardless of success/failure
+        if db_manager:
+            db_manager.close_connection()
+            logger.info("Closed DB connection after backtest run.")
 
     # --- Display Results ---
     logger.info("\n--- Backtest Results Summary ---")
@@ -845,8 +863,7 @@ if __name__ == '__main__':
         equity_curve_df = results.get("equity_curve")
         if equity_curve_df is not None and not equity_curve_df.empty:
             logger.info(f"\nEquity Curve has {len(equity_curve_df)} points.")
-            # Optional: print head/tail or save to CSV for inspection
-            # print(equity_curve_df.head().to_markdown(numalign="right", stralign="right"))
+            # Optional: save to CSV for inspection
             equity_curve_path = Path(
                 project_root) / "data" / "backtests" / f"{test_b_id}_equity.csv"
             equity_curve_path.parent.mkdir(parents=True, exist_ok=True)
@@ -855,7 +872,6 @@ if __name__ == '__main__':
                 logger.info(f"Saved equity curve to {equity_curve_path}")
             except Exception as save_e:
                 logger.error(f"Failed to save equity curve: {save_e}")
-
         else:
             logger.info("\nEquity Curve is empty or missing.")
 
@@ -863,12 +879,13 @@ if __name__ == '__main__':
         trades_df_res = results.get("trades")
         if trades_df_res is not None and not trades_df_res.empty:
             logger.info(f"\nTrades Log has {len(trades_df_res)} entries.")
-            # Optional: print head/tail or save to CSV
-            # print(trades_df_res.head().to_markdown(index=False, numalign="right", stralign="right"))
+            # Optional: save to CSV
             trades_log_path = Path(project_root) / "data" / \
                 "backtests" / f"{test_b_id}_trades.csv"
             trades_log_path.parent.mkdir(parents=True, exist_ok=True)
             try:
+                # Ensure data types are suitable for CSV (e.g., convert Decimals)
+                # The run method already does this conversion before returning
                 trades_df_res.to_csv(trades_log_path, index=False)
                 logger.info(f"Saved trades log to {trades_log_path}")
             except Exception as save_e:
