@@ -1,166 +1,186 @@
 # config/settings.py
 
-import os
 import yaml
-from dotenv import load_dotenv
-from decimal import Decimal, InvalidOperation
+import os
 import logging
+from dotenv import load_dotenv
+from pathlib import Path
+from decimal import Decimal, InvalidOperation
+from typing import Dict, List, Optional, Tuple, Any  # Add this line
 
-# --- Setup Logging for Config Loading ---
-# Basic config for bootstrapping logging before the main setup
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-log = logging.getLogger(__name__)
 
-# --- Determine Project Root and Paths ---
-# Assumes settings.py is in the config/ directory, one level below the project root
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CONFIG_PATH = os.path.join(PROJECT_ROOT, 'config', 'config.yaml')
-ENV_PATH = os.path.join(PROJECT_ROOT, '.env')
+logger = logging.getLogger(__name__)
 
-# --- Load Environment Variables ---
-try:
-    if os.path.exists(ENV_PATH):
-        load_dotenv(dotenv_path=ENV_PATH)
-        log.info(f"Loaded environment variables from: {ENV_PATH}")
+# --- Environment Loading ---
+# Construct the path to the .env file relative to this settings file
+# settings.py -> config/ -> project_root/
+project_root = Path(__file__).parent.parent
+dotenv_path = project_root / '.env'
+
+# Load environment variables from .env file if it exists
+if dotenv_path.exists():
+    load_dotenv(dotenv_path=dotenv_path)
+    logger.info(f"Loaded environment variables from: {dotenv_path}")
+else:
+    logger.warning(
+        f".env file not found at {dotenv_path}. Relying on system environment variables.")
+
+
+# --- Configuration Loading Function ---
+def load_config(config_path: str = None) -> dict:
+    """
+    Loads configuration from a YAML file and merges it with environment variables.
+
+    Args:
+        config_path (str, optional): Path to the YAML configuration file.
+                                     Defaults to 'config/config.yaml' relative to project root.
+
+    Returns:
+        dict: The loaded and merged configuration dictionary. Returns empty dict on error.
+    """
+    if config_path is None:
+        default_config_path = project_root / 'config' / 'config.yaml'
+        config_path = default_config_path
     else:
-        log.warning(f".env file not found at: {ENV_PATH}. Relying on system environment variables.")
-except Exception as e:
-    log.error(f"Error loading .env file from {ENV_PATH}: {e}", exc_info=True)
-    # Decide if this is fatal? For now, we continue, hoping env vars are set system-wide
+        config_path = Path(config_path)  # Convert string path to Path object
 
-# --- Load Base Configuration from YAML ---
-try:
-    with open(CONFIG_PATH, 'r') as stream:
+    config = {}
+
+    # 1. Load base configuration from YAML file
+    try:
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+        if config is None:
+            config = {}  # Ensure config is a dict even if YAML is empty
+        logger.info(f"Loaded base configuration from: {config_path}")
+    except FileNotFoundError:
+        logger.error(f"Configuration file not found at: {config_path}")
+        return {}  # Return empty dict if base config file is missing
+    except yaml.YAMLError as e:
+        logger.error(
+            f"Error parsing YAML configuration file {config_path}: {e}")
+        return {}  # Return empty dict on YAML parsing error
+    except Exception as e:
+        logger.error(
+            f"An unexpected error occurred loading config file {config_path}: {e}")
+        return {}
+
+    # 2. Override with Environment Variables (for sensitive data like API keys)
+    # Example: Look for BINANCE_US_API_KEY env var to override config['binance_us']['api_key']
+    api_keys = {
+        'BINANCE_US_API_KEY': ('binance_us', 'api_key'),
+        'BINANCE_US_SECRET': ('binance_us', 'api_secret'),
+        'COINBASE_API_KEY': ('coinbase', 'api_key'),
+        'COINBASE_API_SECRET': ('coinbase', 'api_secret'),
+        'PLAID_CLIENT_ID': ('plaid', 'client_id'),
+        'PLAID_SECRET': ('plaid', 'secret'),
+        'PLAID_ENVIRONMENT': ('plaid', 'environment'),
+        # Add other environment variables to override here
+    }
+
+    for env_var, config_keys in api_keys.items():
+        value = os.getenv(env_var)
+        if value:
+            # Navigate nested dictionary structure
+            section = config
+            try:
+                # Ensure parent dictionaries exist
+                for key in config_keys[:-1]:
+                    if key not in section or not isinstance(section[key], dict):
+                        section[key] = {}
+                    section = section[key]
+
+                # Set the final key
+                last_key = config_keys[-1]
+                section[last_key] = value
+                # Log loaded value, masking secrets
+                log_value = value[:3] + '...' + value[-3:] if len(
+                    value) > 6 and 'SECRET' in env_var.upper() else value
+                logger.info(
+                    f"Loaded '{env_var}' from environment variable (value='{log_value}')")
+            except Exception as e:
+                logger.error(
+                    f"Error setting config from env var {env_var}: {e}")
+        else:
+            # Check if the key was expected but not found in env vars or config
+            section = config
+            key_exists = True
+            try:
+                for key in config_keys:
+                    section = section[key]
+            except (KeyError, TypeError):
+                key_exists = False
+
+            if not key_exists:
+                logger.warning(
+                    f"Environment variable '{env_var}' not found and corresponding key '{'.'.join(config_keys)}' not in base config.")
+
+    # 3. Convert specific string values to Decimal where applicable
+    # Define paths to keys that should be Decimal (using tuples for nested keys)
+    decimal_keys = [
+        ('strategies', 'geometric_grid', 'base_order_size_usd'),
+        ('strategies', 'geometric_grid', 'grid_spacing_atr_multiplier'),
+        ('strategies', 'geometric_grid', 'grid_spacing_geometric_factor'),
+        ('strategies', 'geometric_grid', 'order_size_geometric_factor'),
+        ('strategies', 'geometric_grid', 'max_total_grid_quantity_base'),
+        ('strategies', 'simple_tp', 'tp_value'),
+        ('strategies', 'dca', 'base_amount_usd'),
+        ('portfolio', 'initial_cash'),
+        ('fees', 'maker'),
+        ('fees', 'taker'),
+    ]
+    logger.info("Converting specified configuration values to Decimal...")
+    for key_path in decimal_keys:
+        section = config
         try:
-            config_base = yaml.safe_load(stream)
-            if config_base is None:
-                 config_base = {} # Handle empty YAML file
-                 log.warning(f"Config file {CONFIG_PATH} is empty.")
-            log.info(f"Loaded base configuration from: {CONFIG_PATH}")
-        except yaml.YAMLError as exc:
-            log.error(f"Error parsing YAML file {CONFIG_PATH}: {exc}", exc_info=True)
-            raise # Parsing error is likely fatal for config
-except FileNotFoundError:
-    log.error(f"Configuration file not found: {CONFIG_PATH}. Cannot proceed.")
-    raise # Missing config file is fatal
+            # Traverse the dictionary according to the key path
+            for key in key_path[:-1]:
+                section = section[key]
+            last_key = key_path[-1]
+            value_str = section.get(last_key)
 
-# --- Helper Function to Get Env Var ---
-def get_env_var(var_name, default=None):
-    """Gets an environment variable, logging whether it was found."""
-    value = os.environ.get(var_name, default)
-    if value is not default:
-        # Mask sensitive values partially in logs if needed (e.g., API keys)
-        display_value = value[:3] + '...' + value[-3:] if 'KEY' in var_name.upper() or 'SECRET' in var_name.upper() and value and len(value) > 6 else value
-        log.info(f"Loaded '{var_name}' from environment variable (value='{display_value}')")
-        # Optional: Add more rigorous checks for required env vars
-        if not value and not default:
-             log.warning(f"Required environment variable '{var_name}' is not set.")
-    elif default is not None:
-         log.info(f"Environment variable '{var_name}' not found, using default from config.yaml.")
-    else:
-         log.warning(f"Environment variable '{var_name}' not found and no default provided in config.yaml.")
-    return value
+            if value_str is not None:
+                original_type = type(value_str)
+                try:
+                    # Convert to string first for safety
+                    decimal_value = Decimal(str(value_str))
+                    section[last_key] = decimal_value
+                    # logger.debug(f"Converted config key '{'.'.join(key_path)}' to Decimal: {decimal_value}")
+                except (InvalidOperation, TypeError, ValueError) as e:
+                    logger.warning(
+                        f"Could not convert config value '{value_str}' (type: {original_type}) at key '{'.'.join(key_path)}' to Decimal: {e}. Keeping original value.")
+            # else: logger.debug(f"Key '{'.'.join(key_path)}' not found for Decimal conversion.")
 
-# --- Override YAML with Environment Variables (Especially for Secrets) ---
-# API Keys
-config_base.setdefault('api', {}) # Ensure 'api' key exists
-config_base['api'].setdefault('binance_us', {})
-config_base['api']['binance_us']['key'] = get_env_var('BINANCE_US_API_KEY', config_base['api']['binance_us'].get('key'))
-config_base['api']['binance_us']['secret'] = get_env_var('BINANCE_US_SECRET', config_base['api']['binance_us'].get('secret'))
+        except (KeyError, TypeError):
+            # logger.debug(f"Path '{'.'.join(key_path)}' not found in config for Decimal conversion.")
+            pass  # Key path doesn't exist, skip conversion
 
-config_base['api'].setdefault('coinbase', {})
-config_base['api']['coinbase']['key'] = get_env_var('COINBASE_API_KEY', config_base['api']['coinbase'].get('key'))
-config_base['api']['coinbase']['secret'] = get_env_var('COINBASE_API_SECRET', config_base['api']['coinbase'].get('secret'))
+    return config
 
-config_base['api'].setdefault('plaid', {})
-config_base['api']['plaid']['client_id'] = get_env_var('PLAID_CLIENT_ID', config_base['api']['plaid'].get('client_id'))
-config_base['api']['plaid']['secret'] = get_env_var('PLAID_SECRET', config_base['api']['plaid'].get('secret'))
-config_base['api']['plaid']['environment'] = get_env_var('PLAID_ENVIRONMENT', config_base['api']['plaid'].get('environment', 'sandbox'))
+# --- Load configuration globally on import (optional, can be explicit) ---
+# CONFIG = load_config()
+# logger.info("Global CONFIG loaded.")
 
-# --- Convert Specific Numerical Values to Decimal ---
-def convert_to_decimal(config_dict, path_keys):
-    """Recursively searches for path_keys in nested dict and converts value to Decimal."""
-    temp_dict = config_dict
+# --- Helper function to get config value safely ---
+
+
+def get_config_value(config: dict, key_path: Tuple[str, ...], default: Any = None) -> Any:
+    """Safely retrieves a value from a nested dictionary using a key path tuple."""
+    section = config
     try:
-        for i, key in enumerate(path_keys):
-            if i == len(path_keys) - 1: # Last key in the path
-                if key in temp_dict and temp_dict[key] is not None:
-                    original_value = temp_dict[key]
-                    try:
-                        temp_dict[key] = Decimal(str(original_value)) # Convert via string for precision
-                        log.debug(f"Converted '{'.'.join(path_keys)}' to Decimal: {temp_dict[key]} (from {original_value})")
-                    except (InvalidOperation, TypeError) as e:
-                        log.error(f"Failed to convert '{'.'.join(path_keys)}' value '{original_value}' to Decimal: {e}")
-                        # Decide handling: raise error, use default, or leave as is? For now, log error.
-                return # Found the key or it doesn't exist at this level
-            elif key in temp_dict and isinstance(temp_dict[key], dict):
-                temp_dict = temp_dict[key] # Move deeper into the dict
-            else:
-                return # Path doesn't exist
-    except Exception as e:
-        log.error(f"Error during Decimal conversion for '{'.'.join(path_keys)}': {e}", exc_info=True)
-
-# List of paths to numerical values that need Decimal conversion
-decimal_paths = [
-    ['trading', 'grid', 'base_order_size_usd'],
-    ['trading', 'grid', 'spacing_factor'],
-    ['trading', 'grid', 'geometric_factor'],
-    ['trading', 'grid', 'order_size_factor'],
-    ['trading', 'grid', 'min_level_separation_pct'],
-    ['trading', 'profit_taking', 'fixed_tp_percentage'],
-    ['trading', 'profit_taking', 'dynamic_tp_atr_multiple_min'],
-    ['trading', 'profit_taking', 'dynamic_tp_atr_multiple_max'],
-    ['trading', 'risk', 'max_total_position_usd_per_symbol'],
-    ['trading', 'risk', 'time_stop_profit_threshold'],
-    ['trading', 'risk', 'confidence_floor_exit'],
-    ['trading', 'risk', 'portfolio_max_drawdown'],
-    ['trading', 'dca', 'base_amount_usd'],
-]
-
-log.info("Converting specified configuration values to Decimal...")
-for path in decimal_paths:
-    convert_to_decimal(config_base, path)
-
-# --- Final Configuration Object ---
-# Make the loaded and processed config available for import
-settings = config_base
-
-# --- Optional: Define helper functions/accessors ---
-def get_setting(path_string, default=None):
-    """Helper to get nested setting using dot notation string e.g., 'trading.grid.max_levels'"""
-    keys = path_string.split('.')
-    value = settings
-    try:
-        for key in keys:
-            if isinstance(value, dict):
-                value = value[key]
-            else: # Handle lists/indices if needed in future
-                 log.warning(f"Path '{path_string}' encountered non-dict element at '{key}'")
-                 return default
-        return value
-    except KeyError:
-        log.debug(f"Setting '{path_string}' not found, returning default: {default}")
-        return default
-    except Exception as e:
-        log.error(f"Error accessing setting '{path_string}': {e}", exc_info=True)
+        for key in key_path:
+            section = section[key]
+        return section
+    except (KeyError, TypeError):
         return default
 
-# --- Example Usage (for testing when run directly) ---
-if __name__ == "__main__":
-    log.info("--- Configuration Loaded ---")
-    import json
-    # Pretty print the loaded settings (excluding potentially sensitive API parts for direct run)
-    printable_settings = settings.copy()
-    if 'api' in printable_settings:
-        # Avoid printing full secrets if run directly
-        for api_name, creds in printable_settings['api'].items():
-            if 'secret' in creds: creds['secret'] = '********'
-            if 'key' in creds: creds['key'] = creds['key'][:3]+'********' if creds['key'] else None
-    log.info(json.dumps(printable_settings, indent=4, default=str)) # Use default=str for Decimal
 
-    log.info("\n--- Testing Accessors ---")
-    log.info(f"Quote Asset: {get_setting('trading.quote_asset')}")
-    log.info(f"Max Grid Levels: {get_setting('trading.grid.max_levels')}")
-    log.info(f"Base Order Size (Decimal): {get_setting('trading.grid.base_order_size_usd')} (Type: {type(get_setting('trading.grid.base_order_size_usd'))})")
-    log.info(f"Binance Key (Obfuscated): {get_setting('api.binance_us.key')}")
-    log.info(f"Non-existent setting: {get_setting('some.fake.setting', default='Not Found')}")
+# Example of accessing config (if loaded globally)
+# if __name__ == '__main__':
+#     print("Global Config Example:")
+#     print(f"Binance API Key (Loaded?): {'api_key' in CONFIG.get('binance_us', {})}")
+#     grid_conf = get_config_value(CONFIG, ('strategies', 'geometric_grid'))
+#     if grid_conf:
+#         print(f"Base Order Size (Decimal?): {grid_conf.get('base_order_size_usd')} (Type: {type(grid_conf.get('base_order_size_usd'))})")
+
+# File path: config/settings.py
