@@ -1,0 +1,6 @@
+2025-04-13 00:40:52,546 - INFO - Parsed Handover: Modified=[], NextStepsFiles=[], Phase=0., Module=?
+2025-04-13 00:40:52,560 - WARNING - File specified for inclusion not found, skipping: /workspaces/GeminiTrader/config/config.yaml
+2025-04-13 00:40:52,560 - WARNING - File specified for inclusion not found, skipping: /workspaces/GeminiTrader/config/settings.py
+2025-04-13 00:40:52,569 - INFO - Full context saved to /workspaces/GeminiTrader/data/context_logs/context_log_20250413_004034_context.txt
+2025-04-13 00:40:52,577 - ERROR - Could not copy to clipboard: [Errno 2] No such file or directory: 'clip.exe'. Context saved to log file.
+2025-04-13 00:40:52,577 - INFO - Context Manager CMD finished successfully.

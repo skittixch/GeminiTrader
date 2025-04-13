@@ -1,0 +1,462 @@
+# scripts/context_manager.py
+
+import os
+import subprocess
+import argparse
+import re
+import sys
+import pyperclip  # Needs: pip install pyperclip
+from datetime import datetime
+import logging
+
+# --- Configuration ---
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+LOG_DIR = os.path.join(PROJECT_ROOT, 'data', 'context_logs')
+os.makedirs(LOG_DIR, exist_ok=True)
+LOG_FILE_BASE = os.path.join(
+    LOG_DIR, f"context_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s - %(levelname)s - %(message)s',
+                    handlers=[logging.FileHandler(f"{LOG_FILE_BASE}.log"), logging.StreamHandler()])
+
+ALWAYS_INCLUDE_FILES = [
+    'config/settings.py',
+    'config/config.yaml',
+    # Add other foundational files if desired (e.g., src/main_trader.py structure)
+    'scripts/context_manager.py'  # Include itself
+]
+TREE_IGNORE_PATTERNS = ['.venv', '__pycache__', 'data', '.git',
+                        '*.db', '*.log', '*.sqlite3', 'node_modules', 'dist', 'build']
+# --- End Configuration ---
+
+
+class ContextManager:
+    # Keep __init__ simple, pass handover text later
+    def __init__(self):
+        self.project_root = PROJECT_ROOT
+        self.handover_content = ""
+        self.parsed_info = {'modified': [], 'next_step_files': set(
+        ), 'phase': '?', 'module': '?'}  # Default empty
+
+    def set_handover_content(self, text):
+        """Sets the handover content and triggers parsing."""
+        if not text:
+            raise ValueError("Handover text cannot be empty.")
+        self.handover_content = text
+        self.parsed_info = self._parse_handover()
+
+    def _read_file(self, file_path):
+        """Safely reads a file's content."""
+        full_path = os.path.join(self.project_root, file_path) if not os.path.isabs(
+            file_path) else file_path
+        try:
+            # Check if file exists first
+            if not os.path.exists(full_path):
+                logging.warning(
+                    f"File specified for inclusion not found, skipping: {full_path}")
+                return None
+
+            with open(full_path, 'r', encoding='utf-8') as f:
+                return f.read()
+        except FileNotFoundError:  # Should be caught by os.path.exists, but defensive
+            logging.warning(f"File not found during read attempt: {full_path}")
+            return None
+        except Exception as e:
+            logging.error(f"Error reading file {full_path}: {e}")
+            return None
+
+    def _parse_handover(self):
+        """Parses key information from the handover document content."""
+        if not self.handover_content:
+            raise ValueError("Cannot parse empty handover content.")
+
+        parsed = {'modified': [], 'next_step_files': set(), 'phase': '?',
+                  'module': '?'}
+        try:
+            # Extract modified files
+            # Use more robust regex to handle variations and capture until next blank line or end
+            modified_match = re.search(r"^\s*Key Files/Modules Implemented or Modified \(Session\):?\s*\n(.*?)(?=\n\s*\n|\Z)",
+                                       self.handover_content, re.DOTALL | re.MULTILINE | re.IGNORECASE)
+            if modified_match:
+                modified_block = modified_match.group(1).strip()
+                parsed['modified'] = [line.strip()[2:] for line in modified_block.split(
+                    '\n') if line.strip().startswith('- ')]
+
+            # Extract next step files
+            # Use more robust regex to handle variations and capture until next blank line or end
+            next_steps_match = re.search(r"^\s*Actionable Next Steps:?\s*\n(.*?)(?=\n\s*\n|\Z)",
+                                         self.handover_content, re.DOTALL | re.MULTILINE | re.IGNORECASE)
+            if next_steps_match:
+                next_steps_block = next_steps_match.group(1).strip()
+                # Updated regex to find paths more reliably, including potential backticks etc.
+                found_paths = re.findall(
+                    r'[`\'"]?(src|config|scripts|notebooks|tests)/[\w/.-]+\.(py|yaml|sql|md|ipynb)[a-zA-Z]*[`\'"]?', next_steps_block)
+                for match in found_paths:
+                    # The regex returns tuples like ('src', 'py'), need to reconstruct the path somewhat
+                    # This part is tricky and depends heavily on handover format consistency.
+                    # Let's try a simpler approach first: find any string that looks like a path.
+                    potential_paths = re.findall(
+                        r'(?:^|\s)(src|config|scripts|notebooks|tests)/[\w/.-]+\.(?:py|yaml|sql|md|ipynb)', next_steps_block, re.IGNORECASE)
+                    for path in potential_paths:
+                        parsed['next_step_files'].add(path.strip('`\'" '))
+
+            # Extract Phase/Module
+            roadmap_match = re.search(
+                r"Phase \[?([\d.]+)\]?(?:, Module \[?([\d.]+)\]?)?", self.handover_content, re.IGNORECASE)
+            if roadmap_match:
+                parsed['phase'] = roadmap_match.group(1)
+                # Check if group 2 was captured
+                if len(roadmap_match.groups()) > 1 and roadmap_match.group(2):
+                    parsed['module'] = roadmap_match.group(2)
+
+            logging.info(
+                f"Parsed Handover: Modified={parsed['modified']}, NextStepsFiles={list(parsed['next_step_files'])}, Phase={parsed['phase']}, Module={parsed['module']}")
+            return parsed
+
+        except Exception as e:
+            logging.error(f"Failed to parse handover document: {e}")
+            raise  # Re-raise after logging
+
+    def generate_tree(self):
+        """Generates a string representation of the directory tree."""
+        lines = []
+        ignore_set = set(TREE_IGNORE_PATTERNS)
+
+        def is_ignored(name, patterns):
+            if name in patterns:
+                return True
+            # Basic wildcard matching for endings
+            if any(pat.startswith('*') and name.endswith(pat[1:]) for pat in patterns if '*' in pat):
+                return True
+            # Basic wildcard matching for beginnings (less common)
+            if any(pat.endswith('*') and name.startswith(pat[:-1]) for pat in patterns if '*' in pat):
+                return True
+            return False
+
+        lines.append("Project Structure:")
+        for root, dirs, files in os.walk(self.project_root, topdown=True):
+            rel_root = os.path.relpath(root, self.project_root)
+            if rel_root == '.':
+                rel_root = ''  # Avoid './' prefix at the top level
+
+            # Filter ignored directories *before* descending
+            dirs[:] = [d for d in dirs if not is_ignored(d, ignore_set)]
+            # Filter ignored files
+            files = [f for f in files if not is_ignored(f, ignore_set)]
+
+            # Skip printing root if it's the top level and empty after filtering (avoids just printing project root name)
+            # if not rel_root and not dirs and not files: continue # Maybe remove this line?
+
+            level = rel_root.count(os.sep) if rel_root else 0
+            indent = ' ' * 4 * level
+            dir_name = os.path.basename(
+                root) if rel_root else os.path.basename(self.project_root)
+            lines.append(f"{indent}├── {dir_name}/")
+            subindent = ' ' * 4 * (level + 1)
+            for i, f in enumerate(sorted(files)):
+                # Adjust connector visually
+                connector = "└──" if i == len(sorted(files)) - 1 else "├──"
+                lines.append(f"{subindent}{connector} {f}")
+        return "\n".join(lines)
+
+    def build_context_prompt(self):
+        """Builds the final context string for the LLM."""
+        context_parts = []
+
+        # 1. Introduction
+        context_parts.append("--- Start GeminiTrader Context Block ---")
+        context_parts.append(
+            f"Context generated on: {datetime.now().isoformat()}")
+        context_parts.append(
+            f"Targeting: Phase {self.parsed_info['phase']}, Module {self.parsed_info['module']}")
+        context_parts.append("\n---\n")
+
+        # 2. Handover Document
+        context_parts.append("## Last Session Handover Document:")
+        context_parts.append(self.handover_content)
+        context_parts.append("\n---\n")
+
+        # 3. Project Structure
+        context_parts.append("## Project Directory Structure:")
+        context_parts.append(self.generate_tree())
+        context_parts.append("\n---\n")
+
+        # 4. Relevant File Contents
+        context_parts.append("## Relevant File Contents:")
+        files_to_include = set(ALWAYS_INCLUDE_FILES) | set(
+            self.parsed_info['modified']) | self.parsed_info['next_step_files']
+
+        # Ensure paths are relative to project root for reading
+        processed_files = set()
+        for file_rel_path in sorted(list(files_to_include)):
+            # Normalize path, remove leading/trailing spaces/quotes
+            clean_path = file_rel_path.strip(' `\'"')
+            if not clean_path:
+                continue  # Skip empty paths
+
+            # Basic check for validity
+            if not any(clean_path.startswith(prefix) for prefix in ['src/', 'config/', 'scripts/', 'notebooks/', 'tests/', 'README.md']):
+                logging.warning(
+                    f"Skipping potentially invalid or root path: {clean_path}")
+                continue
+
+            if clean_path in processed_files:
+                continue  # Avoid duplicates
+            processed_files.add(clean_path)
+
+            # Use the method that checks existence
+            content = self._read_file(clean_path)
+            if content is not None:  # Check for None specifically
+                context_parts.append(f"\n### File: {clean_path}\n")
+                # Determine language for markdown code block
+                lang = "python"
+                if clean_path.endswith(".yaml"):
+                    lang = "yaml"
+                elif clean_path.endswith(".sql"):
+                    lang = "sql"
+                elif clean_path.endswith(".md"):
+                    lang = "markdown"
+                elif clean_path.endswith(".ipynb"):
+                    lang = "json"  # Notebooks are JSON
+                context_parts.append(f"```{lang}")
+                context_parts.append(content)
+                context_parts.append("```")
+
+        context_parts.append("\n--- End GeminiTrader Context Block ---")
+        final_context = "\n".join(context_parts)
+
+        # Log the context before potential clipboard error
+        context_log_file = f"{LOG_FILE_BASE}_context.txt"
+        try:
+            with open(context_log_file, "w", encoding='utf-8') as f:
+                f.write(final_context)
+            logging.info(f"Full context saved to {context_log_file}")
+        except Exception as e:
+            logging.error(
+                f"Failed to save context log to {context_log_file}: {e}")
+
+        # Copy to clipboard
+        try:
+            pyperclip.copy(final_context)
+            logging.info("Context block copied to clipboard.")
+        except Exception as e:
+            logging.error(
+                f"Could not copy to clipboard: {e}. Context saved to log file.")
+            # Re-raise or handle differently if clipboard is critical
+            raise  # Let the main loop know clipboard failed
+
+        return final_context
+
+    def generate_commit_message(self):
+        """Generates a structured commit message."""
+        phase = self.parsed_info.get('phase', '?')
+        module = self.parsed_info.get('module', '?')
+        primary_action = "Update"
+        target = "context/state"  # Default if no specific file found
+
+        # Try to determine action and target from next steps
+        next_steps_match = re.search(r"^\s*Actionable Next Steps:?\s*\n(.*?)(?=\n\s*\n|\Z)",
+                                     self.handover_content, re.DOTALL | re.MULTILINE | re.IGNORECASE)
+        if next_steps_match:
+            first_line = next_steps_match.group(
+                1).strip().split('\n')[0].lower()
+            keywords = {"implement": "Implement", "create": "Create", "add": "Add",
+                        "refactor": "Refactor", "fix": "Fix", "update": "Update", "start": "Start", "begin": "Begin"}
+            for key, action in keywords.items():
+                if key in first_line:
+                    primary_action = action
+                    break
+            # Try to find target file in first line
+            paths_in_line = re.findall(
+                r'(src|config|scripts|notebooks|tests)/[\w/.-]+\.(py|yaml|sql|md|ipynb)', first_line, re.IGNORECASE)
+            if paths_in_line:
+                # Reconstruct path roughly - regex gives ('src', 'py') etc.
+                # Let's just grab the filename part for the message
+                first_path_match = re.search(
+                    r'(?:/|\\)([\w.-]+\.(?:py|yaml|sql|md|ipynb))', first_line)
+                if first_path_match:
+                    target = first_path_match.group(1)
+
+        # Determine commit type
+        commit_type = "feat"
+        if primary_action == "Fix":
+            commit_type = "fix"
+        elif primary_action == "Refactor":
+            commit_type = "refactor"
+        elif "test" in target.lower():
+            commit_type = "test"
+        elif any(doc_file in target.lower() for doc_file in ["readme.md", "research.md", "prompts.md"]):
+            commit_type = "docs"
+        elif primary_action in ["Update", "Start", "Begin"] and target == "context/state":
+            commit_type = "chore"  # Commit before starting new work
+
+        scope = f"Phase{phase}"
+        if module != '?':
+            scope += f".{module}"
+
+        message = f"{commit_type}({scope}): {primary_action} {target}"
+        message = message[:72]  # Conventional commit subject limit
+
+        # Optional body with modified files
+        modified_files = self.parsed_info.get('modified', [])
+        body = ""
+        if modified_files:
+            body = "\n\nFiles modified in previous session:\n" + \
+                "\n".join(f"- {f}" for f in modified_files)
+
+        full_message = message + body
+        logging.info(f"Generated commit message:\n{full_message}")
+        return full_message
+
+    def run_git_commit(self, commit_message, push=False):
+        """Runs git add and git commit."""
+        try:
+            logging.info("Running 'git add .'...")
+            # Use absolute path for cwd for robustness
+            subprocess.run(['git', 'add', '.'], check=True, cwd=self.project_root,
+                           capture_output=True, text=True, encoding='utf-8')
+
+            logging.info(f"Running 'git commit'...")
+            # Pass message via stdin to handle multi-line messages better
+            commit_result = subprocess.run(['git', 'commit', '-F', '-'], input=commit_message,
+                                           check=True, cwd=self.project_root, capture_output=True, text=True, encoding='utf-8')
+            logging.info("Commit successful:\n%s", commit_result.stdout)
+
+            if push:
+                # Use input() for direct interaction in the terminal where the script runs
+                confirm = input("Commit successful. Push to remote? (y/N): ")
+                if confirm.lower() == 'y':
+                    logging.info("Running 'git push'...")
+                    push_result = subprocess.run(
+                        ['git', 'push'], check=True, cwd=self.project_root, capture_output=True, text=True, encoding='utf-8')
+                    logging.info("Push successful:\n%s", push_result.stdout)
+                else:
+                    logging.info("Push skipped by user.")
+
+        except subprocess.CalledProcessError as e:
+            logging.error(f"Git command failed: {e.cmd}")
+            # Decode stdout/stderr if they are bytes
+            stdout = e.stdout.decode(
+                'utf-8', errors='replace') if isinstance(e.stdout, bytes) else e.stdout
+            stderr = e.stderr.decode(
+                'utf-8', errors='replace') if isinstance(e.stderr, bytes) else e.stderr
+            logging.error(f"Return Code: {e.returncode}")
+            logging.error(f"Stdout:\n{stdout}")
+            logging.error(f"Stderr:\n{stderr}")
+            # Provide more specific feedback if possible
+            if "nothing to commit" in stderr or "nothing to commit" in stdout:
+                logging.warning(
+                    "Git reported nothing to commit. Skipping commit action.")
+                return  # Don't treat as fatal error
+            elif "Please tell me who you are" in stderr:
+                logging.error(
+                    "Git user identity not configured. Please run:\n  git config --global user.email \"you@example.com\"\n  git config --global user.name \"Your Name\"")
+
+            raise  # Re-raise the exception to indicate failure
+        except FileNotFoundError as e:
+            if 'git' in str(e):
+                logging.error(
+                    "Git command not found. Ensure Git is installed and in your system's PATH.")
+            else:
+                logging.error(f"File not found during Git operation: {e}")
+            raise
+        except Exception as e:
+            logging.error(
+                f"An unexpected error occurred during Git operation: {e}", exc_info=True)
+            raise
+
+# --- Helper to read multi-line input ---
+
+
+def get_multiline_input(prompt_message):
+    """Prompts the user for multi-line input in the terminal."""
+    print(prompt_message)
+    print("Paste your text here. Press Enter then Ctrl+D (Unix) or Ctrl+Z+Enter (Windows) when done:")
+    lines = []
+    while True:
+        try:
+            line = input()
+            lines.append(line)
+        except EOFError:
+            break
+        except KeyboardInterrupt:
+            print("\nInput cancelled.")
+            sys.exit(1)  # Exit if user cancels input
+    return "\n".join(lines)
+
+
+# --- Main Execution ---
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="GeminiTrader Context Manager CMD Tool")
+    parser.add_argument("--commit", action="store_true",
+                        help="Automatically stage and commit changes with a generated message AFTER processing input.")
+    parser.add_argument("--push", action="store_true",
+                        help="Interactively prompt to push after successful commit (requires --commit).")
+    parser.add_argument("--no-clipboard", action="store_true",
+                        help="Do not attempt to copy the context to the clipboard (outputs to log only).")
+
+    args = parser.parse_args()
+
+    try:
+        # 1. Get Handover Text from User
+        handover_input = get_multiline_input(
+            "Please paste the full Handover Document text generated by the LLM:")
+
+        if not handover_input.strip():
+            logging.error("No handover text was provided. Exiting.")
+            sys.exit(1)
+
+        # 2. Initialize Manager and Process
+        manager = ContextManager()
+        manager.set_handover_content(handover_input)
+
+        # 3. Build Context (this saves log and tries clipboard)
+        if args.no_clipboard:
+            # Build context just to generate it and save to file
+            manager.build_context_prompt()
+            logging.info(
+                "Context generated and saved to log file. Clipboard copy skipped as requested.")
+            print("Context generated and saved to log file. Clipboard copy skipped.")
+        else:
+            try:
+                manager.build_context_prompt()  # Tries clipboard internally
+                print("Context processed and copied to clipboard.")
+            except Exception as clip_err:
+                # Error already logged by build_context_prompt if clipboard fails
+                print(
+                    f"Error copying to clipboard: {clip_err}. Context saved to log file.")
+                # Decide if you want to exit or continue to commit step
+                # sys.exit(1) # Optional: exit if clipboard is essential
+
+        # 4. Optional Git Commit
+        if args.commit:
+            print("-" * 20)  # Separator
+            print("Attempting Git commit...")
+            try:
+                commit_msg = manager.generate_commit_message()
+                manager.run_git_commit(commit_msg, push=args.push)
+                print("Git commit process finished.")
+            except subprocess.CalledProcessError:
+                print("Git commit failed. Check log for details.")
+                # Decide if this is a fatal error for the script
+                # sys.exit(1)
+            except Exception as git_err:
+                print(
+                    f"An unexpected error occurred during Git commit: {git_err}. Check log.")
+                # sys.exit(1)
+
+        logging.info("Context Manager CMD finished successfully.")
+        print("-" * 20)
+        print("Script finished.")
+
+    except ValueError as e:
+        logging.error(f"Input Error: {e}")
+        print(f"Error: {e}")
+        sys.exit(1)
+    except Exception as e:
+        # Log traceback
+        logging.error(
+            f"An unexpected error occurred in main execution: {e}", exc_info=True)
+        print(f"An critical error occurred: {e}. Check logs.")
+        sys.exit(1)

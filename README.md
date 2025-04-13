@@ -1,43 +1,40 @@
 # GeminiTrader ♊📈
 
-**A personal project exploring the development of an LLM-enhanced cryptocurrency trading application.**
+**A personal project exploring the development of an LLM-enhanced cryptocurrency portfolio management application.**
 
-This project aims to create a dynamic and adaptable trading strategy, initially focusing on the Binance.US exchange. The core goal is to maximize capital accumulation over a very long time horizon (conceptualized as reaching "age 100"), taking into account trading fees, market dynamics, and risk management. This is purely an experimental endeavor for personal learning and use, **not financial advice**.
+This project aims to create a dynamic and adaptable portfolio strategy, initially focusing on the Binance.US exchange. The core goal is to maximize capital accumulation over a very long time horizon (conceptualized as reaching "age 100") by intelligently managing allocations across established cryptocurrencies and stablecoins, rather than relying solely on traditional trading signals or stop-losses. This is purely an experimental endeavor for personal learning and use, **not financial advice**.
 
-## Core Philosophy & Inspiration
+## Core Philosophy & Strategy
 
-- **Brachistochrone Principle Applied:** Inspired by the physics problem of finding the path of fastest descent, this project seeks the trading strategy that optimizes the _rate_ of capital growth. This involves not just picking profitable trades, but also considering the velocity of capital – how quickly it can be deployed, generate returns, and be redeployed, factoring in trading costs.
-- **LLM Enhancement:** Leverage Large Language Models (LLMs) for tasks beyond simple analysis, including:
-  - **Dynamic Strategy Generation:** Adapting trading rules based on real-time market conditions, sentiment, and news.
-  - **Advanced Sentiment/Narrative Analysis:** Interpreting news, social media, and other text sources to gauge market mood and identify emerging trends.
-  - **Complex Event Interpretation:** Understanding the potential impact of traditional finance events (Fed meetings, options expiry) on crypto markets.
-  - **Adaptive Risk Management:** Dynamically adjusting exposure based on perceived market risk and LLM analysis.
-- **High-Probability Entries:** Focus on identifying trading setups with a confluence of supporting factors (technical, quantitative, on-chain, sentiment) rather than relying on single indicators.
-- **Fee-Aware Trading:** Acknowledging that trading fees (even relatively low ones on Binance.US) impact profitability, especially for higher-frequency strategies. Strategies must generate sufficient profit _after_ fees.
-- **Long-Term Perspective & Survival:** Incorporating considerations for the long-term viability ("survival probability") of traded assets, essential for a multi-decade goal.
+*   **Dynamic Portfolio Allocation:** The primary strategic lever is the **ratio of capital allocated** across different assets within the portfolio. Success is driven by adjusting these allocations effectively based on market conditions.
+*   **Accumulation & Rebalancing (No Stop-Loss):** Instead of using stop-losses on individual positions, risk is managed through diversification across **established coins (e.g., BTC, ETH)** and by maintaining a **significant reserve in stablecoins**. Market dips are viewed as opportunities to strategically deploy stablecoin reserves ("buy the dip") to rebalance towards target asset allocations or accumulate favoured assets at lower prices.
+*   **LLM for Allocation Decisions:** Leverage Large Language Models (LLMs) to assist with higher-level strategic decisions:
+    *   Analyze market sentiment, news, and historical context to gauge overall market conditions (e.g., fear vs. greed, potential bottoms).
+    *   Inform decisions on *how much* stablecoin reserve to deploy during dips.
+    *   Potentially help adjust long-term target asset ratios based on evolving market narratives or perceived asset strengths.
+*   **Focus on Established Coins:** Limit exposure primarily to cryptocurrencies with higher market capitalization, longer track records, and higher perceived probability of long-term survival.
+*   **Stablecoin Management:** Select and utilize stablecoins (e.g., USDT, USDC) based on their stability, availability, and transaction/trading fee implications on Binance.US.
+*   **Data-Driven History:** Collect and store historical market data (klines) to provide context for LLM analysis and strategy evaluation.
 
 ## Current Architecture & Setup (Initial Phase)
 
 This project is currently set up for **exploratory development** using:
 
-1.  **VS Code + Dev Containers:** The primary development environment is managed through VS Code's Dev Containers feature. This ensures a consistent, reproducible environment using Docker.
-2.  **Docker:** Underpins the Dev Container, making the entire development environment portable and isolated.
-3.  **Jupyter Notebooks:** The initial interface for interacting with APIs, testing strategy components, visualizing data, and prototyping LLM integrations. Notebooks are run _within_ the dev container.
-4.  **Python:** The core programming language.
-    - Key libraries: `jupyterlab`, `pandas`, `numpy`, `requests`, `python-binance` (or the appropriate Binance.US API library).
+1.  **VS Code + Dev Containers:** Consistent, portable development environment via Docker.
+2.  **Docker:** Underpins the Dev Container.
+3.  **Jupyter Notebooks:** Initial interface for API interaction, data fetching/storage testing, strategy prototyping, and LLM experiments. Run *within* the dev container.
+4.  **Python:** Core programming language.
+    *   Key libraries: `jupyterlab`, `pandas`, `numpy`, `requests`, `python-binance` (or appropriate API library), `python-dotenv`.
 
-**Eventual Goal:** The long-term vision is to evolve this from an exploratory Jupyter setup into a more robust, potentially headless application running within a simple Docker container for automated execution.
+**Eventual Goal:** Evolve from Jupyter exploration into a more automated system (likely running in a Docker container) that monitors the portfolio, fetches market data, interacts with an LLM (potentially), and executes rebalancing trades based on the defined allocation strategy.
 
 ## Getting Started
 
-Follow these steps to set up and run the development environment:
-
 1.  **Prerequisites:**
-    - Install [Docker Desktop](https://www.docker.com/products/docker-desktop/).
-    - Install [Visual Studio Code](https://code.visualstudio.com/).
-    - Install the "Dev Containers" extension in VS Code (ID: `ms-vscode-remote.remote-containers`).
+    *   Install [Docker Desktop](https://www.docker.com/products/docker-desktop/).
+    *   Install [Visual Studio Code](https://code.visualstudio.com/).
+    *   Install the "Dev Containers" extension in VS Code (ID: `ms-vscode-remote.remote-containers`).
 2.  **Clone the Repository:**
-
     ```bash
     # If you haven't initialized git yet:
     # git init
@@ -50,51 +47,57 @@ Follow these steps to set up and run the development environment:
     git clone <your-repo-url>
     cd GeminiTrader
     ```
-
 3.  **Open in VS Code:**
-    - Open the `GeminiTrader` folder in VS Code (`File` > `Open Folder...`).
+    *   Open the `GeminiTrader` folder in VS Code (`File` > `Open Folder...`).
 4.  **Reopen in Container:**
-    - VS Code should detect the `.devcontainer` configuration and prompt you: "Folder contains a Dev Container configuration file. Reopen folder to develop in a container?"
-    - Click **"Reopen in Container"**.
-    - If you don't see the prompt, open the Command Palette (`Ctrl+Shift+P` or `Cmd+Shift+P`), type `Dev Containers: Rebuild and Reopen in Container`, and select it.
-    - VS Code will build the Docker image (takes time on the first run) and connect.
+    *   VS Code should detect the `.devcontainer` configuration and prompt you: "Folder contains a Dev Container configuration file. Reopen folder to develop in a container?"
+    *   Click **"Reopen in Container"**.
+    *   If you don't see the prompt, open the Command Palette (`Ctrl+Shift+P` or `Cmd+Shift+P`), type `Dev Containers: Rebuild and Reopen in Container`, and select it.
+    *   VS Code will build the Docker image (takes time on the first run) and connect.
 5.  **Install Dependencies (If needed):**
-    - The dev container should automatically install packages listed in `requirements.txt` (if configured in `devcontainer.json` or `Dockerfile`).
-    - If not, open a Terminal in VS Code (`Terminal` > `New Terminal` - this runs _inside_ the container) and run: `pip install -r requirements.txt`
+    *   The dev container should automatically install packages listed in `requirements.txt` (if configured in `devcontainer.json` or `Dockerfile`).
+    *   If not, open a Terminal in VS Code (`Terminal` > `New Terminal` - this runs *inside* the container) and run: `pip install -r requirements.txt`
 6.  **Launch JupyterLab:**
-    - In the VS Code Terminal, run:
-      ```bash
-      jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --allow-root --NotebookApp.token=''
-      ```
+    *   In the VS Code Terminal, run:
+        ```bash
+        jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --allow-root
+        # Note: Remove --NotebookApp.token='' if you prefer token auth
+        ```
 7.  **Access JupyterLab:**
-    - VS Code might automatically forward the port and allow you to connect via its Jupyter extension.
-    - Alternatively, open your web browser and navigate to `http://127.0.0.1:8888` or `http://localhost:8888`.
+    *   VS Code might automatically forward the port and allow you to connect via its Jupyter extension (check the notifications or the Jupyter tab in the side panel).
+    *   Alternatively, look for a URL in the terminal output like `http://127.0.0.1:8888/lab?token=...` and open it in your web browser.
 8.  **API Keys SECURITY:**
-    - **NEVER** commit your API keys or hardcode them directly into notebooks or scripts.
-    - Use environment variables (configurable via `.devcontainer/devcontainer.json`'s `remoteEnv` property or a `.env` file loaded by Python) or another secure method to manage your Binance.US API Key and Secret Key.
+    *   Create a `.env` file in the project root (e.g., `GeminiTrader/.env`).
+    *   Add your keys like this:
+        ```dotenv
+        BINANCE_API_KEY=YOUR_BINANCE_US_API_KEY_HERE
+        BINANCE_API_SECRET=YOUR_BINANCE_US_SECRET_KEY_HERE
+        ```
+    *   **Add `.env` to your `.gitignore` file** to prevent accidentally committing secrets.
+    *   The provided Python code examples use `python-dotenv` to load these keys.
 
 ## Usage (Initial Phase)
 
-- Use the Jupyter notebooks within the running dev container to:
-  - Connect to the Binance.US API.
-  - Fetch market data (prices, volume, order books).
-  - Experiment with technical indicators.
-  - Prototype strategy logic (entry/exit signals).
-  - Test order placement and management functions.
-  - Begin integrating LLM functionalities (e.g., pulling news, basic sentiment analysis).
+*   Use the Jupyter notebooks within the running dev container to:
+    *   Connect to the Binance.US API.
+    *   Fetch and **store historical market data (klines)**.
+    *   Track current portfolio balances.
+    *   Prototype logic for calculating portfolio allocations.
+    *   Experiment with rules for deploying stablecoin reserves.
+    *   Begin integrating LLM functionalities for market context analysis.
 
-## Roadmap / Future Goals
+## Roadmap / Future Goals (Revised)
 
-- [ ] Develop core trading logic modules.
-- [ ] Integrate robust API interaction (error handling, rate limits).
-- [ ] Implement initial LLM-driven sentiment analysis pipeline.
-- [ ] Design and test basic strategy backtesting framework.
-- [ ] Explore LLM for dynamic parameter tuning or rule generation.
-- [ ] Implement risk management rules (stop-loss, position sizing).
-- [ ] Develop basic monitoring/logging.
-- [ ] Refactor core logic from notebooks into Python modules (`.py` files).
-- [ ] Package as a standalone Docker image for background execution.
-- [ ] Consider adding a simple UI (potentially revisiting Svelte?) for monitoring _after_ core logic is stable.
+*   [ ] Implement robust historical data fetching and storage (e.g., to CSV files or database).
+*   [ ] Develop functions to accurately track current portfolio composition and value.
+*   [ ] Define and implement logic for calculating target asset allocation ratios.
+*   [ ] Develop rules/triggers for rebalancing trades (e.g., deviation thresholds, dip detection).
+*   [ ] Research and select optimal stablecoin(s) on Binance.US.
+*   [ ] Prototype LLM integration for market sentiment/context analysis to inform dip-buying decisions.
+*   [ ] Implement safe order execution logic for rebalancing trades.
+*   [ ] Develop basic monitoring/logging for portfolio changes and trades.
+*   [ ] Refactor core logic from notebooks into Python modules (`.py` files).
+*   [ ] Package as a standalone Docker image for potential automated execution.
 
 ## License
 

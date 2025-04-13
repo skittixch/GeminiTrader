@@ -1,0 +1,1016 @@
+--- Start GeminiTrader Context Block ---
+Context generated on: 2025-04-13T00:44:38.357162
+Targeting: Phase 0., Module ?
+
+---
+
+## Last Session Handover Document:
+Okay, here is the complete **GeminiTrader: Authoritative Project Plan & Roadmap v6.5** document, incorporating the Prompt Engineering best practices.
+
+-------
+
+**GeminiTrader: Authoritative Project Plan & Roadmap**
+
+**Version: 6.5 (2025-04-12 - Integrates Prompt Engineering Best Practices)**
+
+**Preamble:** This document constitutes the complete and authoritative specification for the GeminiTrader project as of the version date. It incorporates key findings from strategic research (v6.4) and **integrates best practices from modern Prompt Engineering methodologies** to enhance user-LLM collaboration and internal LLM usage (v6.5). It is designed to be self-contained and serve as the Single Source of Truth (SSoT) for development. All previous versions or fragmented discussions are superseded by this plan. Future iterations will produce a new, complete version of this document.
+
+**0. Instructions for Assisting LLM (Meta-Guidance - Enhanced with Prompt Engineering Principles)**
+
+**(Note to LLM Assistant: This document (v6.5) serves as the primary specification and roadmap for the GeminiTrader project. Your assistance must strictly adhere to the guidelines below and the phased implementation plan detailed herein. This project plan is the primary source of truth for requirements and phasing. It incorporates strategic refinements (v6.4) and explicit prompt engineering best practices (v6.5). Your effectiveness is directly tied to how well you interpret and apply these instructions.)**
+
+A.  **Primary Goal:** Your central task is to assist the user in implementing all phases and modules of the GeminiTrader project. The core strategy is a hybrid approach combining intelligent DCA, adaptive geometric dip-buying, and a sophisticated confidence/adaptive decision-making layer. All operations use a hybrid risk management philosophy. **Achieving this requires effective communication and prompt interpretation.**
+B.  **Code Generation (Python & python-binance for Binance.US):**
+    *   Provide accurate, complete, modular, and efficient Python code (version 3.10+).
+    *   Code must be tailored specifically for interacting with the Binance.US exchange using the `python-binance` library (`tld='us'`).
+    *   Follow Python best practices and `python-binance` library conventions.
+    *   **Formatting is CRITICAL (Strict Adherence Required):**
+        *   **Self-Contained Runnable Code Blocks:** Generate complete, copy-pasteable code suitable for direct execution in the appropriate context (usually a `.py` module file within the `src/` directory, or occasionally a Jupyter cell for testing/analysis). Ensure all necessary imports and variable definitions (or explicit prerequisites) are included within each block.
+        *   **Imports Included:** Place ALL necessary import statements at the beginning of each code block/file.
+        *   **Variable Definitions:** Define all variables within the block OR explicitly state which variables are prerequisites from specific prior steps/modules defined within this document (v6.5).
+        *   **No Placeholders:** Provide full, working logic – avoid `... # implementation detail`, `# TODO`, or similar omissions. Implement the complete functionality described for the requested module/step.
+        *   **Explanatory Comments Only:** Use comments (`#`) solely for clarifying complex logic, algorithmic choices, or intent, not as instructions to the user within the code. Avoid commented-out functional code unless it represents a clear, alternative path explicitly discussed and chosen as optional.
+        *   **Proper Try/Except:** NEVER use single-line `try...except`. Ensure `try:`, `except Exception as e:`, and `finally:` (if used) start on separate, correctly indented lines. Include meaningful logging (using the configured logger) within `except` blocks to capture error details. Raise exceptions appropriately to signal failure when necessary.
+        *   **Modular Structure:** Generate code organized into functions and classes within the appropriate `.py` files in the `src/` directory structure (outlined in Section 3). Promote reusability, testability, and separation of concerns. Adhere to the specified module structure for each phase.
+        *   **Logging Verbosity:** Adhere to the logging strategy defined in Phase 0. Default to `logging.debug()` for high-frequency internal operations (e.g., checking order status repeatedly, individual backtest steps, loop iterations). Use `logging.info()` for significant milestones (script start/end, successful API connection, strategy signal generated, order placement attempt/success, configuration loading, phase module completion). Use `logging.warning()` for recoverable issues or potential problems (e.g., filter failure resulting in a skipped order, cache miss requiring API fetch, low confidence overriding an action). Use `logging.error()` or `logging.exception()` for unrecoverable errors or failures requiring attention. Minimize INFO logs within tight loops to avoid excessive noise.
+    *   **Prompting for Code:**
+        *   **Specificity:** Interpret user requests precisely. If a request is ambiguous, ask for clarification before generating code (aligns with whitepaper: "Be specific about the output").
+        *   **Context is Key:** Leverage the SSoT (this document, v6.5) as the primary context. Understand the current phase and module requested.
+        *   **Use Examples (Few-Shot Principle):** If the user provides examples of desired code patterns or structures, use them as a strong guide for your generation (aligns with whitepaper: "Provide examples").
+        *   **Chain of Thought (Internal):** For complex code generation requests, you might internally use a Chain of Thought approach to break down the problem before generating the final code, ensuring all constraints and requirements are met.
+        *   **Output Structure:** If the user requests a specific structure (e.g., "generate the class skeleton first", "provide the function signature and docstring"), adhere to that structure.
+C.  **Interaction & Assistance (Applying Prompting Techniques):**
+    *   **Clarification is Key:** Proactively ask questions if project requirements, strategic intentions, technical details, or the user's prompt itself are unclear based on this document (v6.5). **Do not guess.**
+    *   **Proactive Guidance:** Identify potential challenges, edge cases, or improvements based on the project's goals and the current phase. Suggest robust solutions aligned with the overall philosophy.
+    *   **Adherence to Plan:** Follow the phased implementation order (0-9). Guide the user back if requests deviate significantly.
+    *   **Emphasize Automation & Resilience:** Frame suggestions with the goal of an autonomous, robust system.
+    *   **Leverage Prompting Techniques:**
+        *   **Contextual Prompting:** Always use the provided context (this SSoT, recent conversation history, specific code snippets provided by the user) to inform your responses.
+        *   **System/Role Prompting Awareness:** Recognize that the user might provide overarching instructions defining your role (e.g., "Act as a senior Python developer specializing in finance APIs") or the system's context. Adhere to these instructions.
+        *   **Chain of Thought (CoT) for Reasoning:** When the user asks for explanations, analysis, or complex problem-solving (not just code), provide step-by-step reasoning (like CoT) to ensure clarity and allow the user to verify your logic. Use a low temperature (e.g., 0) for such reasoning tasks if you have control over it, as per CoT best practices.
+        *   **Step-Back Prompting:** If a specific user request seems overly narrow or potentially misses a broader point, implicitly or explicitly take a "step back" by asking about the higher-level goal or relating it to the overall strategy in this SSoT.
+        *   **Instructions over Constraints:** Focus on fulfilling the positive instructions provided by the user and this SSoT. Rely on constraints primarily for safety, security, or explicit negative requirements.
+    *   **Iterative Process:** Understand that prompt engineering is iterative. Expect refinement of prompts from the user based on your outputs. Learn from feedback.
+D.  **Specific Implementation Conventions (Mandatory):**
+    *   **API Keys:** All code interacting with external APIs must load credentials securely from the `.env` file via the `config/settings.py` module. Never hardcode keys or secrets.
+    *   **Client Initialization:** Keep `Client(...)` initialization separate from its usage for data calls, typically within connector classes.
+    *   **No Scientific Notation:** Ensure ALL numerical output (logging, console prints, DataFrame displays, file outputs) strictly avoids scientific notation using `Decimal.to_eng_string()`, f-strings (`f'{my_decimal:.8f}'`), or pandas options (`pd.set_option('display.float_format', ...)`) consistently. 🚫🔬
+    *   **Precise Math (Decimal):** MANDATORY use of Python's `Decimal` type with adequate precision (e.g., `getcontext().prec = 28`) for ALL financial calculations (prices, quantities, values, percentages, fees, balances). Perform explicit type conversions from API responses (strings/floats) to `Decimal` immediately upon receipt where necessary. #️⃣
+    *   **Logging Setup:** Implement logging via the `src/utils/logging_setup.py` module configured according to `config/settings.py`. Use the obtained logger instance throughout the application.
+    *   **Dependencies:** Manage all external libraries via `requirements.txt`. Ensure version compatibility, especially noting `numpy<2.0` for `pandas-ta`.
+    *   **Dynamic S/R:** Calculations must use rolling windows on the appropriate timeframe's historical data, potentially using pivot/clustering methods. Backtesting must simulate this dynamic calculation realistically.
+    *   **Filter Validation:** ALWAYS perform pre-computation checks against cached exchange filters (minQty, stepSize, tickSize, minNotional) before making an API call to place an order. Log skipped orders due to filter failures clearly.
+    *   **Internal LLM Usage (Later Phases):** When generating prompts or logic for the *internal* `llm_analyzer.py` component (Phases 4, 5, 7), prioritize:
+        *   **Structured Output:** Design prompts that explicitly request structured output (e.g., JSON) for easier parsing.
+        *   **Schema Usage:** Define and include a clear schema (like JSON Schema) within the prompt when requesting structured data to guide the LLM's output format and reduce hallucinations (aligns with whitepaper: "Working with Schemas").
+        *   **Temperature/Sampling Control:** Recommend appropriate settings (e.g., lower temperature, specific Top-P) for internal LLM calls to balance creativity and factual accuracy based on the task (e.g., lower temp for classification, potentially higher for summarization).
+E.  **Handover Document Generation Task (Standalone Definition):**
+    *   **Purpose:** To create a concise summary of a specific development session, facilitating context transfer between sessions or collaborators. This document supplements the main Authoritative Project Plan (this document, v6.5).
+    *   **Trigger:** Generation occurs ONLY when the user explicitly requests it using phrases like: "create a handover document", "generate the handover doc", "update the handover summary". Do not generate based on formatting or section headers alone.
+    *   **Action:** Upon receiving the trigger, synthesize the conversation history strictly from the point the last handover document was generated (or from the beginning if it's the first).
+    *   **Content Extraction (Based ONLY on Conversation History):** Extract and structure the following information:
+        *   Project Goal: A brief (1-2 sentence) reminder of the GeminiTrader objective (long-term automated growth via hybrid strategy with adaptive sizing, risk management, and effective LLM interaction).
+        *   Session Focus & Current Status: Identify the primary Phase(s) and Module(s) that were the focus of the current session. Clearly state the last completed action or the point where development stopped within the active module(s).
+        *   Key Files/Modules Implemented or Modified (Session): List the specific `src/ .py` files or `notebooks/ .ipynb` files created or significantly altered during this session.
+        *   Authoritative Roadmap Reference: Include the statement: "The authoritative project plan is Document Version 6.5. The current focus of implementation is Phase [X], Module [Y.Z]." (Fill in X and Y.Z based on the session's stopping point in the plan below).
+        *   Key Learnings, Decisions & Conventions Established (Session): Summarize any new strategic insights, significant algorithmic decisions, critical implementation choices, coding standards newly introduced or reinforced, **or key prompt engineering strategies/challenges encountered** during this session.
+        *   Code Highlights (Optional): If particularly relevant or requested by the user, include 1-2 concise code snippets implemented during the session that exemplify a key logic piece or prompt structure.
+        *   User Directives (Session): Briefly list any overarching or critical instructions the user provided to the LLM during the session that guided the development direction (e.g., "Use Chain of Thought for explaining the backtest results," "Ensure the prompt for the LLM analyzer requests JSON output").
+        *   Actionable Next Steps: Clearly state the immediate next module(s) or action(s) to be implemented according to the phased plan detailed in this v6.5 document. Be specific (e.g., "Implement the `calculate_dynamic_zones` function in `src/analysis/support_resistance.py` using pivot clustering as per Phase 3.3").
+    *   **Formatting:** Generate the output in Markdown format. Use clear headings for each section. Maintain a neutral, professional tone. If the user employs a specific style (e.g., emojis), mimic it subtly where appropriate.
+    *   **Constraint:** The content must be based exclusively on the conversation history of the summarized period. Do not infer information not present in the chat log.
+**(End of Instructions for Assisting LLM)**
+
+**1. Core Philosophy & Strategy Foundation**
+
+*   **Overall Goal:** To engineer and continuously refine a fully autonomous cryptocurrency trading and accumulation system, GeminiTrader. Its primary directive is substantial, multi-decade capital growth (conceptual "rich by 100" target), achieved through intelligent navigation of market dynamics, inherent volatility, and potential future systemic disruptions, all while operating with minimal human intervention.
+*   **Hybrid Strategy Engine - The Triad of Operation:**
+    *   **Intelligent Accumulation (Automated DCA):** Forms the consistent capital injection mechanism. Implements a disciplined, automated Dollar-Cost Averaging strategy, decoupled from direct bank balance monitoring initially. Triggered by a pre-defined schedule aligned with estimated income patterns (e.g., semi-monthly using `schedule` library), deploying a configurable base USD amount. This baseline DCA reduces timing risk for core positions and ensures persistent market participation. Future phases enhance this with dynamic adjustments based on market conditions (confidence scores modulating amount/frequency) and fully automated bank funding integration. Aims to consistently build core positions.
+    *   **Volatility Harvesting (Adaptive Geometric Dip-Buying):** The primary active trading mechanism. Employs a layered strategy across multiple, configurable timeframes (e.g., 1h, 4h, 1d). Strategically places LIMIT BUY orders at **volatility-adjusted geometrically spaced** price intervals below the current market price (informed by S/R, trendlines, ATR, and current price action), featuring geometrically increasing order sizes. **Crucially, dip-buying is filtered by higher-timeframe trend confirmation** (avoiding entries in strong downtrends). Aims to systematically profit from price oscillations while managing risk in trending markets. Maximum order counts or total position size limits act as pseudo-stop mechanisms.
+    *   **Predictive & Contextual Intelligence Layer (Confidence & Adaptive Decision-Making):** GeminiTrader transcends simple reactive trading by incorporating predictive elements informed by a vast data ecosystem. It integrates: Technical Analysis (Indicators, Dynamic S/R Zones via pivots/clustering, Algorithmic Trendlines with reliability scoring), Market Microstructure (Order Book Dynamics), External Context (News Feeds - LLM Sentiment/Topic/Magnitude, Crypto Categories/Narratives, Macro Data), Social & Behavioral Signals (Influencer Tracking/Sentiment, Market Psychology Indicators), Long-Term Models & Cycles (Power Law, Rainbow, S2F, MVRV, Halving analysis), and insights from Academic Research. This data dynamically feeds a composite **Confidence Score**, quantifying conviction (potentially calibrated towards a probability via meta-labeling or ensemble weighting in later phases). This score directly modulates: **Adaptive Position Sizing** (using principles inspired by fractional Kelly Criterion - higher confidence justifies larger size allocations), Dynamic Profit Target calculations (adjusting targets based on confidence), DCA amount/frequency adjustments, and grid spacing/aggressiveness.
+*   **Hybrid Risk Management (Avoiding Price-Based Stops):** Fundamentally rejects conventional price-based stop-losses for active trades to avoid whipsaws and stop-hunts, *but implements robust alternative risk controls*. Manages risk holistically through:
+    *   **Adaptive Position Sizing:** Small initial entries, confidence-scaled allocations (primary risk control).
+    *   **Capital Flow Management:** Consistent DCA, strategic stablecoin reserves.
+    *   **Dynamic Profit Taking:** Proactive gain realization based on confidence, volatility, S/R, time-decay.
+    *   **Confidence Modulation:** Reducing exposure/aggressiveness in low-conviction states.
+    *   **Time-Based Position Evaluation & Exits:** Reassessing and potentially exiting stagnant or invalidated trades based on time elapsed (time stops).
+    *   **Conditional Exits:** Potential exits triggered by volatility extremes or invalidation of the core trade thesis (indicator-based or logic-based stops).
+    *   **Geometric Grid Limits:** Maximum number of grid levels or total position size caps per asset/strategy.
+    *   **Higher-Timeframe Trend Filtering:** Preventing dip-buys during confirmed downtrends.
+    *   **Strict Exchange Filter Compliance:** Preventing execution errors.
+    *   **Long-Term Assumption Validation:** Monitoring model decay and market regime shifts.
+    *   **Catastrophic Event Response Framework:** Portfolio-level maximum loss triggers or systemic risk responses (e.g., flatten to stables).
+*   **Full Automation & Self-Sufficiency:** Designed for minimal intervention over extended periods. Aims for complete end-to-end automation (funding, trading, logging, state management) with minimal required user interaction. Includes self-monitoring and alerting. Intends to eventually self-fund operational costs.
+*   **Data-Driven Evolution & Academic Grounding:** Incorporates mechanisms for continuous improvement via rigorous backtesting, live performance analysis, ML model retraining (later phases), integration of quantitative finance research, **documentation of prompt engineering strategies & attempts (see Section 2 & RESEARCH.md)**, and periodic optimization of external dependencies ("Composer Agent").
+*   **Lean & Efficient Infrastructure:** Follows a local-first development model. Employs value-driven, adaptive data polling. Mindful of costs. Scalable architecture.
+*   **Most Important Foundational Pillars (Implementation Order):**
+    1.  Core Trading Engine (Volatility-Adjusted Geometric Dip-Buying + Basic Dynamic TP).
+    2.  Robust Data Handling, Configuration & State Management.
+    3.  Exchange Filter Compliance.
+    4.  Backtesting Framework (Simulating adaptive sizing, time stops, grid limits).
+    5.  DCA Logic & Semi-Automated Funding Pipeline.
+    6.  Initial Confidence Layer & Adaptive Sizing Logic.
+    7.  Alternative Risk Controls (Time Stops, Conditional Exits, Max Limits).
+
+**2. Development Workflow Strategy (User & LLM Collaboration - Enhanced with Prompt Engineering Workflow)**
+
+*   **Single Source of Truth (SSoT):** This document (v6.5) is the authoritative reference.
+*   **Phased Implementation:** Development proceeds phase by phase (0 through 9), focusing on the modules and actions defined within each phase as outlined below. The user will direct the LLM assistant by requesting implementation of specific steps from the current phase of this SSoT document (e.g., "Implement Phase 1, Step 1.1: Market Data Fetching").
+*   **LLM Code Generation:** LLM assistant generates complete, modular, runnable Python code adhering strictly to the LLM Instructions (Section 0 above) and the specific requirements of the requested module/step from this plan (v6.5). Code is generated for `.py` files within the `src/` directory structure or as test snippets for notebooks.
+*   **User Testing & Debugging:** The user integrates the generated code into the project structure, runs it, performs unit tests (later phases), integration tests (using notebooks or scripts), backtests strategy changes, and debugs any issues. The user collaborates with the LLM for debugging assistance, providing error messages and context.
+*   **Iterative Refinement & Prompt Engineering:** Based on testing and analysis, the user and LLM refine code, config, or strategy. **This explicitly includes refining the *prompts* given to the LLM assistant.** If an LLM output is suboptimal, the user should iterate on the prompt (e.g., adding clarity, examples, context, or using different techniques like CoT) before asking the LLM to try again. Significant deviations from this plan (including major shifts in prompting strategy) require SSoT updates.
+*   **Prompt Documentation (New Step / Integration):** **Crucially, maintain a record of significant prompt attempts**, especially for complex tasks or internal LLM use cases (e.g., in `RESEARCH.md` or a dedicated `PROMPTS.md`). Use a structured format (similar to whitepaper Table 21: Name/Version, Goal, Model Used, Temp/TopK/P, Full Prompt Text, Output(s), OK/Not OK/Sometimes OK, Feedback/Analysis). This facilitates learning, debugging, and consistency. Link saved prompts (e.g., from Vertex AI Studio) if possible.
+*   **Handover Document Generation (Context Transfer):** As a development session concludes, or when the LLM's context window is nearing capacity, or upon completion of a major module/phase, the user will prompt the LLM assistant to "create a handover document". The LLM generates a session summary per the specifications in Section 0.E, based only on that session's conversation history.
+*   **Updating the Single Source of Truth (SSoT):** Periodically (e.g., after completing a major phase, incorporating significant refinements, or receiving a Handover Doc), the user will take the latest Handover Document(s) and this Project Plan (v6.5) and either manually update the plan to create the next version (e.g., v6.6) or provide both documents to a fresh LLM instance to synthesize them into the next authoritative version. This ensures the SSoT remains the current, comprehensive guide, including **evolved prompting strategies**.
+*   **Long-Term Goal (Agentic System):** The clearly defined SSoT, modular code structure, **documented prompts**, and traceable history via Handover Docs are designed to facilitate potential future integration with or handoff to more advanced AI agentic systems for continued development or operational oversight.
+
+**3. Project Directory Structure (Conceptual)**
+
+```
+geminitrader/
+│
+├── .venv/                  # Python virtual environment
+├── config/                 # Configuration files
+│   ├── __init__.py
+│   ├── settings.py         # Loads config & environment vars
+│   └── config.yaml         # Core parameters, API endpoints, feature flags, strategy params (grid spacing, ATR multiplier, max levels, sizing rules)
+│   └── asset_categories.yaml # Asset -> Category mapping
+│   └── influencers.yaml      # Curated influencer list & tiers
+│
+├── data/                   # Persistent data (!!! GITIGNORE THIS DIR !!!)
+│   ├── cache/              # Cached API responses (exchange info, klines etc.)
+│   │   └── exchange_info.json
+│   ├── db/                 # Database files
+│   │   └── geminitrader_log.db
+│   ├── logs/               # Log files
+│   │   └── trader.log
+│   │   └── pipeline.log
+│   ├── models/             # Saved ML models & scalers
+│   │   ├── tp_model.pkl
+│   │   └── confidence_scaler.pkl
+│   └── backtests/          # Saved backtest results/reports
+│
+├── notebooks/              # Jupyter notebooks
+│   ├── 00_Setup_Check.ipynb
+│   ├── 01_MVP_Backtest.ipynb
+│   ├── 02_DCA_Pipeline_Test.ipynb
+│   ├── 03_Live_Monitoring_Dashboard.ipynb
+│   ├── 04_ML_Model_Training.ipynb
+│   └── 05_Research_Analysis.ipynb
+│
+├── scripts/                # Standalone utility/operational scripts
+│   ├── run_dca_pipeline.py # Manual trigger for funding steps
+│   ├── flatten_positions.py # Utility to sell all non-quote assets (Catastrophic Stop action)
+│   ├── optimize_pipeline.py # The Composer Agent (Phase 8)
+│   ├── run_backtest.py      # CLI interface for backtester
+│   └── db_manage.py         # Database migration/management script
+│
+├── src/                    # Core source code (Python package)
+│   ├── connectors/         # Interface with external APIs
+│   │   ├── __init__.py
+│   │   ├── base_connector.py # Abstract base class
+│   │   ├── binance_us.py     # Binance.US specific implementation
+│   │   ├── coinbase.py       # For DCA funding pipeline
+│   │   └── plaid_connector.py  # Optional, for bank integration
+│   ├── strategies/         # Core trading and DCA logic
+│   │   ├── __init__.py
+│   │   ├── geometric_grid.py # Volatility-adjusted dip-buying logic, sizing rules
+│   │   ├── dca.py            # DCA calculation logic (confidence modulated)
+│   │   ├── profit_taking.py  # Dynamic TP logic (confidence modulated)
+│   │   └── risk_controls.py  # Time stops, conditional exits, grid limits
+│   ├── data/               # Data fetching, processing, caching
+│   │   ├── __init__.py
+│   │   ├── kline_fetcher.py
+│   │   ├── orderbook_fetcher.py
+│   │   ├── news_fetcher.py
+│   │   ├── influencer_tracker.py
+│   │   └── long_term_model_fetcher.py # Fetches/calculates PL, Rainbow, etc.
+│   ├── analysis/           # Data analysis and signal generation
+│   │   ├── __init__.py
+│   │   ├── indicators.py     # TA indicators (ATR, SMA, RSI, MACD, Pivots)
+│   │   ├── support_resistance.py # Dynamic zone calculation (pivot clustering)
+│   │   ├── trendlines.py       # Algorithmic trendline detection (scored reliability)
+│   │   ├── confidence.py       # Confidence score calculation (multi-factor, calibrated)
+│   │   ├── orderbook.py        # OB analysis (walls, spoofing, etc.)
+│   │   ├── llm_analyzer.py     # News/Sentiment/Topic analysis via LLM
+│   │   ├── risk_monitor.py     # Black swan event monitoring, systemic risk
+│   │   ├── behavioral.py       # Basic psych modeling (Fear/Greed, time-of-day)
+│   │   └── assumption_validator.py # Checks long-term models vs reality
+│   ├── db/                 # Database interaction layer
+│   │   ├── __init__.py
+│   │   ├── manager.py        # Connection, execution methods
+│   │   └── models.py         # (Optional) SQLAlchemy models for ORM
+│   │   └── schema.sql        # SQL schema definition
+│   ├── ml/                 # Machine learning models
+│   │   ├── __init__.py
+│   │   ├── tp_model.py         # Profit target prediction model
+│   │   └── confidence_model.py # Confidence scoring model (potential meta-labeling)
+│   ├── utils/              # General utility functions
+│   │   ├── __init__.py
+│   │   ├── formatting.py     # Decimal formatting, filter adjustments
+│   │   ├── logging_setup.py  # Logging configuration
+│   │   ├── caching.py        # Caching decorators/functions
+│   │   └── categorizer.py      # Asset category lookup
+│   ├── backtester/         # Backtesting engine
+│   │   ├── __init__.py
+│   │   └── engine.py         # Must simulate adaptive sizing, risk controls accurately
+│   ├── dashboard/          # Code for TUI or Web dashboard (Phase 9)
+│   │   └── __init__.py
+│   │   └── app.py            # (Example if using Flask/Dash/Streamlit)
+│   ├── __init__.py         # Makes src a package
+│   └── main_trader.py      # Main live trading loop script
+│   └── state_manager.py    # Handles live state persistence/recovery
+│   └── scheduler.py        # Manages periodic task execution
+│
+├── tests/                  # Unit and integration tests
+│   ├── __init__.py
+│   ├── test_connectors.py
+│   ├── test_strategies.py
+│   ├── test_utils.py
+│   └── test_db.py
+│   └── test_risk_controls.py
+│
+├── .env                    # API keys and secrets (GITIGNORE!)
+├── .gitignore
+├── Dockerfile              # For containerizing the application (Phase 8+)
+├── docker-compose.yml      # For managing multi-container setups (Phase 8+)
+├── requirements.txt
+└── README.md               # Project overview, setup, usage, research links
+└── RESEARCH.md             # Links strategies to academic/quant concepts (Kelly, Meta-labeling, Time Stops, SR Algo Refs)
+└── PROMPTS.md              # (Optional but Recommended) Detailed documentation of key prompts used
+```
+
+**4. GeminiTrader Project Plan: Phased Modular Development (Detailed - v6.5)**
+
+**(LLM Assistant: Implement steps referencing v6.5 guidelines. Pay attention to notes regarding internal LLM prompt engineering.)**
+
+**Phase 0: Setup & Foundational Tools (The Workbench)**
+Goal: Create the project scaffolding, establish API connectivity, implement precise math/filter utilities, setup logging, define DB schema.
+*(User-LLM interaction governed by Section 0 & 2 updates)*
+
+*   0.1. Module: Project Setup & Environment
+    *   Action: Guide user to create the directory structure (per Section 3 diagram).
+    *   Action: Guide user: initialize `.venv`, activate, `pip install -r requirements.txt`.
+    *   Action: Provide full `.gitignore` content.
+*   0.2. Module: Configuration Management (`config/`)
+    *   Action: Generate initial `config/config.yaml` including api, trading (add sections for grid params like spacing factor, ATR multiplier, max levels, sizing rules), database, logging, cache sections with initial constants.
+    *   Action: Generate `config/settings.py` loading YAML/.env into a settings object/dict, ensuring `Decimal` for financial values and validating API keys.
+    *   Action: Remind user to create/populate `.env`.
+*   0.3. Module: API Connectivity (`src/connectors/binance_us.py`)
+    *   Action: Generate `BinanceUSConnector` class with robust `__init__`, `_connect`, `test_connection`.
+    *   Action: Implement filter caching (`_fetch_exchange_info`, `_load_exchange_info`, `get_cached_symbol_filters`) parsing to `Decimal`.
+    *   Action: Implement basic API methods (`get_account_balances`, `get_latest_price`, `get_order_book_depth`, `get_order_status`, `cancel_order`, `place_limit_order`) using `Decimal`, formatted strings for API calls, and custom exceptions.
+*   0.4. Module: Core Utilities (`src/utils/`)
+    *   Action: Generate `src/utils/formatting.py` with rigorously tested `Decimal`-based filter helpers (`adjust_price_to_tick_size`, `adjust_qty_to_step_size`, `check_min_notional`).
+    *   Action: Generate `src/utils/logging_setup.py` with `setup_logging(settings)` function.
+*   0.5. Module: Database Setup (`src/db/`)
+    *   Action: Generate `src/db/schema.sql` with `CREATE TABLE IF NOT EXISTS` statements for all initial tables (Trades, PortfolioHistory, DCAHistory, ConfigHistory, AssetInfo, Filters, SRZones, Trendlines, ConfidenceLog). Use appropriate types (TEXT for Decimals). Add indexes.
+    *   Action: Generate `src/db/manager.py` with `DatabaseManager` class (connection pool, basic CRUD helpers).
+    *   Action: Generate basic `log_trade` function in `manager.py`.
+    *   Action: Generate `scripts/db_manage.py --action create`. Guide user.
+
+**Phase 1: MVP - Core Trading Engine & Basic Backtesting (The First Run) 📈⚙️**
+Goal: Implement and validate the core *volatility-adjusted* geometric dip-buying / fixed-TP logic via backtesting, including *basic adaptive sizing* and *grid limits*.
+*(User-LLM interaction governed by Section 0 & 2 updates)*
+
+*   1.1. Module: Market Data Fetching (`src/data/kline_fetcher.py`)
+    *   Action: Implement `fetch_and_prepare_klines` (fetches, converts prices/volumes to `Decimal`, sets UTC index, calculates basic indicators like ATR).
+    *   Action: Generate `scripts/fetch_historical_data.py` CLI tool to fetch and save data to `data/cache/` or directly to DB.
+*   1.2. Module: MVP Strategy Logic (`src/strategies/geometric_grid.py`, `src/strategies/simple_tp.py`, `src/analysis/indicators.py`)
+    *   Action: `indicators.py`: Implement basic `calculate_atr`.
+    *   Action: `geometric_grid.py`: Implement `plan_buy_grid_v1` function:
+        *   Calculates levels using **volatility-based geometric spacing** (e.g., current price - N * ATR * geometric_factor^level).
+        *   Calculates order sizes using geometric scaling AND incorporates **basic adaptive sizing** (e.g., base size * confidence_tier_multiplier). *Initially, confidence can be mocked or based on simple RSI/MACD.*
+        *   Applies **maximum grid levels** and **maximum total position size** limits from config.
+        *   Adjusts price/qty using `formatting.py` utils.
+        *   Checks filters/budget.
+        *   Returns feasible orders list.
+    *   Action: `simple_tp.py`: Implement `calculate_fixed_tp_price` (e.g., entry + fixed percentage or ATR multiple).
+*   1.3. Module: Backtesting Engine (`src/backtester/engine.py`, `notebooks/01_MVP_Backtest.ipynb`)
+    *   Action: `engine.py`: Implement `Backtester` class.
+        *   Simulates portfolio, orders, fills (checking H/L), fees, filter failures.
+        *   Calls strategy modules (`plan_buy_grid_v1`, `calculate_fixed_tp_price`).
+        *   **Crucially simulates adaptive sizing logic and enforces grid limits.**
+        *   Logs simulated trades to DB.
+        *   Calculates metrics (Sharpe, Sortino, Max Drawdown, Win Rate, Profit Factor).
+        *   Generates plot data.
+    *   Action: `01_MVP_Backtest.ipynb`: Code cells to load data/filters, configure/run `Backtester`, print metrics, plot equity vs HODL. Guide analysis. **Mandatory validation step.**
+*   1.4. Module: Database Logging (Simulation)
+    *   Action: Ensure `log_trade` function handles simulated data (e.g., `source='backtest'`). Integrate calls within `Backtester`. Log confidence score used for sizing.
+
+**Phase 2: DCA Logic & Semi-Automated Funding (Getting Capital In) 💰➡️**
+Goal: Define schedule-based DCA logic, set up initial semi-automated low-fee pipeline. *Confidence modulation introduced later.*
+*(User-LLM interaction governed by Section 0 & 2 updates)*
+
+*   2.1. Module: DCA Calculation (`src/strategies/dca.py`)
+    *   Action: Add `dca` section to `config.yaml` (schedule, base_amount, target_asset).
+    *   Action: Implement `calculate_dca_amount_v1(config)` based on schedule/fixed amount. *Note: V2 will add confidence modulation.*
+*   2.2. Module: Funding Pipeline Components (`src/connectors/coinbase.py`, `src/funding_pipeline.py`)
+    *   Action: Implement `CoinbaseConnector` class (requires `pip install coinbase`). Focus on Buy/Withdrawal needed for pipeline.
+    *   Action: Implement `FundingPipeline` class with state machine logic and methods for each step (e.g., Check Bank -> Buy on Coinbase -> Withdraw -> Confirm Binance Deposit). Logs to `DCAHistory`. Implement basic error handling and retries.
+*   2.3. Module: Semi-Automated Pipeline Script (`scripts/run_dca_pipeline.py`)
+    *   Action: Create CLI script using `argparse`. Prompts user for confirmation at key steps (e.g., before withdrawal), calls `FundingPipeline` methods.
+*   2.4. Module: Live Engine DCA Trigger (`main_trader.py` placeholder)
+    *   Action: Add scheduled check in `main_trader.py` draft (using `schedule` library) to call `calculate_dca_amount_v1` and log/notify user to run the pipeline script.
+
+**Phase 3: Intelligence Layer 1 (Live) - Dynamics, TA, Initial Confidence & Risk Controls 🤖📉▶️**
+Goal: Enhance live engine with core TA, dynamic rule-based TP (confidence-modulated), S/R (pivot/cluster based), trendlines (scored), initial confidence, **adaptive sizing**, and **basic risk controls (time stops)**. Validate live.
+*(Focus on core logic implementation; user-LLM interaction governed by Section 0 & 2 updates)*
+
+*   3.1. Module: Live Indicator Calculation (`src/analysis/indicators.py`, `main_trader.py`)
+    *   Action: Implement live calculation/updating of required indicators (ATR, SMA, RSI, MACD, Pivots) using fetched klines. Store latest values in `StateManager`.
+*   3.2. Module: Live Dynamic Profit Targets (`src/strategies/profit_taking.py`, `main_trader.py`)
+    *   Action: Implement `calculate_dynamic_tp_price` using live ATR from state. **Crucially, modulate the TP target based on the current Confidence Score** (e.g., higher confidence => larger ATR multiple/target, lower confidence => smaller target).
+*   3.3. Module: Live S/R Detection (`src/analysis/support_resistance.py`, `main_trader.py`)
+    *   Action: Implement `calculate_dynamic_zones`: Use rolling window **pivot point detection** (e.g., highest/lowest in N bars). Apply **clustering** (e.g., proximity merge) to group nearby pivots into zones. **Score zones** based on # pivots, recency, volume confirmation (if available). Store active, significant zones in `StateManager`. Schedule recalculation.
+*   3.4. Module: Live S/R Integration (`src/strategies/geometric_grid.py`, `src/strategies/profit_taking.py`)
+    *   Action: Modify `plan_buy_grid` to potentially adjust entry levels near **highly scored support zones**. Modify TP calculation to consider proximity to **highly scored resistance zones**.
+*   3.5. Module: Live Confidence Score V1 (`src/analysis/confidence.py`, `main_trader.py`)
+    *   Action: Implement `calculate_confidence_v1` using live technicals (e.g., RSI level, MACD state, trend indicators, proximity to S/R). Output a score (e.g., 0-1 or categories). Store in `StateManager`.
+    *   Action: Integrate score to modulate **live grid sizing (adaptive sizing factor)** and **TP multiplier**. Log confidence score with trade decisions.
+*   3.6. Module: Live Dynamic Trendline Detection & Adjustment (`src/analysis/trendlines.py`, `main_trader.py`)
+    *   Action: Implement `detect_trendlines`: Connect significant, recent pivots. Require **confirmation touches** (e.g., >= 3). **Score reliability** based on touches, length, slope. Store active, reliable lines in `StateManager`.
+    *   Action: Implement logic in `main_trader.py` to check if active orders align with trendlines. Implement **state tracking & cancel/replace logic** if a reliable trendline is broken or a new one forms.
+*   3.7. Module: Live Time-Based Trade Evaluation & Exit (`src/strategies/risk_controls.py`, `main_trader.py`)
+    *   Action: Implement tracking of open trade duration (e.g., time since fill).
+    *   Action: Implement `check_time_stop` function: If a trade exceeds a configurable duration AND is unprofitable/stagnant AND/OR confidence score has dropped significantly, **trigger an exit (market sell)**. This acts as a primary non-price-based stop. Log reason for exit.
+*   3.8. Module: Live Execution Script (`main_trader.py`) & Validation
+    *   Action: Develop the full script orchestrating the live loop: fetch data -> update state (indicators, S/R, TLs, confidence) -> check for DCA -> check open orders/positions -> evaluate risk controls (time stops) -> plan new grid orders (using S/R, TLs, confidence for sizing/spacing) -> place/cancel orders -> log everything.
+    *   Action: Run live with paper trading or very small capital. Monitor logs/DB closely. Compare performance vs backtest. **Crucial validation.**
+
+**Phase 4: Intelligence Layer 2 (Live) - External Context & Behavior 📰��🎭**
+Goal: Integrate news, sentiment, categories, basic behavioral signals to enhance Confidence V2.
+
+*   4.1. Module: News Feed Aggregation (`src/data/news_fetcher.py`)
+    *   Action: Implement RSS/API fetching from configured sources (e.g., crypto news sites). Store new items in DB `NewsItems` table.
+*   4.2. Module: LLM Sentiment, Topic, Magnitude Analysis (`src/analysis/llm_analyzer.py`)
+    *   Action: Implement `LLMAnalyzer` class (using local model or API). Define prompts. **Note on Prompt Engineering:** Prompts sent to this internal LLM should be carefully crafted:
+        *   Use **System Prompting** to define the LLM's task clearly (e.g., "You are an expert financial news analyst. Analyze the following text for sentiment, key topics related to cryptocurrency assets, and estimate the potential market impact magnitude").
+        *   Specify **structured output (JSON)** using a defined schema within the prompt (see whitepaper: "Working with Schemas"). Example Schema: `{"sentiment": "POSITIVE|NEGATIVE|NEUTRAL", "topics": ["BTC", "Regulation", ...], "magnitude": "LOW|MEDIUM|HIGH", "summary": "Brief explanation"}`.
+        *   Consider **Few-Shot examples** within the prompt if initial results lack calibration or consistency.
+        *   **Tune Temperature/Sampling:** Use lower temperature (e.g., 0.1-0.3) for classification tasks (sentiment, topic, magnitude) to favor accuracy.
+        *   **Document** the final prompt structure and settings used (as per Section 2).
+    *   Action: Schedule analysis of new DB news items. Store results in `NewsAnalysis` table.
+*   4.3. Module: Crypto Asset Categorization (`config/asset_categories.yaml`, `src/utils/categorizer.py`)
+    *   Action: Create YAML mapping assets to categories/narratives. Implement `AssetCategorizer` to look up category. Update `AssetInfo` DB table or use dynamically.
+*   4.4. Module: Contextual Confidence V2 (`src/analysis/confidence.py`)
+    *   Action: Implement `calculate_confidence_v2`. Inputs: V1 technical score + aggregated News Sentiment/Topic/Magnitude for relevant assets + Asset Category context + Basic behavioral signals (e.g., Fear&Greed index via API, simple time-of-day patterns from `src/analysis/behavioral.py`). Refine weighting/combination logic.
+*   4.5. Module: Context-Aware DCA Notification Adjustment (`main_trader.py`)
+    *   Action: Modify the DCA notification logic: If Confidence V2 is very high, suggest user consider manually increasing the next DCA amount via the pipeline script. If very low, suggest potentially skipping or reducing.
+*   4.6. Module: Basic Event Response (Live)
+    *   Action: Refine logic in `main_trader.py`: Use high-magnitude negative LLM topics + market confirmation (e.g., sharp price drop, high volume) to trigger temporary pause on new buy orders or potentially reduce exposure based on Confidence V2.
+
+**Phase 5: Intelligence Layer 3 (Live) - Microstructure & Social Psychology 📊👀🧠**
+Goal: Add order book analysis, influencer tracking to enhance Confidence V3.
+
+*   5.1. Module: Order Book Data (`src/data/orderbook_fetcher.py`)
+    *   Action: Implement L2 depth fetching (REST snapshots initially). Store recent snapshot in `StateManager`. *(Consider WebSocket for higher frequency later if needed).*
+*   5.2. Module: Order Book Analysis (`src/analysis/orderbook.py`)
+    *   Action: Implement functions for basic analysis: Calculate buy/sell imbalance, detect large orders (potential walls), estimate simple microprice. Store derived metrics in `StateManager`. *(Spoofing, flow analysis are more advanced).*
+*   5.3. Module: Order Book Integration (`src/analysis/confidence.py`)
+    *   Action: Add OB imbalance and wall proximity signals as inputs to `calculate_confidence_v3`. Refine weighting. High buy imbalance near support might boost confidence; large wall overhead might reduce it.
+*   5.4. Module: Influencer Tracking (`config/influencers.yaml`, `src/data/influencer_tracker.py`)
+    *   Action: Define curated list of influencers/accounts in YAML. Implement fetching recent posts (e.g., via Twitter API wrapper). Store in DB `InfluencerPosts`.
+*   5.5. Module: Influencer Sentiment (`src/analysis/llm_analyzer.py`, `src/analysis/confidence.py`)
+    *   Action: Adapt `LLMAnalyzer` to process influencer posts for sentiment/topic related to traded assets. **Note on Prompt Engineering:** Apply similar techniques as in Phase 4.2 (System Prompt, JSON output with Schema, Few-Shot calibration if needed, appropriate Temperature) for analyzing influencer posts. Document prompts. Store results.
+    *   Action: Implement `calculate_confidence_v4` in `src/analysis/confidence.py`, adding weighted sentiment from trusted influencers as another factor.
+
+**Phase 6: Scaling & Full DCA Automation 🌐⚙️💧**
+Goal: Enable multi-asset trading, optimize resources, fully automate funding.
+*(User-LLM interaction governed by Section 0 & 2 updates)*
+
+*   6.1. Module: Multi-Asset Framework (`main_trader.py`, `StateManager`, strategies)
+    *   Action: Refactor main loop, state manager, strategy functions (`plan_buy_grid`, `calculate_dynamic_tp`, etc.) to handle multiple trading pairs concurrently. State needs to be keyed by symbol.
+*   6.2. Module: Dynamic Asset Selection & Budgeting (`src/analysis/asset_selector.py`)
+    *   Action: Implement logic to periodically rank potential trading pairs based on criteria (volatility, volume, confidence score, category trend). Select a subset of active symbols. Allocate overall trading budget dynamically across selected symbols, potentially weighted by confidence or rank.
+*   6.3. Module: Multi-Asset Filter Handling & Risk Management
+    *   Action: Ensure robust per-symbol filter checks, budget allocation checks, and grid limit enforcement within all planning/placement logic. Ensure risk controls (time stops, etc.) operate correctly on a per-position basis. Consider if multi-layer grids (e.g., short-term vs long-term) need segregated capital/ranges.
+*   6.4. Module: Resource-Aware Scheduling (`src/scheduler.py`)
+    *   Action: Implement `Scheduler` class to manage periodic tasks (data fetching, analysis, order checks). Implement basic value-driven polling: poll more frequently for high-volatility/high-confidence active symbols, less frequently for others.
+*   6.5. Module: Local Data Caching (`src/utils/caching.py`)
+    *   Action: Implement simple file-based or in-memory caching (with TTL) for frequently accessed, slowly changing API data (e.g., exchange info, possibly longer timeframe klines). Use decorators.
+*   6.6. Module: Full DCA Automation (Plaid & Pipeline)
+    *   Action: (Optional based on user comfort/security) Implement `PlaidConnector` (`src/connectors/plaid_connector.py`) to check bank balance.
+    *   Action: Enhance `FundingPipeline` (`src/funding_pipeline.py`) to run fully automatically based on schedule and balance checks. Requires robust state management, error handling (e.g., Plaid token refresh, transfer failures), and secure credential handling.
+
+**Phase 7: Advanced Intelligence & ML 🧠✨**
+Goal: Implement ML models for core decisions, integrate advanced data.
+
+*   7.1. Module: ML - Dynamic Profit Targets (`src/ml/tp_model.py`, `notebooks/04_ML_Model_Training.ipynb`)
+    *   Action: Define features (technicals, confidence V4 score, volatility, time since entry). Train a regression model (e.g., XGBoost, LSTM) to predict optimal TP multiple or exit probability.
+    *   Action: Integrate model prediction into `calculate_dynamic_tp_price`, potentially blending with or replacing the rule-based approach. Implement online monitoring/retraining pipeline.
+*   7.2. Module: ML - Confidence Scoring (`src/ml/confidence_model.py`, `notebooks/04_ML_Model_Training.ipynb`)
+    *   Action: Train a classification/regression model using all available features (technicals, context, OB, social) to predict trade success probability (potential **meta-labeling approach**).
+    *   Action: Integrate model's output probability. Use this probability directly in **adaptive sizing calculations (Kelly-inspired fraction)**: `size = capital * kelly_fraction * (probability * payoff_ratio - (1 - probability)) / payoff_ratio`. Requires estimating payoff ratio. Replace rule-based confidence score or use ML score as primary input.
+*   7.3. Module: ML - S/R & Trendline Validation (`src/analysis/support_resistance.py`, `src/analysis/trendlines.py`)
+    *   Action: Use ML model feature importance (from TP or Confidence model) to assign higher weights/reliability to S/R zones or Trendlines that prove predictive.
+    *   Action: Implement **hit-rate tracking** for detected zones/lines to dynamically adjust their significance scores used in Phase 3.
+*   7.4. Module: Advanced Order Book Integration (`src/analysis/orderbook.py`, ML Features)
+    *   Action: Implement more advanced OB features (e.g., order flow imbalance over time, depth pressure, estimated liquidity vacuum). Feed these as inputs into the ML models (TP and Confidence).
+*   7.5. Module: Advanced News Integration (LLM Magnitude)
+    *   Action: Use the magnitude score from the LLM analysis (Phase 4.2) more directly. High magnitude news might override technical confidence or trigger faster risk responses, but require market price confirmation (e.g., price action validating the news direction). **Note:** The reliability of this depends heavily on the quality of the prompt engineering in Phase 4.2.
+*   7.6. Module: On-Chain & Derivatives Data Integration (Research)
+    *   Action: Research available APIs/data sources for relevant on-chain metrics (e.g., transaction flows, wallet activity) and derivatives data (e.g., funding rates, open interest).
+    *   Action: Integrate selected high-signal data points as features into ML models or confidence scoring.
+
+**Phase 8: Long-Term Models, Resilience & Optimization 🛡️⏳🌍**
+Goal: Integrate long-term cycle analysis, validate assumptions, harden against black swans, implement portfolio-level stops, optimize dependencies.
+*(User-LLM interaction governed by Section 0 & 2 updates)*
+
+*   8.1. Module: Long-Term Model Monitoring (`src/analysis/long_term_models.py`)
+    *   Action: Implement calculation/fetching for selected long-term models (e.g., Power Law, Rainbow Chart, MVRV Z-score). Store historical data. Provide current market status/zone (e.g., "overheated", "undervalued") via `StateManager`.
+*   8.2. Module: Assumption Validation & Invalidation Handling (`src/analysis/assumption_validator.py`)
+    *   Action: Define core strategic assumptions (e.g., "BTC remains long-term bullish", "Volatility regime allows dip-buying"). Monitor LT models and systemic risk events (Phase 8.4).
+    *   Action: If a core assumption is potentially invalidated (e.g., MVRV stays in 'overheated' zone for extended period AND price action confirms weakness), trigger specific responses: drastic confidence reduction, tightening risk controls (e.g., shorter time stops), pausing specific strategies, or triggering **conditional portfolio de-risking**.
+*   8.3. Module: Dynamic Influencer Monitoring (Enhancement)
+    *   Action: Implement basic scoring of influencers based on historical post accuracy/timing. Potentially implement auto-discovery of new relevant accounts (advanced).
+*   8.4. Module: Global Disruption Monitoring & Response (`src/analysis/risk_monitor.py`)
+    *   Action: Integrate feeds or APIs monitoring systemic risks (e.g., major exchange outages, stablecoin de-pegs, regulatory crackdowns, macro shocks). Define severity levels.
+*   8.5. Module: Catastrophic Portfolio Stop (Refined) (`src/strategies/risk_controls.py`, `scripts/flatten_positions.py`)
+    *   Action: Implement `check_portfolio_stop`: Trigger based on severe systemic risk events (from 8.4), assumption invalidation (8.2), OR a **hard portfolio-level max drawdown limit** (e.g., total equity down X% from peak).
+    *   Action: Define clear exit actions: Use `scripts/flatten_positions.py` logic to market sell all non-quote assets, potentially convert to multiple diversified stablecoins, halt trading, and alert user urgently.
+*   8.6. Module: Infrastructure Hardening & Deployment
+    *   Action: Containerize the application using `Dockerfile`. Create `docker-compose.yml` for managing services (trader, potentially DB, monitoring tools).
+    *   Action: Plan deployment strategy (e.g., cloud VM, home server). Implement robust monitoring (e.g., Prometheus/Grafana, health checks) and alerting (e.g., PagerDuty, Telegram bot).
+*   8.7. Module: "Flatten Positions" Utility (`scripts/flatten_positions.py`)
+    *   Action: Ensure this standalone script correctly connects, fetches all non-quote balances, places market sell orders respecting filters, and reports status. Make it callable by the main trader logic (for Catastrophic Stop) and runnable manually.
+*   8.8. Module: Pipeline Optimization Agent (`scripts/optimize_pipeline.py`)
+    *   Action: Implement a scheduled script (`Composer Agent`) that periodically checks external factors: exchange fees, API changes, availability of lower-cost funding routes or alternative data providers. Logs suggestions or (in future) potentially auto-updates config.
+
+**Phase 9: Visualization, Advanced Backtesting & Future Concepts 📊🔭🌌**
+Goal: Build UI, enhance simulation, explore speculative frontiers.
+
+*   9.1. Module: Performance & Strategy Dashboard (`src/dashboard/app.py` or `notebooks/03_Live_Monitoring_Dashboard.ipynb`)
+    *   Action: Implement a Textual UI (TUI) or simple Web UI (Flask/Dash/Streamlit). Visualize: Portfolio value vs HODL/benchmarks, current positions, allocation, live state (confidence score, S/R zones, active trendlines), recent trades/logs, LT model status, key news/sentiment indicators.
+*   9.2. Module: Enhanced Backtester (`src/backtester/engine.py`)
+    *   Action: Add capabilities: Parameter optimization (e.g., grid search, Bayesian opt.), Walk-Forward Optimization (WFO), more realistic slippage models, event injection (simulate flash crashes, API outages). **Crucially, test performance of adaptive sizing rules and time/conditional stops across different market regimes.**
+*   9.3. Module: Cross-Exchange & DeFi Radar (Research/Passive)
+    *   Action: Implement passive monitoring of prices/opportunities on other exchanges or DeFi protocols (requires adding connectors). Alert user only on exceptionally large arbitrage or yield opportunities, do not trade automatically initially.
+*   9.4. Module: LLM Persona Simulation ("Madness of Man" - Research)
+    *   Action: Define different market participant personas (e.g., FOMO retail, institutional algo, panic seller). Prototype using LLM to generate simulated actions/sentiment based on market conditions. **Note on Prompt Engineering:** This phase will require significant prompt engineering experimentation. **Role Prompting** will be central. Techniques like **Chain of Thought** or **Tree of Thoughts** might be needed to generate complex, stateful simulated behavior. **Iterative refinement and documentation of prompts** will be critical here. Integrate into backtester as noise/event source for stress-testing the strategy's resilience.
+*   9.5. Module: Collateralization Strategy Layer (`src/analysis/collateral.py`)
+    *   Action: Implement tracking of potential collateral value of holdings. Research DeFi lending protocols/APIs. Develop logic to flag potentially optimal conditions (low interest rates, high LTVs) for borrowing against holdings (as alternative to selling for capital needs), purely informational initially.
+*   **Ongoing Task:** Academic & Scientific Grounding (`RESEARCH.md`)
+    *   Action: Maintain links between implemented strategies (Adaptive Sizing -> Kelly Criterion, Meta-labeling; Volatility-based Grids -> Grid Trading research, ATR applications; Time Stops -> Time-based risk management studies; S/R Detection -> Algorithmic TA papers on pivots/clustering) and research. Use LLM for paper discovery. Document rationale. **Action:** Explicitly include **documentation of key prompt engineering attempts, successes, failures, and final chosen strategies** within `RESEARCH.md` or a linked `PROMPTS.md`, following the structure outlined in Section 2.
+
+**5. Potential Pitfalls & Mitigation Strategies**
+
+*   **DCA Pipeline Fragility:** Bank API changes (Plaid), transfer delays, exchange downtimes. Mitigation: Start semi-auto, robust state machine, retries, clear user notifications on failure, fallback manual execution.
+*   **Backtesting Accuracy:** Overfitting, inaccurate simulation of fees/slippage/filters, *adaptive sizing effects*, *risk control triggering*. Mitigation: Mandatory rigorous backtesting, realistic simulation (esp. filter fails, adaptive sizing impact on fills, time stop logic), Walk-Forward Optimization, multi-regime validation.
+*   **Exchange Filter Compliance:** minNotional/stepSize errors with small or adaptively sized orders. Mitigation: Frequent filter cache refresh, `Decimal` math, rigorous pre-computation checks using `formatting.py`, clear logging of skips/fails.
+*   **API Limits & Changes:** Rate limits, endpoint changes/deprecation. Mitigation: Rate limit awareness/handling (exponential backoff), defensive coding, monitor exchange announcements, keep libraries updated, use caching where appropriate.
+*   **State Management:** Crashes causing desync between internal state and exchange reality. Mitigation: Transactional DB updates for critical state (orders, positions), robust startup reconciliation logic (query exchange for open orders/balances), persistent `StateManager`.
+*   **Precision Errors:** Float inaccuracies in critical calculations. Mitigation: Mandatory `Decimal` type for ALL financial math and comparisons.
+*   **Data Quality & Latency:** Missing/bad data (spikes, gaps), delays affecting live decisions. Mitigation: Data source redundancy (if possible), sanity checks on fetched data, outlier filtering, caching, strategy design tolerant to minor delays, multi-source confirmation for critical signals (esp. LLM-based).
+*   **Grid Strategy Risk in Trends:** Accumulating large losing positions if higher-TF trend filter fails or market regime shifts abruptly into a strong, one-way trend. Mitigation: Strict higher-TF trend filtering, max grid level/position size limits, time-based stops, assumption validation (Phase 8.2) triggering strategy pauses, Catastrophic Stop (Phase 8.5).
+*   **"No Stop-Loss" Failure Modes:** Significant losses if *alternative* risk controls (sizing, time stops, confidence exits, grid limits) fail, are misconfigured, or market moves catastrophically faster than they can react. Mitigation: Rigorous backtesting of risk controls, realistic parameterization, portfolio-level drawdown limits (Phase 8.5), diversification, redundancy in risk checks. *Emphasize this is NOT 'no risk management'.*
+*   **S/R & Trendline Unreliability:** Algorithms generating false, lagging, or prematurely broken signals in choppy or extremely volatile markets. Mitigation: Scoring based on confirmation/reliability, using zones instead of exact levels, requiring confluence with other indicators, validating performance via hit-rate tracking (Phase 7.3).
+*   **Infrastructure & Costs:** Underestimation of compute (esp. ML/LLM), data feed, or cloud hosting costs. Mitigation: Start local/lean, monitor resource usage, optimize algorithms, scale incrementally based on demonstrated need/profitability.
+*   **Security:** API key compromise, vulnerabilities in code or dependencies. Mitigation: Secure key handling (.env, restricted permissions), dependency scanning/updates, secure coding practices, minimize attack surface, consider hardware security modules (HSMs) for ultimate key protection if scaling significantly.
+*   **Ineffective User-LLM Prompting:** Vague, ambiguous, or poorly structured prompts from the user to the LLM assistant lead to incorrect, incomplete, inefficient, or irrelevant code/analysis, significantly slowing development or introducing errors. **Mitigation:** Strict adherence to prompt engineering best practices outlined in Section 0 and 2 (Clarity, Specificity, Examples, Iteration, Context, CoT/Step-back), rigorous documentation of prompt attempts, user actively refining prompts based on LLM output quality.
+*   **Internal LLM Hallucination/Inaccuracy:** The internal `llm_analyzer.py` (or future LLM components) provides factually incorrect analysis, classifications, or summaries despite well-engineered prompts, leading to poor trading decisions. **Mitigation:** Rigorous backtesting and live validation of internal LLM outputs, using appropriate (often lower) temperature/sampling settings, requesting structured output/schemas to constrain the LLM, implementing cross-validation (e.g., requiring market price action to confirm high-magnitude news signals), potentially using self-consistency checks (running analysis multiple times), having mechanisms to disable LLM inputs to confidence if performance degrades.
+*   **Prompt Injection (Internal LLM):** Maliciously crafted input data (e.g., news articles, influencer posts) could potentially manipulate the internal LLM's behavior if prompts are not carefully designed to handle untrusted input safely. **Mitigation:** Input sanitization before passing data to the internal LLM, designing prompts that clearly separate instructions from data, security testing.
+
+**6. Academic & Scientific Grounding Approach**
+
+*   **Documentation (`RESEARCH.md` / `PROMPTS.md`):** Maintain a dedicated file linking implemented strategies and techniques to specific academic papers, reputable quantitative finance resources, or established financial theories. Examples:
+    *   Adaptive Sizing -> Kelly Criterion (fractional variants), Lopez de Prado (Meta-labeling).
+    *   Geometric Dip-Buying -> Grid Trading literature, studies on volatility harvesting, ATR applications.
+    *   Confidence Scoring -> Ensemble methods research, probabilistic forecasting in finance.
+    *   Risk Management -> Research on time-based stops, volatility-based exits, portfolio drawdown control.
+    *   S/R & Trendline Detection -> Algorithmic technical analysis papers (pivot detection, clustering, Hough transforms), studies on S/R significance testing.
+    *   **Additionally, link prompt engineering techniques (CoT, Few-Shot, Schema use, Temperature Tuning, etc.) to relevant papers or resources referenced in the whitepaper or discovered during development.**
+*   **Research Integration:** Utilize focused LLM prompts and manual searches (Google Scholar, SSRN, ArXiv q-fin) to discover relevant, contemporary research supporting or challenging implemented techniques.
+*   **Rationale Documentation:** Justify the selection of specific algorithms, parameters, and strategic approaches within code comments, the README.md, or the RESEARCH.md file, explicitly referencing the grounding research or theoretical basis where applicable. **Explicitly document the rationale behind key prompt designs** for both user-LLM interaction and internal LLM usage.
+
+**7. Conclusion**
+
+This document (v6.5) provides the definitive, comprehensive blueprint for constructing GeminiTrader, enhanced with strategic research insights (v6.4) and **foundational prompt engineering best practices (v6.5)**. It details a phased, modular development approach emphasizing adaptive sizing, volatility-aware execution, hybrid risk management, and **effective human-AI collaboration through structured prompting and documentation**. By systematically implementing each module according to the specified philosophy, conventions, workflow, and **applying sound prompt engineering principles**, GeminiTrader aims to evolve into a highly autonomous, data-driven, resilient system capable of achieving significant long-term capital growth in the dynamic cryptocurrency markets. Continuous learning, adaptation based on performance, research, **and iterative prompt refinement** are paramount to realizing this vision.
+
+-------
+
+---
+
+## Project Directory Structure:
+Project Structure:
+├── GeminiTrader/
+    ├── .env
+    ├── .gitignore
+    ├── 00-Utils-Flatten-Positions.ipynb
+    ├── 01-API-Connection-Test.ipynb.ipynb
+    ├── 02-Strategy-Data-Integration.ipynb.ipynb
+    ├── 03-Rebalancing-With-Cancellation-v1.ipynb.ipynb
+    ├── 04-Dip-Buying-Strategy-v1.ipynb
+    ├── 05-Analysis-SR-Trendlines.ipynb
+    ├── 05-Analysis-SR-Trendlines.py
+    ├── README.md
+    ├── backtest_log.txt
+    ├── historical_data_BTCUSDT.pkl
+    └── requirements.txt
+├── .devcontainer/
+    └── devcontainer.json
+├── .ipynb_checkpoints/
+    ├── 00-Utils-Flatten-Positions-checkpoint.ipynb
+    ├── 01-API-Connection-Test.ipynb-checkpoint.ipynb
+    ├── 02-Strategy-Data-Integration.ipynb-checkpoint.ipynb
+    ├── 03-Rebalancing-With-Cancellation-v1.ipynb-checkpoint.ipynb
+    ├── 04-Dip-Buying-Strategy-v1-checkpoint.ipynb
+    ├── 05-Analysis-SR-Trendlines-checkpoint.ipynb
+    ├── README-checkpoint.md
+    └── requirements-checkpoint.txt
+├── .Trash-1000/
+    ├── files/
+        ├── 01-API-Connection-Test.ipynb-Copy1.ipynb
+        ├── 03-Rebalancing-With-Cancellation-v1.ipynb
+        ├── Untitled.ipynb
+        ├── Untitled1.ipynb
+        └── Untitled2.ipynb
+    ├── info/
+        ├── 01-API-Connection-Test.ipynb-Copy1.ipynb.trashinfo
+        ├── 03-Rebalancing-With-Cancellation-v1.ipynb.trashinfo
+        ├── Untitled.ipynb.trashinfo
+        ├── Untitled1.ipynb.trashinfo
+        └── Untitled2.ipynb.trashinfo
+├── context/
+    ├── Assorted Conversations with ChatGPT.txt
+    ├── Authoritative_Project_Plan_ Roadmap.txt
+    ├── Developing_an_Adaptive_Crypto_Trading_.md
+    ├── Original_Project_Doc.txt
+    ├── Project_Handover_Document_GeminiTrade.md
+    └── binance_us-APIDocs.txt
+├── scripts/
+    └── context_manager.py
+
+---
+
+## Relevant File Contents:
+
+### File: scripts/context_manager.py
+
+```python
+# scripts/context_manager.py
+
+import os
+import subprocess
+import argparse
+import re
+import sys
+import pyperclip  # Needs: pip install pyperclip
+from datetime import datetime
+import logging
+
+# --- Configuration ---
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+LOG_DIR = os.path.join(PROJECT_ROOT, 'data', 'context_logs')
+os.makedirs(LOG_DIR, exist_ok=True)
+LOG_FILE_BASE = os.path.join(
+    LOG_DIR, f"context_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s - %(levelname)s - %(message)s',
+                    handlers=[logging.FileHandler(f"{LOG_FILE_BASE}.log"), logging.StreamHandler()])
+
+ALWAYS_INCLUDE_FILES = [
+    'config/settings.py',
+    'config/config.yaml',
+    # Add other foundational files if desired (e.g., src/main_trader.py structure)
+    'scripts/context_manager.py'  # Include itself
+]
+TREE_IGNORE_PATTERNS = ['.venv', '__pycache__', 'data', '.git',
+                        '*.db', '*.log', '*.sqlite3', 'node_modules', 'dist', 'build']
+# --- End Configuration ---
+
+
+class ContextManager:
+    # Keep __init__ simple, pass handover text later
+    def __init__(self):
+        self.project_root = PROJECT_ROOT
+        self.handover_content = ""
+        self.parsed_info = {'modified': [], 'next_step_files': set(
+        ), 'phase': '?', 'module': '?'}  # Default empty
+
+    def set_handover_content(self, text):
+        """Sets the handover content and triggers parsing."""
+        if not text:
+            raise ValueError("Handover text cannot be empty.")
+        self.handover_content = text
+        self.parsed_info = self._parse_handover()
+
+    def _read_file(self, file_path):
+        """Safely reads a file's content."""
+        full_path = os.path.join(self.project_root, file_path) if not os.path.isabs(
+            file_path) else file_path
+        try:
+            # Check if file exists first
+            if not os.path.exists(full_path):
+                logging.warning(
+                    f"File specified for inclusion not found, skipping: {full_path}")
+                return None
+
+            with open(full_path, 'r', encoding='utf-8') as f:
+                return f.read()
+        except FileNotFoundError:  # Should be caught by os.path.exists, but defensive
+            logging.warning(f"File not found during read attempt: {full_path}")
+            return None
+        except Exception as e:
+            logging.error(f"Error reading file {full_path}: {e}")
+            return None
+
+    def _parse_handover(self):
+        """Parses key information from the handover document content."""
+        if not self.handover_content:
+            raise ValueError("Cannot parse empty handover content.")
+
+        parsed = {'modified': [], 'next_step_files': set(), 'phase': '?',
+                  'module': '?'}
+        try:
+            # Extract modified files
+            # Use more robust regex to handle variations and capture until next blank line or end
+            modified_match = re.search(r"^\s*Key Files/Modules Implemented or Modified \(Session\):?\s*\n(.*?)(?=\n\s*\n|\Z)",
+                                       self.handover_content, re.DOTALL | re.MULTILINE | re.IGNORECASE)
+            if modified_match:
+                modified_block = modified_match.group(1).strip()
+                parsed['modified'] = [line.strip()[2:] for line in modified_block.split(
+                    '\n') if line.strip().startswith('- ')]
+
+            # Extract next step files
+            # Use more robust regex to handle variations and capture until next blank line or end
+            next_steps_match = re.search(r"^\s*Actionable Next Steps:?\s*\n(.*?)(?=\n\s*\n|\Z)",
+                                         self.handover_content, re.DOTALL | re.MULTILINE | re.IGNORECASE)
+            if next_steps_match:
+                next_steps_block = next_steps_match.group(1).strip()
+                # Updated regex to find paths more reliably, including potential backticks etc.
+                found_paths = re.findall(
+                    r'[`\'"]?(src|config|scripts|notebooks|tests)/[\w/.-]+\.(py|yaml|sql|md|ipynb)[a-zA-Z]*[`\'"]?', next_steps_block)
+                for match in found_paths:
+                    # The regex returns tuples like ('src', 'py'), need to reconstruct the path somewhat
+                    # This part is tricky and depends heavily on handover format consistency.
+                    # Let's try a simpler approach first: find any string that looks like a path.
+                    potential_paths = re.findall(
+                        r'(?:^|\s)(src|config|scripts|notebooks|tests)/[\w/.-]+\.(?:py|yaml|sql|md|ipynb)', next_steps_block, re.IGNORECASE)
+                    for path in potential_paths:
+                        parsed['next_step_files'].add(path.strip('`\'" '))
+
+            # Extract Phase/Module
+            roadmap_match = re.search(
+                r"Phase \[?([\d.]+)\]?(?:, Module \[?([\d.]+)\]?)?", self.handover_content, re.IGNORECASE)
+            if roadmap_match:
+                parsed['phase'] = roadmap_match.group(1)
+                # Check if group 2 was captured
+                if len(roadmap_match.groups()) > 1 and roadmap_match.group(2):
+                    parsed['module'] = roadmap_match.group(2)
+
+            logging.info(
+                f"Parsed Handover: Modified={parsed['modified']}, NextStepsFiles={list(parsed['next_step_files'])}, Phase={parsed['phase']}, Module={parsed['module']}")
+            return parsed
+
+        except Exception as e:
+            logging.error(f"Failed to parse handover document: {e}")
+            raise  # Re-raise after logging
+
+    def generate_tree(self):
+        """Generates a string representation of the directory tree."""
+        lines = []
+        ignore_set = set(TREE_IGNORE_PATTERNS)
+
+        def is_ignored(name, patterns):
+            if name in patterns:
+                return True
+            # Basic wildcard matching for endings
+            if any(pat.startswith('*') and name.endswith(pat[1:]) for pat in patterns if '*' in pat):
+                return True
+            # Basic wildcard matching for beginnings (less common)
+            if any(pat.endswith('*') and name.startswith(pat[:-1]) for pat in patterns if '*' in pat):
+                return True
+            return False
+
+        lines.append("Project Structure:")
+        for root, dirs, files in os.walk(self.project_root, topdown=True):
+            rel_root = os.path.relpath(root, self.project_root)
+            if rel_root == '.':
+                rel_root = ''  # Avoid './' prefix at the top level
+
+            # Filter ignored directories *before* descending
+            dirs[:] = [d for d in dirs if not is_ignored(d, ignore_set)]
+            # Filter ignored files
+            files = [f for f in files if not is_ignored(f, ignore_set)]
+
+            # Skip printing root if it's the top level and empty after filtering (avoids just printing project root name)
+            # if not rel_root and not dirs and not files: continue # Maybe remove this line?
+
+            level = rel_root.count(os.sep) if rel_root else 0
+            indent = ' ' * 4 * level
+            dir_name = os.path.basename(
+                root) if rel_root else os.path.basename(self.project_root)
+            lines.append(f"{indent}├── {dir_name}/")
+            subindent = ' ' * 4 * (level + 1)
+            for i, f in enumerate(sorted(files)):
+                # Adjust connector visually
+                connector = "└──" if i == len(sorted(files)) - 1 else "├──"
+                lines.append(f"{subindent}{connector} {f}")
+        return "\n".join(lines)
+
+    def build_context_prompt(self):
+        """Builds the final context string for the LLM."""
+        context_parts = []
+
+        # 1. Introduction
+        context_parts.append("--- Start GeminiTrader Context Block ---")
+        context_parts.append(
+            f"Context generated on: {datetime.now().isoformat()}")
+        context_parts.append(
+            f"Targeting: Phase {self.parsed_info['phase']}, Module {self.parsed_info['module']}")
+        context_parts.append("\n---\n")
+
+        # 2. Handover Document
+        context_parts.append("## Last Session Handover Document:")
+        context_parts.append(self.handover_content)
+        context_parts.append("\n---\n")
+
+        # 3. Project Structure
+        context_parts.append("## Project Directory Structure:")
+        context_parts.append(self.generate_tree())
+        context_parts.append("\n---\n")
+
+        # 4. Relevant File Contents
+        context_parts.append("## Relevant File Contents:")
+        files_to_include = set(ALWAYS_INCLUDE_FILES) | set(
+            self.parsed_info['modified']) | self.parsed_info['next_step_files']
+
+        # Ensure paths are relative to project root for reading
+        processed_files = set()
+        for file_rel_path in sorted(list(files_to_include)):
+            # Normalize path, remove leading/trailing spaces/quotes
+            clean_path = file_rel_path.strip(' `\'"')
+            if not clean_path:
+                continue  # Skip empty paths
+
+            # Basic check for validity
+            if not any(clean_path.startswith(prefix) for prefix in ['src/', 'config/', 'scripts/', 'notebooks/', 'tests/', 'README.md']):
+                logging.warning(
+                    f"Skipping potentially invalid or root path: {clean_path}")
+                continue
+
+            if clean_path in processed_files:
+                continue  # Avoid duplicates
+            processed_files.add(clean_path)
+
+            # Use the method that checks existence
+            content = self._read_file(clean_path)
+            if content is not None:  # Check for None specifically
+                context_parts.append(f"\n### File: {clean_path}\n")
+                # Determine language for markdown code block
+                lang = "python"
+                if clean_path.endswith(".yaml"):
+                    lang = "yaml"
+                elif clean_path.endswith(".sql"):
+                    lang = "sql"
+                elif clean_path.endswith(".md"):
+                    lang = "markdown"
+                elif clean_path.endswith(".ipynb"):
+                    lang = "json"  # Notebooks are JSON
+                context_parts.append(f"```{lang}")
+                context_parts.append(content)
+                context_parts.append("```")
+
+        context_parts.append("\n--- End GeminiTrader Context Block ---")
+        final_context = "\n".join(context_parts)
+
+        # Log the context before potential clipboard error
+        context_log_file = f"{LOG_FILE_BASE}_context.txt"
+        try:
+            with open(context_log_file, "w", encoding='utf-8') as f:
+                f.write(final_context)
+            logging.info(f"Full context saved to {context_log_file}")
+        except Exception as e:
+            logging.error(
+                f"Failed to save context log to {context_log_file}: {e}")
+
+        # Copy to clipboard
+        try:
+            pyperclip.copy(final_context)
+            logging.info("Context block copied to clipboard.")
+        except Exception as e:
+            logging.error(
+                f"Could not copy to clipboard: {e}. Context saved to log file.")
+            # Re-raise or handle differently if clipboard is critical
+            raise  # Let the main loop know clipboard failed
+
+        return final_context
+
+    def generate_commit_message(self):
+        """Generates a structured commit message."""
+        phase = self.parsed_info.get('phase', '?')
+        module = self.parsed_info.get('module', '?')
+        primary_action = "Update"
+        target = "context/state"  # Default if no specific file found
+
+        # Try to determine action and target from next steps
+        next_steps_match = re.search(r"^\s*Actionable Next Steps:?\s*\n(.*?)(?=\n\s*\n|\Z)",
+                                     self.handover_content, re.DOTALL | re.MULTILINE | re.IGNORECASE)
+        if next_steps_match:
+            first_line = next_steps_match.group(
+                1).strip().split('\n')[0].lower()
+            keywords = {"implement": "Implement", "create": "Create", "add": "Add",
+                        "refactor": "Refactor", "fix": "Fix", "update": "Update", "start": "Start", "begin": "Begin"}
+            for key, action in keywords.items():
+                if key in first_line:
+                    primary_action = action
+                    break
+            # Try to find target file in first line
+            paths_in_line = re.findall(
+                r'(src|config|scripts|notebooks|tests)/[\w/.-]+\.(py|yaml|sql|md|ipynb)', first_line, re.IGNORECASE)
+            if paths_in_line:
+                # Reconstruct path roughly - regex gives ('src', 'py') etc.
+                # Let's just grab the filename part for the message
+                first_path_match = re.search(
+                    r'(?:/|\\)([\w.-]+\.(?:py|yaml|sql|md|ipynb))', first_line)
+                if first_path_match:
+                    target = first_path_match.group(1)
+
+        # Determine commit type
+        commit_type = "feat"
+        if primary_action == "Fix":
+            commit_type = "fix"
+        elif primary_action == "Refactor":
+            commit_type = "refactor"
+        elif "test" in target.lower():
+            commit_type = "test"
+        elif any(doc_file in target.lower() for doc_file in ["readme.md", "research.md", "prompts.md"]):
+            commit_type = "docs"
+        elif primary_action in ["Update", "Start", "Begin"] and target == "context/state":
+            commit_type = "chore"  # Commit before starting new work
+
+        scope = f"Phase{phase}"
+        if module != '?':
+            scope += f".{module}"
+
+        message = f"{commit_type}({scope}): {primary_action} {target}"
+        message = message[:72]  # Conventional commit subject limit
+
+        # Optional body with modified files
+        modified_files = self.parsed_info.get('modified', [])
+        body = ""
+        if modified_files:
+            body = "\n\nFiles modified in previous session:\n" + \
+                "\n".join(f"- {f}" for f in modified_files)
+
+        full_message = message + body
+        logging.info(f"Generated commit message:\n{full_message}")
+        return full_message
+
+    def run_git_commit(self, commit_message, push=False):
+        """Runs git add and git commit."""
+        try:
+            logging.info("Running 'git add .'...")
+            # Use absolute path for cwd for robustness
+            subprocess.run(['git', 'add', '.'], check=True, cwd=self.project_root,
+                           capture_output=True, text=True, encoding='utf-8')
+
+            logging.info(f"Running 'git commit'...")
+            # Pass message via stdin to handle multi-line messages better
+            commit_result = subprocess.run(['git', 'commit', '-F', '-'], input=commit_message,
+                                           check=True, cwd=self.project_root, capture_output=True, text=True, encoding='utf-8')
+            logging.info("Commit successful:\n%s", commit_result.stdout)
+
+            if push:
+                # Use input() for direct interaction in the terminal where the script runs
+                confirm = input("Commit successful. Push to remote? (y/N): ")
+                if confirm.lower() == 'y':
+                    logging.info("Running 'git push'...")
+                    push_result = subprocess.run(
+                        ['git', 'push'], check=True, cwd=self.project_root, capture_output=True, text=True, encoding='utf-8')
+                    logging.info("Push successful:\n%s", push_result.stdout)
+                else:
+                    logging.info("Push skipped by user.")
+
+        except subprocess.CalledProcessError as e:
+            logging.error(f"Git command failed: {e.cmd}")
+            # Decode stdout/stderr if they are bytes
+            stdout = e.stdout.decode(
+                'utf-8', errors='replace') if isinstance(e.stdout, bytes) else e.stdout
+            stderr = e.stderr.decode(
+                'utf-8', errors='replace') if isinstance(e.stderr, bytes) else e.stderr
+            logging.error(f"Return Code: {e.returncode}")
+            logging.error(f"Stdout:\n{stdout}")
+            logging.error(f"Stderr:\n{stderr}")
+            # Provide more specific feedback if possible
+            if "nothing to commit" in stderr or "nothing to commit" in stdout:
+                logging.warning(
+                    "Git reported nothing to commit. Skipping commit action.")
+                return  # Don't treat as fatal error
+            elif "Please tell me who you are" in stderr:
+                logging.error(
+                    "Git user identity not configured. Please run:\n  git config --global user.email \"you@example.com\"\n  git config --global user.name \"Your Name\"")
+
+            raise  # Re-raise the exception to indicate failure
+        except FileNotFoundError as e:
+            if 'git' in str(e):
+                logging.error(
+                    "Git command not found. Ensure Git is installed and in your system's PATH.")
+            else:
+                logging.error(f"File not found during Git operation: {e}")
+            raise
+        except Exception as e:
+            logging.error(
+                f"An unexpected error occurred during Git operation: {e}", exc_info=True)
+            raise
+
+# --- Helper to read multi-line input ---
+
+
+def get_multiline_input(prompt_message):
+    """Prompts the user for multi-line input in the terminal."""
+    print(prompt_message)
+    print("Paste your text here. Press Enter then Ctrl+D (Unix) or Ctrl+Z+Enter (Windows) when done:")
+    lines = []
+    while True:
+        try:
+            line = input()
+            lines.append(line)
+        except EOFError:
+            break
+        except KeyboardInterrupt:
+            print("\nInput cancelled.")
+            sys.exit(1)  # Exit if user cancels input
+    return "\n".join(lines)
+
+
+# --- Main Execution ---
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="GeminiTrader Context Manager CMD Tool")
+    parser.add_argument("--commit", action="store_true",
+                        help="Automatically stage and commit changes with a generated message AFTER processing input.")
+    parser.add_argument("--push", action="store_true",
+                        help="Interactively prompt to push after successful commit (requires --commit).")
+    parser.add_argument("--no-clipboard", action="store_true",
+                        help="Do not attempt to copy the context to the clipboard (outputs to log only).")
+
+    args = parser.parse_args()
+
+    try:
+        # 1. Get Handover Text from User
+        handover_input = get_multiline_input(
+            "Please paste the full Handover Document text generated by the LLM:")
+
+        if not handover_input.strip():
+            logging.error("No handover text was provided. Exiting.")
+            sys.exit(1)
+
+        # 2. Initialize Manager and Process
+        manager = ContextManager()
+        manager.set_handover_content(handover_input)
+
+        # 3. Build Context (this saves log and tries clipboard)
+        if args.no_clipboard:
+            # Build context just to generate it and save to file
+            manager.build_context_prompt()
+            logging.info(
+                "Context generated and saved to log file. Clipboard copy skipped as requested.")
+            print("Context generated and saved to log file. Clipboard copy skipped.")
+        else:
+            try:
+                manager.build_context_prompt()  # Tries clipboard internally
+                print("Context processed and copied to clipboard.")
+            except Exception as clip_err:
+                # Error already logged by build_context_prompt if clipboard fails
+                print(
+                    f"Error copying to clipboard: {clip_err}. Context saved to log file.")
+                # Decide if you want to exit or continue to commit step
+                # sys.exit(1) # Optional: exit if clipboard is essential
+
+        # 4. Optional Git Commit
+        if args.commit:
+            print("-" * 20)  # Separator
+            print("Attempting Git commit...")
+            try:
+                commit_msg = manager.generate_commit_message()
+                manager.run_git_commit(commit_msg, push=args.push)
+                print("Git commit process finished.")
+            except subprocess.CalledProcessError:
+                print("Git commit failed. Check log for details.")
+                # Decide if this is a fatal error for the script
+                # sys.exit(1)
+            except Exception as git_err:
+                print(
+                    f"An unexpected error occurred during Git commit: {git_err}. Check log.")
+                # sys.exit(1)
+
+        logging.info("Context Manager CMD finished successfully.")
+        print("-" * 20)
+        print("Script finished.")
+
+    except ValueError as e:
+        logging.error(f"Input Error: {e}")
+        print(f"Error: {e}")
+        sys.exit(1)
+    except Exception as e:
+        # Log traceback
+        logging.error(
+            f"An unexpected error occurred in main execution: {e}", exc_info=True)
+        print(f"An critical error occurred: {e}. Check logs.")
+        sys.exit(1)
+
+```
+
+--- End GeminiTrader Context Block ---

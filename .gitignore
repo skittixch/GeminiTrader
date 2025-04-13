@@ -1,0 +1,11 @@
+# .gitignore
+.env
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+*.ipynb_checkpoints
+.vscode/ # Optional: good to ignore VSCode workspace settings if desired
