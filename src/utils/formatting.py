@@ -1,227 +1,295 @@
 # src/utils/formatting.py
 
 import logging
-from decimal import Decimal, ROUND_DOWN, ROUND_UP, InvalidOperation
+from decimal import Decimal, ROUND_DOWN, ROUND_UP, getcontext, InvalidOperation
+from typing import Dict, Optional, Any, List
 
-# Get a logger instance specific to this module
-log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
-# Set high precision context for critical calculations if needed, though Decimal default is usually sufficient
-# from decimal import getcontext
-# getcontext().prec = 28 # Example: Set precision to 28 decimal places
+# --- Helper Function to Safely Convert to Decimal ---
 
 
-def adjust_price_to_tick_size(price: Decimal, tick_size: Decimal, side: str = 'BUY') -> Decimal:
+def to_decimal(value: Any, default: Optional[Decimal] = None) -> Optional[Decimal]:
+    """Safely converts a value to Decimal, handling None, strings, floats."""
+    if value is None:
+        return default
+    try:
+        # Handle potential floating point inaccuracies if converting from float
+        # Best practice is to receive strings or integers for Decimal conversion
+        if isinstance(value, float):
+            # Convert float to string first for exact representation
+            value_str = f"{value:.16f}"  # Adjust precision as needed
+            return Decimal(value_str)
+        # Allow direct Decimal, int, or string conversion
+        return Decimal(value)
+    except (TypeError, ValueError, InvalidOperation) as e:
+        logger.warning(
+            f"Could not convert value '{value}' (type: {type(value)}) to Decimal: {e}")
+        return default
+
+# --- Filter Extraction Helper ---
+
+
+def get_symbol_filter(exchange_filters: Dict, filter_type: str) -> Optional[Dict]:
     """
-    Adjusts a price to be a valid multiple of the tick_size.
-    For limit BUY orders, it's generally safer to round DOWN to the nearest tick.
-    For limit SELL orders, it's generally safer to round UP to the nearest tick.
-    However, rounding down generally increases likelihood of fill for both,
-    so we default to ROUND_DOWN unless specified otherwise for specific strategies.
+    Extracts a specific filter dictionary from the exchange info filter list.
 
     Args:
-        price (Decimal): The desired price.
-        tick_size (Decimal): The minimum price increment allowed by the exchange filter.
-        side (str): Optional, 'BUY' or 'SELL'. Currently influences rounding direction if implemented.
-                    (Default behaviour rounds down for safety/fill probability).
+        exchange_filters (Dict): The dictionary for a specific symbol from exchange info,
+                                 expected to contain a 'filters' key with a list of filter dicts.
+                                 Example structure: {'symbol': 'BTCUSD', 'filters': [...]}
+        filter_type (str): The 'filterType' to find (e.g., 'PRICE_FILTER', 'LOT_SIZE').
 
     Returns:
-        Decimal: The adjusted price conforming to the tick_size.
+        Optional[Dict]: The dictionary for the matching filter, or None if not found.
     """
-    if not isinstance(price, Decimal):
-        log.warning(
-            f"adjust_price_to_tick_size received non-Decimal price: {price} (Type: {type(price)}). Attempting conversion.")
-        try:
-            price = Decimal(str(price))
-        except InvalidOperation:
-            log.error(f"Invalid price value for Decimal conversion: {price}")
-            raise ValueError(
-                f"Invalid price value for Decimal conversion: {price}")
+    if not isinstance(exchange_filters, dict) or 'filters' not in exchange_filters:
+        logger.warning(
+            f"Invalid exchange_filters structure passed to get_symbol_filter: {exchange_filters}")
+        return None
+    if not isinstance(exchange_filters['filters'], list):
+        logger.warning(
+            f"exchange_filters['filters'] is not a list: {exchange_filters['filters']}")
+        return None
 
-    if not isinstance(tick_size, Decimal) or tick_size <= Decimal('0'):
-        log.error(
-            f"Invalid tick_size: {tick_size}. Must be a positive Decimal.")
-        # Decide handling: raise error or return original price? Raising is safer.
-        raise ValueError(f"Invalid tick_size: {tick_size}")
+    for f in exchange_filters['filters']:
+        if isinstance(f, dict) and f.get('filterType') == filter_type:
+            return f
+    logger.debug(
+        f"Filter type '{filter_type}' not found in filters for symbol '{exchange_filters.get('symbol', 'N/A')}'.")
+    return None
 
+# --- Value Adjustment Functions ---
+
+
+def adjust_price_to_filter(price: Decimal, filters: Dict) -> Optional[Decimal]:
+    """Adjusts price to meet PRICE_FILTER constraints (tickSize)."""
+    price_filter = get_symbol_filter(filters, 'PRICE_FILTER')
+    if not price_filter:
+        logger.warning(
+            f"PRICE_FILTER not found for symbol {filters.get('symbol', 'N/A')}.")
+        return None  # Cannot adjust without filter
+
+    tick_size_str = price_filter.get('tickSize')
+    if tick_size_str is None:
+        logger.error(
+            f"PRICE_FILTER found but 'tickSize' missing for symbol {filters.get('symbol', 'N/A')}")
+        return None
+
+    tick_size = to_decimal(tick_size_str)
+    if tick_size is None or tick_size <= 0:
+        logger.error(
+            f"Invalid tickSize '{tick_size_str}' in PRICE_FILTER for {filters.get('symbol', 'N/A')}")
+        return None
+
+    # Ensure price is a multiple of tick_size, rounding down for BUY orders
+    # For SELL orders, you might round up, but for grid planning (BUY), round down.
+    if price is None:
+        return None
     try:
-        # Perform the adjustment using quantization (rounding to a specific exponent)
-        # We want to round down to the nearest multiple of tick_size.
-        # Decimal.quantize requires an exponent, not just the step size directly.
-        # For tick_size like 0.01, exponent is Decimal('0.01')
-        # For tick_size like 10, exponent is Decimal('1')
-        # We want to round down to the nearest multiple of tick_size.
-        # E.g., price=10.123, tick_size=0.01 -> (10.123 / 0.01) = 1012.3 -> floor(1012.3) = 1012 -> 1012 * 0.01 = 10.12
+        adjusted_price = (price // tick_size) * tick_size
+        adjusted_price = adjusted_price.quantize(
+            tick_size.normalize(), rounding=ROUND_DOWN)
 
-        factor = (price / tick_size).to_integral_value(rounding=ROUND_DOWN)
-        adjusted_price = factor * tick_size
+        # Also check min/max price from the filter
+        min_price = to_decimal(price_filter.get('minPrice'))
+        max_price = to_decimal(price_filter.get('maxPrice'))
 
-        # Alternative rounding based on side - currently defaults to ROUND_DOWN
-        # rounding_mode = ROUND_DOWN if side.upper() == 'BUY' else ROUND_UP # Example if different rounding needed
-        # adjusted_price = price.quantize(tick_size, rounding=rounding_mode) # Simpler if tick_size is 10^n
+        if min_price is not None and adjusted_price < min_price:
+            logger.debug(
+                f"Adjusted price {adjusted_price} below minPrice {min_price}")
+            return None  # Or adjust to min_price? For now, fail.
+        if max_price is not None and adjusted_price > max_price:
+            logger.debug(
+                f"Adjusted price {adjusted_price} above maxPrice {max_price}")
+            return None  # Price is too high
 
-        log.debug(
-            f"Adjusted price {price} to {adjusted_price} using tick_size {tick_size}")
         return adjusted_price
-    except (InvalidOperation, TypeError) as e:
-        log.error(
-            f"Error adjusting price {price} with tick_size {tick_size}: {e}", exc_info=True)
-        # Decide handling: raise error or return original price? Raising is safer.
-        raise ValueError(
-            f"Could not adjust price {price} with tick_size {tick_size}")
+    except (TypeError, ValueError, InvalidOperation) as e:
+        logger.error(
+            f"Error adjusting price {price} with tick_size {tick_size}: {e}")
+        return None
 
 
-def adjust_qty_to_step_size(quantity: Decimal, step_size: Decimal) -> Decimal:
-    """
-    Adjusts a quantity to be a valid multiple of the step_size.
-    Always rounds DOWN to the nearest step to avoid exceeding available balance or position size limits.
+def adjust_qty_to_filter(quantity: Decimal, filters: Dict) -> Optional[Decimal]:
+    """Adjusts quantity to meet LOT_SIZE constraints (stepSize)."""
+    lot_size_filter = get_symbol_filter(filters, 'LOT_SIZE')
+    if not lot_size_filter:
+        logger.warning(
+            f"LOT_SIZE filter not found for symbol {filters.get('symbol', 'N/A')}.")
+        return None
 
-    Args:
-        quantity (Decimal): The desired quantity.
-        step_size (Decimal): The minimum quantity increment allowed by the exchange filter.
+    step_size_str = lot_size_filter.get('stepSize')
+    if step_size_str is None:
+        logger.error(
+            f"LOT_SIZE filter found but 'stepSize' missing for symbol {filters.get('symbol', 'N/A')}")
+        return None
 
-    Returns:
-        Decimal: The adjusted quantity conforming to the step_size.
-    """
-    if not isinstance(quantity, Decimal):
-        log.warning(
-            f"adjust_qty_to_step_size received non-Decimal quantity: {quantity} (Type: {type(quantity)}). Attempting conversion.")
-        try:
-            quantity = Decimal(str(quantity))
-        except InvalidOperation:
-            log.error(
-                f"Invalid quantity value for Decimal conversion: {quantity}")
-            raise ValueError(
-                f"Invalid quantity value for Decimal conversion: {quantity}")
+    step_size = to_decimal(step_size_str)
+    if step_size is None or step_size <= 0:
+        logger.error(
+            f"Invalid stepSize '{step_size_str}' in LOT_SIZE filter for {filters.get('symbol', 'N/A')}")
+        return None
 
-    if not isinstance(step_size, Decimal) or step_size <= Decimal('0'):
-        log.error(
-            f"Invalid step_size: {step_size}. Must be a positive Decimal.")
-        raise ValueError(f"Invalid step_size: {step_size}")
+    # Ensure quantity is a multiple of step_size, rounding down.
+    if quantity is None:
+        return None
+    try:
+        adjusted_qty = (quantity // step_size) * step_size
+        adjusted_qty = adjusted_qty.quantize(
+            step_size.normalize(), rounding=ROUND_DOWN)
+
+        # Also check min/max quantity
+        min_qty = to_decimal(lot_size_filter.get('minQty'))
+        max_qty = to_decimal(lot_size_filter.get('maxQty'))
+
+        if min_qty is not None and adjusted_qty < min_qty:
+            logger.debug(
+                f"Adjusted quantity {adjusted_qty} below minQty {min_qty}")
+            # Adjust up to minQty IF possible without exceeding original intent significantly?
+            # For now, let's return None if it falls below minQty after adjustment.
+            return None
+        if max_qty is not None and adjusted_qty > max_qty:
+            logger.debug(
+                f"Adjusted quantity {adjusted_qty} above maxQty {max_qty}")
+            return None  # Exceeds max allowed quantity
+
+        return adjusted_qty
+    except (TypeError, ValueError, InvalidOperation) as e:
+        logger.error(
+            f"Error adjusting quantity {quantity} with step_size {step_size}: {e}")
+        return None
+
+
+def check_min_notional(price: Decimal, quantity: Decimal, filters: Dict) -> bool:
+    """Checks if the order meets the MIN_NOTIONAL filter."""
+    min_notional_filter = get_symbol_filter(filters, 'MIN_NOTIONAL')
+    if not min_notional_filter:
+        logger.warning(
+            f"MIN_NOTIONAL filter not found for symbol {filters.get('symbol', 'N/A')}. Assuming check passes.")
+        return True  # Pass if filter doesn't exist
+
+    min_notional_str = min_notional_filter.get('minNotional')
+    if min_notional_str is None:
+        logger.error(
+            f"MIN_NOTIONAL filter found but 'minNotional' value missing for {filters.get('symbol', 'N/A')}")
+        return False  # Fail if filter exists but value is missing
+
+    min_notional = to_decimal(min_notional_str)
+    if min_notional is None or min_notional <= 0:
+        logger.error(
+            f"Invalid minNotional value '{min_notional_str}' for {filters.get('symbol', 'N/A')}")
+        return False  # Fail on invalid value
+
+    if price is None or quantity is None:
+        logger.warning("Price or quantity is None, cannot check min notional.")
+        return False
 
     try:
-        # Similar logic to price adjustment, but always rounding down.
-        factor = (quantity / step_size).to_integral_value(rounding=ROUND_DOWN)
-        adjusted_quantity = factor * step_size
+        notional_value = price * quantity
+        if notional_value < min_notional:
+            logger.debug(
+                f"Order notional {notional_value:.8f} is less than MIN_NOTIONAL {min_notional:.8f}")
+            return False
+        else:
+            logger.debug(
+                f"Order notional {notional_value:.8f} meets MIN_NOTIONAL {min_notional:.8f}")
+            return True
+    except (TypeError, ValueError, InvalidOperation) as e:
+        logger.error(
+            f"Error calculating notional value (Price: {price}, Qty: {quantity}): {e}")
+        return False
 
-        log.debug(
-            f"Adjusted quantity {quantity} to {adjusted_quantity} using step_size {step_size}")
-        return adjusted_quantity
-    except (InvalidOperation, TypeError) as e:
-        log.error(
-            f"Error adjusting quantity {quantity} with step_size {step_size}: {e}", exc_info=True)
-        raise ValueError(
-            f"Could not adjust quantity {quantity} with step_size {step_size}")
 
-
-def check_min_notional(quantity: Decimal, price: Decimal, min_notional: Decimal) -> bool:
+# --- Main Filter Application Function ---
+def apply_filter_rules(
+    order: Dict,
+    exchange_filters: Dict,
+    # Required for % price checks later
+    current_price: Optional[Decimal] = None
+) -> Optional[Dict]:
     """
-    Checks if the calculated notional value (quantity * price) meets the minimum required.
+    Applies exchange filter rules (PRICE_FILTER, LOT_SIZE, MIN_NOTIONAL)
+    to a potential order dictionary.
+
+    Modifies 'price' and 'quantity' in the order dictionary in place
+    if adjustments are needed and possible.
 
     Args:
-        quantity (Decimal): The order quantity (MUST be adjusted for step_size first).
-        price (Decimal): The order price (MUST be adjusted for tick_size first).
-        min_notional (Decimal): The minimum notional value required by the exchange filter.
+        order (Dict): The proposed order dictionary (must contain 'price', 'quantity').
+                      Example: {'symbol': 'BTCUSD', 'side': 'BUY', 'type': 'LIMIT',
+                                'quantity': Decimal('0.001'), 'price': Decimal('65000.1234'), ...}
+        exchange_filters (Dict): The filter structure for the specific symbol,
+                                 as retrieved from exchange info. Should contain 'filters' list.
+        current_price (Optional[Decimal]): The current market price, needed for some
+                                           filters like PERCENT_PRICE (not implemented yet).
 
     Returns:
-        bool: True if quantity * price >= min_notional, False otherwise.
+        Optional[Dict]: The modified order dictionary if it passes all checks,
+                        otherwise None if any filter fails validation.
     """
-    if not all(isinstance(v, Decimal) for v in [quantity, price, min_notional]):
-        log.error(
-            f"Non-Decimal input to check_min_notional: qty={type(quantity)}, price={type(price)}, min_not={type(min_notional)}")
-        # Attempt conversion? Safer to raise error if inputs aren't already Decimal.
-        raise TypeError(
-            "Inputs quantity, price, and min_notional must be Decimal for check_min_notional.")
+    if not all(k in order for k in ['price', 'quantity']):
+        logger.error("Order dictionary missing 'price' or 'quantity'.")
+        return None
 
-    if quantity < Decimal('0') or price < Decimal('0') or min_notional < Decimal('0'):
-        log.error(
-            f"Inputs must be non-negative for check_min_notional: qty={quantity}, price={price}, min_not={min_notional}")
-        # Depending on context, a zero quantity/price might be valid but won't meet min_notional > 0
-        return False  # Or raise error? Returning False seems reasonable.
+    original_price = to_decimal(order.get('price'))
+    original_quantity = to_decimal(order.get('quantity'))
 
-    try:
-        notional_value = quantity * price
-        is_valid = notional_value >= min_notional
-        log.debug(
-            f"Check Min Notional: Qty={quantity}, Price={price}, Notional={notional_value:.8f}, MinRequired={min_notional}, Valid={is_valid}")
-        return is_valid
-    except (InvalidOperation, TypeError) as e:
-        log.error(
-            f"Error calculating notional value for qty={quantity}, price={price}: {e}", exc_info=True)
-        return False  # Treat calculation errors as failure
+    if original_price is None or original_quantity is None:
+        logger.error(
+            f"Invalid price or quantity in order: Price={order.get('price')}, Qty={order.get('quantity')}")
+        return None
+
+    # 1. Adjust Price
+    adjusted_price = adjust_price_to_filter(original_price, exchange_filters)
+    if adjusted_price is None:
+        logger.warning(
+            f"Order price {original_price} failed PRICE_FILTER adjustment or validation for {order.get('symbol')}.")
+        return None
+    if adjusted_price <= 0:
+        logger.warning(f"Adjusted price {adjusted_price} is zero or negative.")
+        return None
+
+    # 2. Adjust Quantity (using the *adjusted* price for potential future checks if needed)
+    adjusted_quantity = adjust_qty_to_filter(
+        original_quantity, exchange_filters)
+    if adjusted_quantity is None:
+        logger.warning(
+            f"Order quantity {original_quantity} failed LOT_SIZE adjustment or validation for {order.get('symbol')}.")
+        return None
+    if adjusted_quantity <= 0:
+        logger.warning(
+            f"Adjusted quantity {adjusted_quantity} is zero or negative.")
+        return None
+
+    # 3. Check MIN_NOTIONAL (using adjusted price and quantity)
+    if not check_min_notional(adjusted_price, adjusted_quantity, exchange_filters):
+        logger.warning(
+            f"Order failed MIN_NOTIONAL check: Price={adjusted_price}, Qty={adjusted_quantity} for {order.get('symbol')}.")
+        return None
+
+    # --- TODO: Implement other filters as needed ---
+    # Example: PERCENT_PRICE (requires current_price)
+    # percent_price_filter = get_symbol_filter(exchange_filters, 'PERCENT_PRICE')
+    # if percent_price_filter and current_price:
+    #     multiplier_up = to_decimal(percent_price_filter.get('multiplierUp'))
+    #     multiplier_down = to_decimal(percent_price_filter.get('multiplierDown'))
+    #     avg_price_mins = int(percent_price_filter.get('avgPriceMins', 5)) # Need avg price logic if used
+    #
+    #     if multiplier_up and adjusted_price > current_price * multiplier_up:
+    #         logger.warning(f"Order price {adjusted_price} exceeds PERCENT_PRICE upper limit.")
+    #         return None
+    #     if multiplier_down and adjusted_price < current_price * multiplier_down:
+    #          logger.warning(f"Order price {adjusted_price} below PERCENT_PRICE lower limit.")
+    #          return None
+
+    # --- Update order dictionary ---
+    order['price'] = adjusted_price
+    order['quantity'] = adjusted_quantity
+    logger.debug(
+        f"Order passed filter validation: Price={adjusted_price}, Qty={adjusted_quantity}")
+
+    return order
 
 
-# --- Example Usage (for testing when run directly via python -m src.utils.formatting) ---
-if __name__ == '__main__':
-    logging.basicConfig(
-        level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    log.info("--- Testing Formatting Utilities ---")
-
-    # Price Adjustment Tests
-    log.info("\n--- Price Adjustment Tests ---")
-    price1 = Decimal('65432.12345')
-    tick1 = Decimal('0.01')  # Standard price tick
-    adj_price1 = adjust_price_to_tick_size(price1, tick1)
-    log.info(
-        f"Price: {price1}, Tick: {tick1} -> Adjusted: {adj_price1} (Expected: 65432.12)")
-
-    price2 = Decimal('65432.1')
-    tick2 = Decimal('10')  # Large price tick
-    adj_price2 = adjust_price_to_tick_size(price2, tick2)
-    log.info(
-        f"Price: {price2}, Tick: {tick2} -> Adjusted: {adj_price2} (Expected: 65430)")
-
-    price3 = Decimal('0.123456789')
-    tick3 = Decimal('0.00000001')  # Small tick size
-    adj_price3 = adjust_price_to_tick_size(price3, tick3)
-    log.info(
-        f"Price: {price3}, Tick: {tick3} -> Adjusted: {adj_price3} (Expected: 0.12345678)")
-
-    # Quantity Adjustment Tests
-    log.info("\n--- Quantity Adjustment Tests ---")
-    qty1 = Decimal('0.123456789')
-    step1 = Decimal('0.001')  # Common step size
-    adj_qty1 = adjust_qty_to_step_size(qty1, step1)
-    log.info(
-        f"Qty: {qty1}, Step: {step1} -> Adjusted: {adj_qty1} (Expected: 0.123)")
-
-    qty2 = Decimal('15.6')
-    step2 = Decimal('1')  # Step size of 1
-    adj_qty2 = adjust_qty_to_step_size(qty2, step2)
-    log.info(
-        f"Qty: {qty2}, Step: {step2} -> Adjusted: {adj_qty2} (Expected: 15)")
-
-    qty3 = Decimal('0.00001234')
-    step3 = Decimal('0.00001')  # Small step size
-    adj_qty3 = adjust_qty_to_step_size(qty3, step3)
-    log.info(
-        f"Qty: {qty3}, Step: {step3} -> Adjusted: {adj_qty3} (Expected: 0.00001)")
-
-    # Min Notional Tests
-    log.info("\n--- Minimum Notional Tests ---")
-    # Use adjusted values from previous tests where appropriate
-    min_notional_req = Decimal('10.0')  # Example: $10 minimum
-
-    valid1 = check_min_notional(adj_qty1, adj_price1, min_notional_req)
-    log.info(f"Qty: {adj_qty1}, Price: {adj_price1}, MinNot: {min_notional_req} -> Valid: {valid1} (Expected: True, as {adj_qty1*adj_price1:.2f} > 10)")
-
-    # Test case designed to fail
-    qty_fail = Decimal('0.0001')
-    price_fail = Decimal('65000')  # Notional = 6.5
-    valid_fail = check_min_notional(qty_fail, price_fail, min_notional_req)
-    log.info(
-        f"Qty: {qty_fail}, Price: {price_fail}, MinNot: {min_notional_req} -> Valid: {valid_fail} (Expected: False)")
-
-    # Test case near the boundary
-    qty_boundary = Decimal('0.00015385')  # Approx 10.00025 notional at 65000
-    price_boundary = Decimal('65000')
-    valid_boundary = check_min_notional(
-        qty_boundary, price_boundary, min_notional_req)
-    log.info(
-        f"Qty: {qty_boundary}, Price: {price_boundary}, MinNot: {min_notional_req} -> Valid: {valid_boundary} (Expected: True)")
-
-    # Approx 9.9996 notional at 65000
-    qty_boundary_fail = Decimal('0.00015384')
-    valid_boundary_fail = check_min_notional(
-        qty_boundary_fail, price_boundary, min_notional_req)
-    log.info(f"Qty: {qty_boundary_fail}, Price: {price_boundary}, MinNot: {min_notional_req} -> Valid: {valid_boundary_fail} (Expected: False)")
+# File path: src/utils/formatting.py
