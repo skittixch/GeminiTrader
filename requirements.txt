@@ -29,6 +29,7 @@ feedparser==6.0.11
 findiff==0.12.1
 fonttools==4.57.0
 fqdn==1.5.1
+frozendict==2.4.6
 frozenlist==1.5.0
 gitdb==4.0.12
 GitPython==3.1.41
@@ -76,6 +77,7 @@ matplotlib-inline==0.1.7
 mistune==3.1.3
 mpmath==1.3.0
 multidict==6.2.0
+multitasking==0.0.11
 nbclient==0.10.2
 nbconvert==7.16.6
 nbformat==5.10.4
@@ -89,6 +91,7 @@ pandas==2.2.3
 pandas_ta==0.3.14b0
 pandocfilters==1.5.1
 parso==0.8.4
+peewee==3.17.9
 pexpect==4.9.0
 pillow==11.1.0
 platformdirs==4.3.7
@@ -108,6 +111,7 @@ pydantic==2.11.3
 pydantic_core==2.33.1
 Pygments==2.19.1
 pyparsing==3.2.3
+pyperclip==1.9.0
 python-binance==1.0.28
 python-dateutil==2.9.0.post0
 python-dotenv==1.1.0
@@ -155,3 +159,4 @@ websocket-client==1.8.0
 websockets==15.0.1
 widgetsnbextension==4.0.13
 yarl==1.19.0
+yfinance==0.2.55
