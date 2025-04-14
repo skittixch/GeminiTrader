@@ -33,15 +33,16 @@ database:
 portfolio:
   # Initial cash balance for backtesting (use Decimal format)
   initial_cash: '10000.00'
-  # Target quote asset (e.g., USD, USDT)
+  # Target quote asset (e.g., USD, USDT) - Used on Binance.US primarily
   quote_asset: 'USD'
 
 # --- Fee Settings ---
 # Fees should be represented as decimals (e.g., 0.001 for 0.1%)
+# These are default trading fees, specific pipeline fees might differ.
 fees:
-  # Maker fee for limit orders
+  # Maker fee for limit orders on Binance.US
   maker: '0.001'
-  # Taker fee for market orders (or limit orders that fill immediately)
+  # Taker fee for market orders on Binance.US
   taker: '0.001'
 
 # --- Logging Settings ---
@@ -66,59 +67,56 @@ data:
   # Path for caching exchange info (filters)
   exchange_info_cache: data/cache/exchange_info.json
 
+# --- Funding Pipeline Settings ---
+# Configuration for transferring funds from Coinbase to Binance.US via a low-fee asset
+funding_pipeline:
+  # Asset to use for low-fee transfers between exchanges (e.g., XLM, ALGO).
+  # NOTE: Dynamic selection based on current fees is a future enhancement (Phase 8+).
+  intermediate_asset: 'XLM' # Example: Stellar Lumens
+  binance_deposit_address: # Destination addresses on Binance.US - NOT secrets.
+    # Address for the INTERMEDIATE asset chosen above
+    XLM: "GBUTD5DNV43JBJP7AA657H2CYPUCAAFBXCKX7QE4XXGYIYFZZX2EKKVF"
+    # Add other potential intermediate assets if you switch the config later
+    # ALGO: "YOUR_BINANCE_US_ALGO_ADDRESS_HERE"
+    # Add deposit addresses for primary assets if needed elsewhere
+    # BTC: "YOUR_BINANCE_US_BTC_ADDRESS_HERE"
+  binance_deposit_memo: # MEMO required for certain assets (e.g., XLM, EOS, ATOM)
+    # Ensure you have the correct MEMO for the intermediate asset chosen above
+    XLM: "1080077224" # Often a string of numbers
+    # ALGO: "" # ALGO typically doesn't use a memo, but check Binance.US
+
 # --- Strategy Settings ---
 # Define parameters for different strategy components here
 strategies:
-  # --- Geometric Grid Strategy ---
-  # Parameters for the volatility-adjusted geometric dip-buying strategy
+  # --- Geometric Grid Strategy (Operates on Binance.US) ---
   geometric_grid:
-    # Base size of the FIRST order in the grid, specified in QUOTE currency (e.g., USD)
-    # This will be scaled by the confidence multiplier.
     base_order_size_usd: '100.00'
-    # Multiplier for ATR to determine the initial spacing below current price for level 1
     grid_spacing_atr_multiplier: '0.4'
-    # Geometric factor by which the ATR MULTIPLIER increases for subsequent levels
-    # Example: 1.1 means level 2 spacing = ATR * mult * 1.1, level 3 = ATR * mult * 1.1^2
     grid_spacing_geometric_factor: '1.1'
-    # Geometric factor by which the ORDER SIZE (in USD) increases for subsequent levels
-    # Example: 1.2 means level 2 size = base_usd * 1.2, level 3 = base_usd * 1.2^2
     order_size_geometric_factor: '1.2'
-    # Maximum number of buy limit orders to place in a single grid
     max_grid_levels: 5
-    # Maximum total quantity of BASE asset allowed across all open orders in a single grid plan
-    # Acts as a risk control to prevent over-exposure in one grid.
     max_total_grid_quantity_base: '0.5'
-    # Length for ATR calculation used in spacing
     atr_length: 14
 
-  # --- Simple Take Profit Strategy (for MVP) ---
+  # --- Simple Take Profit Strategy (Operates on Binance.US) ---
   simple_tp:
-    # Method for calculating TP: 'percentage' or 'atr'
     tp_method: 'percentage'
-    # Value for the chosen method:
-    # - If 'percentage', this is the target % gain (e.g., '0.015' for 1.5%)
-    # - If 'atr', this is the ATR multiple (e.g., '1.5' for 1.5 * ATR)
     tp_value: '0.015'
-    # Note: ATR length for TP calculation might use the same as grid or be separate later
 
   # --- Dollar Cost Averaging (DCA) Strategy ---
   dca:
-    # Target asset for DCA purchases
-    target_asset: 'BTCUSD'
-    # Base amount in QUOTE currency for each DCA purchase (can be modulated later)
+    # Base amount in QUOTE currency (e.g., USD) for each DCA purchase event.
+    # This is the amount intended to be transferred and ultimately used for trading.
     base_amount_usd: '25.00'
-    # Schedule for DCA (using cron-like syntax or descriptive strings for 'schedule' library)
-    # Examples: 'daily@10:30', 'weekly@monday@09:00', 'monthly@1st@08:00'
-    # Or use simpler frequency: 'daily', 'weekly', 'bi-weekly', 'monthly' (requires parsing)
-    # For Phase 2 (semi-auto): This determines when the user is prompted/notified.
-    schedule: 'bi-weekly' # Example: Run pipeline script semi-monthly
+    # Schedule for initiating the DCA funding pipeline.
+    schedule: 'bi-weekly'
+    # (target_asset for final purchase on Binance removed - pipeline focuses on transfer)
 
 # --- Feature Flags (Optional) ---
-# Use flags to enable/disable parts of the system during development/testing
 feature_flags:
   enable_live_trading: false
   enable_dca_pipeline: false
   enable_db_logging: true
-  use_confidence_scaling: false # Enable later phases
+  use_confidence_scaling: false
 
 # File path: config/config.yaml
