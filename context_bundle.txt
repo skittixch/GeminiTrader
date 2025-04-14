@@ -1,0 +1,826 @@
+### START OF FILE: src/data/kline_fetcher.py ###
+# src/data/kline_fetcher.py
+
+import logging
+import pandas as pd
+from decimal import Decimal, InvalidOperation
+from typing import List, Optional, Dict, Any
+
+# Assuming connector is imported where this function is called
+# from src.connectors.binance_us import BinanceUSConnector
+
+# --- Add project root to sys.path FIRST (for testing block) ---
+import os
+import sys
+_project_root_for_path = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _project_root_for_path not in sys.path:
+    sys.path.insert(0, _project_root_for_path)
+# --- End sys.path modification ---
+
+# Project Imports (mainly for testing block)
+try:
+    from src.utils.logging_setup import setup_logging
+    from src.utils.formatting import to_decimal
+    from src.connectors.binance_us import BinanceUSConnector
+    from config.settings import load_config
+except ImportError as e:
+    print(
+        f"WARNING: Could not import modules for kline_fetcher test block: {e}")
+    # Define dummies only if absolutely necessary for script structure
+    def setup_logging(*args, **kwargs): pass
+    def to_decimal(v, default=None): return Decimal(
+        v) if v is not None else default
+    # Cannot easily dummy Connector or load_config
+
+log = logging.getLogger(__name__)
+
+# Define constants for kline indices
+KLINE_OPEN_TIME = 0
+KLINE_OPEN = 1
+KLINE_HIGH = 2
+KLINE_LOW = 3
+KLINE_CLOSE = 4
+KLINE_VOLUME = 5
+KLINE_CLOSE_TIME = 6
+KLINE_QUOTE_ASSET_VOLUME = 7
+KLINE_NUMBER_OF_TRADES = 8
+KLINE_TAKER_BUY_BASE_ASSET_VOLUME = 9
+KLINE_TAKER_BUY_QUOTE_ASSET_VOLUME = 10
+KLINE_IGNORE = 11
+
+
+def fetch_and_prepare_klines(
+    connector: 'BinanceUSConnector',  # Use forward reference if needed
+    symbol: str,
+    interval: str,
+    start_str: Optional[str] = None,
+    end_str: Optional[str] = None,
+    limit: int = 1000
+) -> Optional[pd.DataFrame]:
+    """
+    Fetches historical Klines (candlesticks) for a symbol and interval from Binance.US,
+    parses them into a pandas DataFrame with appropriate types (Decimal, datetime).
+
+    Args:
+        connector (BinanceUSConnector): An initialized BinanceUSConnector instance.
+        symbol (str): The trading symbol (e.g., 'BTCUSD').
+        interval (str): The kline interval (e.g., '1m', '1h', '1d').
+        start_str (Optional[str]): Start date string (e.g., "1 Jan, 2020").
+        end_str (Optional[str]): End date string (e.g., "1 Feb, 2020").
+        limit (int): Max number of klines to retrieve per API call (max 1000).
+                     Note: The underlying library handles fetching more if the
+                     date range requires it, by making multiple calls.
+
+    Returns:
+        Optional[pd.DataFrame]: A pandas DataFrame with the kline data, indexed by
+                                UTC timestamp. Columns: 'Open', 'High', 'Low',
+                                'Close', 'Volume'. Values are Decimals.
+                                Returns None on failure or if no data is returned.
+    """
+    # CORRECTED: Check connector and its internal _client status via get_client() perhaps, or directly _client
+    # Simpler check: rely on connector methods to handle uninitialized client.
+    if not connector:
+        log.error(
+            f"Cannot fetch klines for {symbol}: Connector object is None.")
+        return None
+
+    log.info(
+        f"Fetching klines for {symbol} ({interval}) from {start_str} to {end_str}")
+    try:
+        # CORRECTED: Use the connector's method
+        raw_klines = connector.get_klines(
+            symbol=symbol, interval=interval, start_str=start_str, end_str=end_str, limit=limit
+        )
+
+        if not raw_klines:
+            log.warning(
+                f"No kline data returned for {symbol} with the given parameters.")
+            return None
+
+        # Define column names
+        columns = [
+            'Open time', 'Open', 'High', 'Low', 'Close', 'Volume', 'Close time',
+            'Quote asset volume', 'Number of trades', 'Taker buy base asset volume',
+            'Taker buy quote asset volume', 'Ignore'
+        ]
+        df = pd.DataFrame(raw_klines, columns=columns)
+
+        # Convert timestamp columns to datetime (UTC)
+        df['Open time'] = pd.to_datetime(df['Open time'], unit='ms', utc=True)
+        # df['Close time'] = pd.to_datetime(df['Close time'], unit='ms', utc=True) # Close time might not be needed
+
+        # Set the 'Open time' as the index
+        df.set_index('Open time', inplace=True)
+        df.index.name = 'Timestamp'  # Rename index
+
+        # Select and convert relevant columns to Decimal
+        ohlcv_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+        for col in ohlcv_cols:
+            try:
+                # Use the utility function for robust conversion
+                df[col] = df[col].apply(lambda x: to_decimal(x))
+            except (TypeError, ValueError, InvalidOperation) as e:
+                log.error(
+                    f"Error converting column '{col}' to Decimal: {e}. Data sample: {df[col].head()}")
+                # Depending on severity, might return None or try to continue
+                return None  # Fail if essential OHLCV data cannot be converted
+
+        # Keep only the essential columns
+        df = df[ohlcv_cols]
+
+        log.info(
+            f"Successfully fetched and prepared {len(df)} klines for {symbol}.")
+        return df
+
+    except Exception as e:
+        # Log the exception originating from the connector or pandas processing
+        log.exception(
+            f"An error occurred during fetch_and_prepare_klines for {symbol}: {e}")
+        return None
+
+
+# --- Example Usage / Test Block ---
+if __name__ == '__main__':
+    # Setup basic logging for testing
+    project_root = Path(__file__).parent.parent.parent
+    log_file_path = project_root / "data" / "logs" / "test_kline_fetcher.log"
+    try:
+        setup_logging(log_file=log_file_path,
+                      console_logging=True, log_level=logging.DEBUG)
+    except NameError:
+        print(
+            "WARNING: setup_logging not defined (likely import issue). Using basic config.")
+        logging.basicConfig(
+            level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    except Exception as log_e:
+        print(f"ERROR setting up logging: {log_e}. Using basic config.")
+        logging.basicConfig(
+            level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+    log.info("--- Testing Kline Fetcher ---")
+
+    try:
+        test_config = load_config()
+        if not test_config:
+            log.error("Failed to load config for test.")
+            sys.exit(1)
+
+        api_key = test_config.get('binance_us', {}).get('api_key')
+        api_secret = test_config.get('binance_us', {}).get('api_secret')
+
+        if not api_key or not api_secret or 'YOUR_ACTUAL' in api_key:
+            log.warning(
+                "API Key/Secret not found or using placeholders. Skipping live fetch test.")
+        else:
+            log.info("Initializing connector for live fetch test...")
+            test_connector = BinanceUSConnector(
+                api_key=api_key, api_secret=api_secret, config=test_config)
+
+            if test_connector.get_client():  # Check if connection was successful
+                log.info("Fetching recent 1h BTCUSD klines...")
+                df_klines = fetch_and_prepare_klines(
+                    connector=test_connector,
+                    symbol='BTCUSD',
+                    interval='1h',
+                    start_str='1 day ago UTC'  # Fetch only a small amount for test
+                )
+
+                if df_klines is not None and not df_klines.empty:
+                    log.info(f"Successfully fetched {len(df_klines)} klines.")
+                    print("\nFetched Data Sample (Head):")
+                    print(df_klines.head().to_markdown(
+                        numalign="right", stralign="right"))
+                    print("\nFetched Data Sample (Tail):")
+                    print(df_klines.tail().to_markdown(
+                        numalign="right", stralign="right"))
+                    print("\nData Types:")
+                    print(df_klines.dtypes)
+                else:
+                    log.error(
+                        "Failed to fetch klines or returned empty DataFrame.")
+            else:
+                log.error("Failed to initialize Binance client in connector.")
+
+    except NameError as ne:
+        log.error(
+            f"NameError during test setup (likely missing import/dummy): {ne}")
+    except Exception as e:
+        log.exception(f"An error occurred during the kline fetcher test: {e}")
+
+    log.info("--- Kline Fetcher Test Complete ---")
+
+
+# File path: src/data/kline_fetcher.py
+
+### END OF FILE: src/data/kline_fetcher.py ###
+
+
+### START OF FILE: config/settings.py ###
+# config/settings.py
+
+import yaml
+import os
+import logging
+from dotenv import load_dotenv
+from pathlib import Path
+from decimal import Decimal, InvalidOperation
+from typing import Dict, List, Optional, Tuple, Any
+
+logger = logging.getLogger(__name__)
+
+# --- Environment Loading ---
+project_root = Path(__file__).parent.parent
+dotenv_path = project_root / '.env'
+
+if dotenv_path.exists():
+    # Load existing variables THEN load our file to potentially override
+    load_dotenv(dotenv_path=dotenv_path, override=True)
+    logger.info(f"Loaded/Overridden environment variables from: {dotenv_path}")
+else:
+    logger.warning(
+        f".env file not found at {dotenv_path}. Relying on system environment variables.")
+
+
+# --- Configuration Loading Function ---
+def load_config(config_path: str = None) -> dict:
+    """
+    Loads configuration from a YAML file and merges it with environment variables.
+
+    Args:
+        config_path (str, optional): Path to the YAML configuration file.
+                                     Defaults to 'config/config.yaml' relative to project root.
+
+    Returns:
+        dict: The loaded and merged configuration dictionary. Returns empty dict on error.
+    """
+    if config_path is None:
+        default_config_path = project_root / 'config' / 'config.yaml'
+        config_path = default_config_path
+    else:
+        config_path = Path(config_path)
+
+    config = {}
+
+    # 1. Load base configuration from YAML file
+    try:
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+        if config is None:
+            config = {}
+        logger.info(f"Loaded base configuration from: {config_path}")
+    except FileNotFoundError:
+        logger.error(f"Configuration file not found at: {config_path}")
+        return {}
+    except yaml.YAMLError as e:
+        logger.error(
+            f"Error parsing YAML configuration file {config_path}: {e}")
+        return {}
+    except Exception as e:
+        logger.error(
+            f"An unexpected error occurred loading config file {config_path}: {e}")
+        return {}
+
+    # 2. Override with Environment Variables
+    env_vars_to_load = {
+        'BINANCE_US_API_KEY': ('binance_us', 'api_key'),
+        'BINANCE_US_SECRET': ('binance_us', 'api_secret'),
+        # This is the Key Name now
+        'COINBASE_API_KEY': ('coinbase', 'api_key'),
+        # Legacy/Unused? Keep for now.
+        'COINBASE_API_SECRET': ('coinbase', 'api_secret'),
+        'COINBASE_PRIVATE_KEY': ('coinbase', 'private_key'),  # <-- ADDED
+        'PLAID_CLIENT_ID': ('plaid', 'client_id'),
+        'PLAID_SECRET': ('plaid', 'secret'),
+        'PLAID_ENVIRONMENT': ('plaid', 'environment'),
+    }
+
+    for env_var, config_keys in env_vars_to_load.items():
+        value = os.getenv(env_var)
+        if value:
+            # Special handling for multi-line private key: replace '\n' back to newlines
+            if env_var == 'COINBASE_PRIVATE_KEY':
+                value = value.replace('\\n', '\n')
+
+            section = config
+            try:
+                for key in config_keys[:-1]:
+                    if key not in section or not isinstance(section[key], dict):
+                        section[key] = {}
+                    section = section[key]
+                last_key = config_keys[-1]
+                section[last_key] = value
+                # Log loaded value, masking secrets/private key
+                log_value = value[:5] + '...' + value[-5:] if len(value) > 10 and (
+                    'SECRET' in env_var or 'PRIVATE_KEY' in env_var) else value
+                # Prevent multi-line log spam
+                log_value = log_value.replace('\n', '\\n')
+                logger.info(
+                    f"Loaded '{env_var}' from environment variable (value='{log_value}')")
+            except Exception as e:
+                logger.error(
+                    f"Error setting config from env var {env_var}: {e}")
+        else:
+            # Check if the key exists in the base config loaded from YAML
+            key_exists_in_yaml = False
+            temp_section = config
+            try:
+                for key in config_keys:
+                    temp_section = temp_section[key]
+                key_exists_in_yaml = True
+            except (KeyError, TypeError):
+                pass
+
+            if not key_exists_in_yaml:
+                logger.warning(
+                    f"Environment variable '{env_var}' not found and corresponding key '{'.'.join(config_keys)}' not in base config.")
+
+    # 3. Convert specific string values to Decimal where applicable
+    decimal_keys = [
+        ('strategies', 'geometric_grid', 'base_order_size_usd'),
+        # ... (other decimal keys remain the same) ...
+        ('portfolio', 'initial_cash'),
+        ('fees', 'maker'),
+        ('fees', 'taker'),
+        ('strategies', 'dca', 'base_amount_usd'),
+    ]
+    # Changed to debug
+    logger.debug("Converting specified configuration values to Decimal...")
+    for key_path in decimal_keys:
+        section = config
+        try:
+            for key in key_path[:-1]:
+                section = section[key]
+            last_key = key_path[-1]
+            value_str = section.get(last_key)
+            # Avoid re-converting
+            if value_str is not None and not isinstance(value_str, Decimal):
+                original_type = type(value_str)
+                try:
+                    decimal_value = Decimal(str(value_str))
+                    section[last_key] = decimal_value
+                except (InvalidOperation, TypeError, ValueError) as e:
+                    logger.warning(
+                        f"Could not convert config value '{value_str}' (type: {original_type}) at key '{'.'.join(key_path)}' to Decimal: {e}. Keeping original value.")
+        except (KeyError, TypeError):
+            pass
+
+    return config
+
+# --- Helper function (remains the same) ---
+
+
+def get_config_value(config: dict, key_path: Tuple[str, ...], default: Any = None) -> Any:
+    """Safely retrieves a value from a nested dictionary using a key path tuple."""
+    section = config
+    try:
+        for key in key_path:
+            section = section[key]
+        return section
+    except (KeyError, TypeError):
+        return default
+
+# File path: config/settings.py
+
+### END OF FILE: config/settings.py ###
+
+
+### START OF FILE: config/config.yaml ###
+# config/config.yaml
+# Main configuration file for GeminiTrader
+
+# --- Binance.US API Settings ---
+# Credentials should be loaded from .env file (via settings.py)
+# Do NOT store keys/secrets directly in this YAML file.
+binance_us:
+  # api_key: overridden_by_env
+  # api_secret: overridden_by_env
+  # Optional: API request timeouts, etc.
+  # request_timeout: 10
+
+# --- Coinbase API Settings (for funding pipeline) ---
+# Credentials should be loaded from .env file
+coinbase:
+  # api_key: overridden_by_env
+  # api_secret: overridden_by_env
+
+# --- Plaid API Settings (Optional, for bank integration) ---
+# Credentials should be loaded from .env file
+plaid:
+  # client_id: overridden_by_env
+  # secret: overridden_by_env
+  # environment: overridden_by_env (e.g., 'sandbox', 'development', 'production')
+
+# --- Database Settings ---
+database:
+  # Path relative to project root
+  path: data/db
+  filename: geminitrader_log.db
+
+# --- Portfolio Settings ---
+portfolio:
+  # Initial cash balance for backtesting (use Decimal format)
+  initial_cash: '10000.00'
+  # Target quote asset (e.g., USD, USDT) - Used on Binance.US primarily
+  quote_asset: 'USD'
+
+# --- Fee Settings ---
+# Fees should be represented as decimals (e.g., 0.001 for 0.1%)
+# These are default trading fees, specific pipeline fees might differ.
+fees:
+  # Maker fee for limit orders on Binance.US
+  maker: '0.001'
+  # Taker fee for market orders on Binance.US
+  taker: '0.001'
+
+# --- Logging Settings ---
+logging:
+  # Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  level: INFO
+  # Path relative to project root for main trader log
+  trader_log_path: data/logs/trader.log
+  # Path for funding pipeline log
+  pipeline_log_path: data/logs/pipeline.log
+  # Max log file size in bytes
+  max_bytes: 10485760 # 10 MB
+  # Number of backup log files to keep
+  backup_count: 5
+
+# --- Data Paths ---
+# Best Practice: Define standard paths for required data files
+data:
+  # Path to the primary historical data file used by default for backtesting/analysis
+  # Use the fetch_historical_data.py script to create or update this file.
+  primary_kline_csv: data/cache/BTCUSD_1h_MAIN.csv
+  # Path for caching exchange info (filters)
+  exchange_info_cache: data/cache/exchange_info.json
+
+# --- Funding Pipeline Settings ---
+# Configuration for transferring funds from Coinbase to Binance.US via a low-fee asset
+funding_pipeline:
+  # Asset to use for low-fee transfers between exchanges (e.g., XLM, ALGO).
+  # NOTE: Dynamic selection based on current fees is a future enhancement (Phase 8+).
+  intermediate_asset: 'XLM' # Example: Stellar Lumens
+  binance_deposit_address: # Destination addresses on Binance.US - NOT secrets.
+    # Address for the INTERMEDIATE asset chosen above
+    XLM: "GBUTD5DNV43JBJP7AA657H2CYPUCAAFBXCKX7QE4XXGYIYFZZX2EKKVF"
+    # Add other potential intermediate assets if you switch the config later
+    # ALGO: "YOUR_BINANCE_US_ALGO_ADDRESS_HERE"
+    # Add deposit addresses for primary assets if needed elsewhere
+    # BTC: "YOUR_BINANCE_US_BTC_ADDRESS_HERE"
+  binance_deposit_memo: # MEMO required for certain assets (e.g., XLM, EOS, ATOM)
+    # Ensure you have the correct MEMO for the intermediate asset chosen above
+    XLM: "1080077224" # Often a string of numbers
+    # ALGO: "" # ALGO typically doesn't use a memo, but check Binance.US
+
+# --- Strategy Settings ---
+# Define parameters for different strategy components here
+strategies:
+  # --- Geometric Grid Strategy (Operates on Binance.US) ---
+  geometric_grid:
+    base_order_size_usd: '100.00'
+    grid_spacing_atr_multiplier: '0.4'
+    grid_spacing_geometric_factor: '1.1'
+    order_size_geometric_factor: '1.2'
+    max_grid_levels: 5
+    max_total_grid_quantity_base: '0.5'
+    atr_length: 14
+
+  # --- Simple Take Profit Strategy (Operates on Binance.US) ---
+  simple_tp:
+    tp_method: 'percentage'
+    tp_value: '0.015'
+
+  # --- Dollar Cost Averaging (DCA) Strategy ---
+  dca:
+    # Base amount in QUOTE currency (e.g., USD) for each DCA purchase event.
+    # This is the amount intended to be transferred and ultimately used for trading.
+    base_amount_usd: '25.00'
+    # Schedule for initiating the DCA funding pipeline.
+    schedule: 'bi-weekly'
+    # (target_asset for final purchase on Binance removed - pipeline focuses on transfer)
+
+# --- Feature Flags (Optional) ---
+feature_flags:
+  enable_live_trading: false
+  enable_dca_pipeline: false
+  enable_db_logging: true
+  use_confidence_scaling: false
+
+# File path: config/config.yaml
+### END OF FILE: config/config.yaml ###
+
+
+### START OF FILE: src/utils/logging_setup.py ###
+# src/utils/logging_setup.py
+import logging
+import os
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+
+
+def setup_logging(
+    log_level=logging.INFO,
+    log_format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    log_file: Path = None,  # Takes a Path object for the full file path
+    max_bytes=10*1024*1024,  # 10 MB
+    backup_count=5,
+    console_logging=True
+):
+    """Configures logging for the application."""
+
+    # Get the root logger
+    logger = logging.getLogger()
+    logger.setLevel(log_level)  # Set root logger level
+
+    # Prevent multiple handlers being added if called again
+    if logger.hasHandlers():
+        logger.handlers.clear()
+
+    formatter = logging.Formatter(log_format)
+
+    # Console Handler
+    if console_logging:
+        ch = logging.StreamHandler()
+        ch.setLevel(log_level)
+        ch.setFormatter(formatter)
+        logger.addHandler(ch)
+
+    # File Handler
+    if log_file:
+        # Ensure log directory exists
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+
+        # Use RotatingFileHandler
+        fh = RotatingFileHandler(
+            log_file,
+            maxBytes=max_bytes,
+            backupCount=backup_count,
+            encoding='utf-8'
+        )
+        fh.setLevel(log_level)
+        fh.setFormatter(formatter)
+        logger.addHandler(fh)
+        logging.info(f"Logging initialized. Log file: {log_file}")
+    elif not console_logging:
+        # Basic config if no file and no console specified, logs to stderr
+        logging.basicConfig(level=log_level, format=log_format)
+        logging.warning(
+            "Logging to stderr because no log_file was specified and console_logging is False.")
+
+    # Example: Quiet down overly verbose libraries
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    logging.getLogger("binance").setLevel(logging.INFO)  # Or WARNING
+
+### END OF FILE: src/utils/logging_setup.py ###
+
+
+### START OF FILE: src/connectors/binance_us.py ###
+# src/connectors/binance_us.py
+
+import logging
+from binance.client import Client
+from binance.exceptions import BinanceAPIException, BinanceRequestException
+from decimal import Decimal
+from typing import Dict, List, Optional, Any
+
+# Note: No 'from config.settings import load_config' here usually.
+# Config is typically passed into the constructor.
+
+logger = logging.getLogger(__name__)
+
+
+class BinanceUSConnector:
+    """Handles connection and API calls to Binance.US."""
+
+    def __init__(self, api_key: str, api_secret: str, config: Dict, tld: str = 'us'):
+        """
+        Initializes the Binance US Connector.
+
+        Args:
+            api_key (str): Binance.US API Key.
+            api_secret (str): Binance.US API Secret.
+            config (Dict): Loaded application configuration (might be used for timeouts etc.).
+            tld (str): Top-level domain for the API ('us' for Binance.US).
+        """
+        if not api_key or not api_secret:
+            logger.error(
+                "API Key or Secret not provided for BinanceUSConnector.")
+            # Depending on use case, might raise an error or allow limited functionality
+            # For trading, keys are essential.
+            raise ValueError(
+                "API Key and Secret are required for BinanceUSConnector")
+
+        self.api_key = api_key
+        self.api_secret = api_secret
+        self.tld = tld
+        self.config = config  # Store config if needed later
+        self._client: Optional[Client] = None
+        self._connect()
+
+    def _connect(self):
+        """Establishes the connection to the Binance API."""
+        try:
+            self._client = Client(self.api_key, self.api_secret, tld=self.tld)
+            # Test connection with a simple call like getting server time or account info
+            self.get_server_time()
+            logger.info("Binance.US connection established successfully.")
+        except (BinanceAPIException, BinanceRequestException) as e:
+            logger.error(f"Failed to connect to Binance.US API: {e}")
+            self._client = None  # Ensure client is None if connection failed
+        except Exception as e:
+            logger.exception(
+                f"An unexpected error occurred during Binance.US connection: {e}")
+            self._client = None
+
+    def get_client(self) -> Optional[Client]:
+        """Returns the initialized Binance API client instance."""
+        if self._client is None:
+            logger.warning(
+                "Binance client is not initialized. Attempting to reconnect...")
+            self._connect()  # Attempt to reconnect
+        return self._client
+
+    # --- Wrapper Methods for Common API Calls ---
+
+    def get_server_time(self) -> Optional[int]:
+        """Gets the current server time from Binance."""
+        client = self.get_client()
+        if not client:
+            return None
+        try:
+            server_time = client.get_server_time()
+            logger.debug(f"Binance server time: {server_time['serverTime']}")
+            return server_time['serverTime']
+        except (BinanceAPIException, BinanceRequestException) as e:
+            logger.error(f"API Error getting server time: {e}")
+            return None
+        except Exception as e:
+            logger.exception(f"Unexpected error getting server time: {e}")
+            return None
+
+    def get_account_info(self) -> Optional[Dict]:
+        """Retrieves account information."""
+        client = self.get_client()
+        if not client:
+            return None
+        try:
+            account_info = client.get_account()
+            logger.info("Account information retrieved.")
+            # Optionally process/filter balances here
+            return account_info
+        except (BinanceAPIException, BinanceRequestException) as e:
+            logger.error(f"API Error getting account info: {e}")
+            return None
+        except Exception as e:
+            logger.exception(f"Unexpected error getting account info: {e}")
+            return None
+
+    def get_asset_balance(self, asset: str) -> Optional[Decimal]:
+        """Retrieves the free balance for a specific asset."""
+        client = self.get_client()
+        if not client:
+            return None
+        try:
+            balance = client.get_asset_balance(asset=asset)
+            if balance:
+                free_balance = Decimal(balance['free'])
+                logger.debug(f"Free balance for {asset}: {free_balance}")
+                return free_balance
+            else:
+                logger.warning(f"Asset {asset} not found in account balance.")
+                return Decimal('0.0')  # Return zero if asset not found
+        except (BinanceAPIException, BinanceRequestException) as e:
+            logger.error(f"API Error getting asset balance for {asset}: {e}")
+            return None
+        except Exception as e:
+            logger.exception(
+                f"Unexpected error getting asset balance for {asset}: {e}")
+            return None
+
+    def get_exchange_info(self) -> Optional[Dict]:
+        """Retrieves exchange information (symbols, filters, etc.)."""
+        client = self.get_client()
+        if not client:
+            return None
+        try:
+            info = client.get_exchange_info()
+            logger.info("Exchange information retrieved.")
+            return info
+        except (BinanceAPIException, BinanceRequestException) as e:
+            logger.error(f"API Error getting exchange info: {e}")
+            return None
+        except Exception as e:
+            logger.exception(f"Unexpected error getting exchange info: {e}")
+            return None
+
+    def get_symbol_info(self, symbol: str) -> Optional[Dict]:
+        """Retrieves information for a specific symbol."""
+        client = self.get_client()
+        if not client:
+            return None
+        try:
+            info = client.get_symbol_info(symbol=symbol)
+            logger.debug(f"Information retrieved for symbol {symbol}.")
+            return info
+        except (BinanceAPIException, BinanceRequestException) as e:
+            logger.error(f"API Error getting symbol info for {symbol}: {e}")
+            return None
+        except Exception as e:
+            logger.exception(
+                f"Unexpected error getting symbol info for {symbol}: {e}")
+            return None
+
+    def get_klines(self, symbol: str, interval: str, start_str: Optional[str] = None, end_str: Optional[str] = None, limit: int = 1000) -> Optional[List[List[Any]]]:
+        """Retrieves kline/candlestick data for a symbol."""
+        client = self.get_client()
+        if not client:
+            return None
+        try:
+            klines = client.get_historical_klines(
+                symbol, interval, start_str=start_str, end_str=end_str, limit=limit)
+            logger.debug(
+                f"Retrieved {len(klines)} klines for {symbol} ({interval}).")
+            return klines
+        except (BinanceAPIException, BinanceRequestException) as e:
+            logger.error(f"API Error getting klines for {symbol}: {e}")
+            return None
+        except Exception as e:
+            logger.exception(
+                f"Unexpected error getting klines for {symbol}: {e}")
+            return None
+
+    # --- Add more methods for placing/cancelling orders, getting order book etc. as needed ---
+    # Example:
+    # def create_limit_buy_order(self, symbol: str, quantity: Decimal, price: Decimal) -> Optional[Dict]:
+    #     client = self.get_client()
+    #     if not client: return None
+    #     try:
+    #         # Ensure quantity and price are formatted correctly for the API
+    #         # Use helper functions from formatting.py if needed, based on exchange filters
+    #         formatted_quantity = f"{quantity:.8f}" # Example formatting, adjust based on filters
+    #         formatted_price = f"{price:.2f}"    # Example formatting, adjust based on filters
+    #
+    #         order = client.order_limit_buy(
+    #             symbol=symbol,
+    #             quantity=formatted_quantity,
+    #             price=formatted_price
+    #         )
+    #         logger.info(f"Limit BUY order created for {symbol}: {order}")
+    #         return order
+    #     except (BinanceAPIException, BinanceRequestException) as e:
+    #         logger.error(f"API Error creating limit buy order for {symbol}: {e}")
+    #         return None
+    #     except Exception as e:
+    #         logger.exception(f"Unexpected error creating limit buy order for {symbol}: {e}")
+    #         return None
+
+
+# Example usage block (optional, for direct testing)
+if __name__ == '__main__':
+    # This block needs access to load_config to run standalone
+    # Add temporary import or structure differently for testing
+    print("Running BinanceUSConnector example...")
+    logging.basicConfig(
+        level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+    try:
+        # Need to load config here for testing
+        # temp_project_root = Path(__file__).parent.parent.parent
+        # sys.path.insert(0, str(temp_project_root))
+        from config.settings import load_config
+        test_config = load_config()
+
+        if not test_config.get('binance_us', {}).get('api_key') or \
+           not test_config.get('binance_us', {}).get('api_secret'):
+            print("API Key/Secret not found in config or .env. Skipping connection test.")
+        else:
+            connector = BinanceUSConnector(
+                api_key=test_config['binance_us']['api_key'],
+                api_secret=test_config['binance_us']['api_secret'],
+                config=test_config
+            )
+
+            if connector.get_client():
+                print("Connection test successful.")
+                # Test getting balance (replace with an asset you hold)
+                # balance = connector.get_asset_balance('USD')
+                # print(f"USD Balance: {balance}")
+                # Test getting symbol info
+                info = connector.get_symbol_info('BTCUSD')
+                if info:
+                    print("BTCUSD Info retrieved.")
+                    # print(info)
+            else:
+                print("Connection test failed.")
+
+    except ImportError:
+        print("Could not import load_config. Ensure config/settings.py is runnable or restructure test.")
+    except Exception as main_e:
+        print(f"An error occurred in the example block: {main_e}")
+
+# File path: src/connectors/binance_us.py
+
+### END OF FILE: src/connectors/binance_us.py ###
+
+

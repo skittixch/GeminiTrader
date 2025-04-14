@@ -1,4 +1,4 @@
-# START OF FILE: config/config.yaml
+# config/config.yaml
 # Main configuration file for GeminiTrader
 
 # --- Binance.US API Settings ---
@@ -13,9 +13,8 @@ binance_us:
 # --- Coinbase API Settings (for funding pipeline) ---
 # Credentials should be loaded from .env file
 coinbase:
-  # api_key: overridden_by_env (CDP Key Name)
-  # api_secret: overridden_by_env (Legacy/Unused)
-  # private_key: overridden_by_env (CDP Private Key)
+  # api_key: overridden_by_env
+  # api_secret: overridden_by_env
 
 # --- Plaid API Settings (Optional, for bank integration) ---
 # Credentials should be loaded from .env file
@@ -64,35 +63,27 @@ logging:
 data:
   # Path to the primary historical data file used by default for backtesting/analysis
   # Use the fetch_historical_data.py script to create or update this file.
-  primary_kline_csv: data/cache/BTCUSD_1h_MAIN.csv # Example Path
+  primary_kline_csv: data/cache/BTCUSD_1h_MAIN.csv
   # Path for caching exchange info (filters)
   exchange_info_cache: data/cache/exchange_info.json
-
-# --- Trading Parameters ---
-# Parameters specific to the live trading bot operation
-trading:
-  # Primary symbol pair for the live trading bot
-  symbol: 'BTCUSD' # Adjust as needed
-  # Primary interval for fetching klines and calculating indicators
-  interval: '1h'  # Adjust as needed
-  # Lookback period (number of candles) to fetch for indicator calculation
-  # Ensure this is sufficient for the longest indicator period (e.g., MACD slow+signal, SMA_50) + buffer
-  kline_limit: 200 # Increased from 100 for safety
-  # Time to sleep between main loop iterations (in seconds)
-  loop_sleep_time: 60 # Check every minute (adjust as needed)
 
 # --- Funding Pipeline Settings ---
 # Configuration for transferring funds from Coinbase to Binance.US via a low-fee asset
 funding_pipeline:
   # Asset to use for low-fee transfers between exchanges (e.g., XLM, ALGO).
+  # NOTE: Dynamic selection based on current fees is a future enhancement (Phase 8+).
   intermediate_asset: 'XLM' # Example: Stellar Lumens
   binance_deposit_address: # Destination addresses on Binance.US - NOT secrets.
+    # Address for the INTERMEDIATE asset chosen above
     XLM: "GBUTD5DNV43JBJP7AA657H2CYPUCAAFBXCKX7QE4XXGYIYFZZX2EKKVF"
-    # ALGO: "YOUR_BINANCE_US_ALGO_ADDRESS_HERE" # If using ALGO
-    # BTC: "YOUR_BINANCE_US_BTC_ADDRESS_HERE" # If direct BTC needed
+    # Add other potential intermediate assets if you switch the config later
+    # ALGO: "YOUR_BINANCE_US_ALGO_ADDRESS_HERE"
+    # Add deposit addresses for primary assets if needed elsewhere
+    # BTC: "YOUR_BINANCE_US_BTC_ADDRESS_HERE"
   binance_deposit_memo: # MEMO required for certain assets (e.g., XLM, EOS, ATOM)
+    # Ensure you have the correct MEMO for the intermediate asset chosen above
     XLM: "1080077224" # Often a string of numbers
-    # ALGO: "" # ALGO typically doesn't use a memo
+    # ALGO: "" # ALGO typically doesn't use a memo, but check Binance.US
 
 # --- Strategy Settings ---
 # Define parameters for different strategy components here
@@ -104,30 +95,28 @@ strategies:
     grid_spacing_geometric_factor: '1.1'
     order_size_geometric_factor: '1.2'
     max_grid_levels: 5
-    max_total_grid_quantity_base: '0.5' # Example max BTC for the grid
-    atr_length: 14 # Corresponds to ATR_PERIOD in indicators.py
+    max_total_grid_quantity_base: '0.5'
+    atr_length: 14
 
-  # --- Profit Taking Strategy (Operates on Binance.US) ---
-  profit_taking:
-    tp_method: 'atr_multiple'   # Options: 'percentage', 'atr_multiple', 'fixed_amount'
-    tp_value: '1.5'             # Meaning depends on method: 0.015 (1.5%) for percentage, 1.5 for ATR multiple, 100.00 for fixed amount USD
-    # Optional: Confidence multipliers to adjust TP distance
-    confidence_multiplier_low: '0.8'    # TP is 80% of normal offset if confidence is low
-    confidence_multiplier_medium: '1.0' # TP is 100% of normal offset if confidence is medium
-    confidence_multiplier_high: '1.2'   # TP is 120% of normal offset if confidence is high
+  # --- Simple Take Profit Strategy (Operates on Binance.US) ---
+  simple_tp:
+    tp_method: 'percentage'
+    tp_value: '0.015'
 
   # --- Dollar Cost Averaging (DCA) Strategy ---
   dca:
     # Base amount in QUOTE currency (e.g., USD) for each DCA purchase event.
+    # This is the amount intended to be transferred and ultimately used for trading.
     base_amount_usd: '25.00'
     # Schedule for initiating the DCA funding pipeline.
-    schedule: 'bi-weekly' # Options: 'daily', 'weekly', 'bi-weekly', 'monthly' (logic TBD)
+    schedule: 'bi-weekly'
+    # (target_asset for final purchase on Binance removed - pipeline focuses on transfer)
 
 # --- Feature Flags (Optional) ---
 feature_flags:
   enable_live_trading: false
   enable_dca_pipeline: false
   enable_db_logging: true
-  use_confidence_scaling: false # Set to true later when confidence score is implemented
+  use_confidence_scaling: false
 
-# END OF FILE: config/config.yaml
+# File path: config/config.yaml
