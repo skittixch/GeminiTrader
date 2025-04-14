@@ -123,6 +123,14 @@ strategies:
     # Schedule for initiating the DCA funding pipeline.
     schedule: 'bi-weekly' # Options: 'daily', 'weekly', 'bi-weekly', 'monthly' (logic TBD)
 
+    # --- ADDED: Risk Controls Section ---
+  risk_controls:
+    time_stop:
+      enabled: true                 # Enable/disable the time stop feature
+      duration_hours: 168          # 7 * 24 = 1 week. Time in hours after which to evaluate exit
+      min_profit_pct: 0.001       # Default: 0.001 (0.1%). Only trigger exit if PnL% is below this threshold.
+      # confidence_drop_threshold: 0.3 # Optional: Add later if using confidence drop check
+
 # --- Feature Flags (Optional) ---
 feature_flags:
   enable_live_trading: false
