@@ -35,7 +35,7 @@ portfolio:
   # Initial cash balance for backtesting (use Decimal format)
   initial_cash: '10000.00'
   # Target quote asset (e.g., USD, USDT) - Used on Binance.US primarily
-  quote_asset: 'USD'
+  quote_asset: 'USDT'
 
 # --- Fee Settings ---
 # Fees should be represented as decimals (e.g., 0.001 for 0.1%)
@@ -49,16 +49,20 @@ fees:
 # --- Logging Settings ---
 logging:
   # Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
-  level: INFO
+  level: DEBUG # Set file log to DEBUG to capture everything
+  # Minimum level to display on the console (INFO, WARNING, ERROR, CRITICAL)
+  console_level: WARNING # <<< CHANGE THIS TO WARNING
   # Path relative to project root for main trader log
   trader_log_path: data/logs/trader.log
+  # Path relative to project root for the errors-only log
+  error_log_path: data/logs/errors.log # <<< ADD THIS LINE
   # Path for funding pipeline log
   pipeline_log_path: data/logs/pipeline.log
   # Max log file size in bytes
   max_bytes: 10485760 # 10 MB
   # Number of backup log files to keep
   backup_count: 5
-
+  
 # --- Data Paths ---
 # Best Practice: Define standard paths for required data files
 data:
@@ -72,7 +76,7 @@ data:
 # Parameters specific to the live trading bot operation
 trading:
   # Primary symbol pair for the live trading bot
-  symbol: 'BTCUSD' # Adjust as needed
+  symbol: 'BTCUSDT' # Adjust as needed
   # Primary interval for fetching klines and calculating indicators
   interval: '1h'  # Adjust as needed
   # Lookback period (number of candles) to fetch for indicator calculation
@@ -80,6 +84,12 @@ trading:
   kline_limit: 200 # Increased from 100 for safety
   # Time to sleep between main loop iterations (in seconds)
   loop_sleep_time: 60 # Check every minute (adjust as needed)
+
+    # --- NEW: Entry Condition Parameters ---
+  entry_confidence_threshold: 0.55 # Minimum confidence score to consider entry
+  entry_rsi_threshold: 75.0       # Do not enter if RSI is above this value (overbought filter)
+  # Add other entry filters here later (e.g., volatility filter)
+
 
 # --- Funding Pipeline Settings ---
 # Configuration for transferring funds from Coinbase to Binance.US via a low-fee asset
@@ -130,6 +140,20 @@ strategies:
       duration_hours: 168          # 7 * 24 = 1 week. Time in hours after which to evaluate exit
       min_profit_pct: 0.001       # Default: 0.001 (0.1%). Only trigger exit if PnL% is below this threshold.
       # confidence_drop_threshold: 0.3 # Optional: Add later if using confidence drop check
+  # --- Simulation Settings ---
+simulation:
+  # Path relative to project root
+  data_file: "data/simulation/BTCUSDT_1h_2024-01-01_2024-03-31.csv"
+
+  # Required columns in the CSV data_file
+  required_columns: ["Timestamp", "Open", "High", "Low", "Close", "Volume"]
+
+  # Name of the timestamp column in the CSV (expects Unix ms)
+  timestamp_column: "Timestamp"
+
+  # Time in seconds to sleep between simulation steps (for observation)
+  # Set to 0 for max speed.
+  step_delay_seconds: 0.05
 
 # --- Feature Flags (Optional) ---
 feature_flags:

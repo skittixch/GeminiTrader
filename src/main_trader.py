@@ -6,12 +6,13 @@ from pathlib import Path
 import pandas as pd
 from decimal import Decimal
 import schedule
-from typing import Optional, Dict, Any, List
-import random  # For order simulation
+from typing import Optional, Dict, Any, List, Set
+import random
+from tqdm import tqdm
+import sys  # Keep sys import
 
 # --- Add project root ---
 import os
-import sys
 _project_root = Path(__file__).resolve().parent.parent
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
@@ -21,8 +22,7 @@ if str(_project_root) not in sys.path:
 try:
     from config.settings import load_config, get_config_value
     from src.utils.logging_setup import setup_logging
-    # --- Corrected Import ---
-    from src.utils.formatting import to_decimal, apply_filter_rules_to_qty
+    from src.utils.formatting import to_decimal, apply_filter_rules_to_qty, get_symbol_info_from_exchange_info
     from src.connectors.binance_us import BinanceUSConnector
     from src.data.kline_fetcher import fetch_and_prepare_klines
     from src.analysis.indicators import (
@@ -35,64 +35,75 @@ try:
     from src.analysis.confidence import calculate_confidence_v1
     from src.strategies.risk_controls import check_time_stop
     from src.strategies.geometric_grid import plan_buy_grid_v1
+    from src.core.order_manager import OrderManager
+    from src.core.state_manager import StateManager  # Added Import
 except ImportError as e:
     logging.basicConfig(level=logging.ERROR)
     logging.critical(
         f"FATAL ERROR: Module import failed. Error: {e}", exc_info=True)
     sys.exit(1)
 
-# --- Global Logger ---
 logger = logging.getLogger(__name__)
-
-# --- Main Application Class ---
 
 
 class GeminiTrader:
-    """ Main class orchestrating the GeminiTrader bot operations. """
-    # --- Simulation Control Flag ---
-    # Set to True to run with simulated orders, False for live API calls (when uncommented)
     SIMULATION_MODE = True
-    # --- End Simulation Control ---
+    SIM_PLACEMENT_SUCCESS_RATE = 0.99
 
     def __init__(self):
         self.config = {}
         self.connector: Optional[BinanceUSConnector] = None
-        # --- State Management ---
+        self.order_manager: Optional[OrderManager] = None
+        self.state_manager: Optional[StateManager] = None
         self.state = {
             "klines": pd.DataFrame(), "indicators": {}, "pivot_levels": None,
             "last_data_update_time": None, "last_pivot_calc_time": None,
             "symbol_info": None, "position": None, "sr_zones": [],
             "confidence_score": None, "account_balance": {},
-            "active_grid_orders": [],  # List to store dicts of active limit orders from grid
-            # Store details of the active TP order (if any)
-            "active_tp_order": None,
+            "active_grid_orders": [], "active_tp_order": None,
+            "simulation_data": None, "simulation_index": 0,
+            "simulation_end_index": 0, "simulation_start_time": None,
+            "simulation_mode": self.SIMULATION_MODE,
+            "sim_placement_success_rate": self.SIM_PLACEMENT_SUCCESS_RATE,
+            "sim_grid_fills": 0, "sim_tp_fills": 0, "sim_market_sells": 0,
+            "sim_grid_place_fail": 0, "sim_tp_place_fail": 0,
+            "sim_grid_cancel_fail": 0, "sim_tp_cancel_fail": 0,
+            "main_loop_errors": 0, "main_loop_warnings": 0,
+            "last_state_save_time": None,
         }
         self.is_running = False
         self._initialize()
 
     def _initialize(self):
-        """Load config, logging, connectors, initial data."""
+        self.state["simulation_start_time"] = time.monotonic()
         print(
             f"Initializing GeminiTrader... (SIMULATION_MODE: {self.SIMULATION_MODE})")
         self.config = load_config()
         print("Config loaded.")
         if not self.config:
-            logging.critical("FATAL: Config load failed.")
+            print("FATAL: Config load failed.")
             sys.exit(1)
-        try:  # Logging
+        try:
             log_level_str = get_config_value(
                 self.config, ('logging', 'level'), 'INFO').upper()
             log_level = getattr(logging, log_level_str, logging.INFO)
             log_file_path = _project_root / \
                 get_config_value(
                     self.config, ('logging', 'trader_log_path'), 'data/logs/trader.log')
-            setup_logging(log_level=log_level, log_file=log_file_path, max_bytes=get_config_value(self.config, ('logging', 'max_bytes'),
-                          10485760), backup_count=get_config_value(self.config, ('logging', 'backup_count'), 5), console_logging=True)
+            console_log_level_str = get_config_value(
+                self.config, ('logging', 'console_level'), 'WARNING').upper()
+            console_log_level = getattr(
+                logging, console_log_level_str, logging.WARNING)
+            error_log_path_str = get_config_value(
+                self.config, ('logging', 'error_log_path'), 'data/logs/errors.log')
+            setup_logging(log_level=log_level, log_file=log_file_path, error_log_file=error_log_path_str, max_bytes=get_config_value(self.config, ('logging', 'max_bytes'),
+                          10485760), backup_count=get_config_value(self.config, ('logging', 'backup_count'), 5), console_logging=True, console_log_level=console_log_level)
             logger.info(
-                f"Logging setup: Level={log_level_str}, File={log_file_path}")
+                f"Logging setup: File Level={log_level_str}, Console Level={console_log_level_str}, File={log_file_path}, Error File={error_log_path_str}")
         except Exception as e:
-            logging.exception(f"Logging setup error: {e}.")
-        try:  # Connector
+            print(f"Logging setup error: {e}. Exiting.")
+            sys.exit(1)
+        try:
             api_key = get_config_value(self.config, ('binance_us', 'api_key'))
             api_secret = get_config_value(
                 self.config, ('binance_us', 'api_secret'))
@@ -106,7 +117,7 @@ class GeminiTrader:
                 logger.critical("FATAL: Failed Binance client init.")
                 sys.exit(1)
             logger.info("BinanceUS Connector initialized.")
-            self.connector.get_exchange_info()  # Pre-cache
+            self.connector.get_exchange_info()
             if not self.connector.get_exchange_info_cached():
                 logger.warning("Failed init pre-cache exchange info.")
         except Exception as e:
@@ -114,51 +125,185 @@ class GeminiTrader:
                 f"FATAL: Connector init failed: {e}.", exc_info=True)
             sys.exit(1)
 
+        state_file_rel_path = get_config_value(
+            self.config, ('state_manager', 'filepath'), 'data/state/trader_state.json')
+        state_file_abs_path = str(_project_root / state_file_rel_path)
+        try:
+            self.state_manager = StateManager(filepath=state_file_abs_path)
+            logger.info(
+                f"StateManager initialized (File: {state_file_abs_path}).")
+        except Exception as e:
+            logger.critical(
+                f"FATAL: StateManager initialization failed: {e}", exc_info=True)
+            sys.exit(1)
+
+        loaded_state = self.state_manager.load_state()
+        if loaded_state:
+            logger.info("Attempting to restore state from file...")
+            restorable_keys = ['position', 'active_grid_orders', 'active_tp_order', 'simulation_index', "sim_grid_fills", "sim_tp_fills", "sim_market_sells", "sim_grid_place_fail",
+                               "sim_tp_place_fail", "sim_grid_cancel_fail", "sim_tp_cancel_fail", "main_loop_errors", "main_loop_warnings", "account_balance"]  # Added account balance
+            keys_restored = 0
+            for key in restorable_keys:
+                if key in loaded_state:
+                    self.state[key] = loaded_state[key]
+                    keys_restored += 1
+            logger.info(
+                f"Restored {keys_restored} state keys from {state_file_abs_path}.")
+            logger.debug(f"Restored Position: {self.state.get('position')}")
+            logger.debug(
+                f"Restored Grid Orders: {len(self.state.get('active_grid_orders', []))} count")
+            logger.debug(
+                f"Restored TP Order: {'Yes' if self.state.get('active_tp_order') else 'No'}")
+            if self.SIMULATION_MODE:
+                logger.debug(
+                    f"Restored Sim Index: {self.state.get('simulation_index')}")
+        else:
+            logger.info(
+                "No previous state file found or failed to load. Starting with fresh state.")
+
+        try:
+            self.order_manager = OrderManager(
+                connector=self.connector, state=self.state, config=self.config)
+            logger.info("OrderManager initialized.")
+        except Exception as e:
+            logger.critical(
+                f"FATAL: OrderManager initialization failed: {e}", exc_info=True)
+            sys.exit(1)
+
+        if self.SIMULATION_MODE:
+            sim_file_path_str = get_config_value(
+                self.config, ('simulation', 'data_file'))
+            if not sim_file_path_str:
+                logger.critical(
+                    "FATAL: Sim mode enabled but sim.data_file not set.")
+                sys.exit(1)
+            sim_file_path = _project_root / sim_file_path_str
+            req_cols = get_config_value(self.config, ('simulation', 'required_columns'), [
+                                        "Timestamp", "Open", "High", "Low", "Close", "Volume"])
+            ts_col = get_config_value(
+                self.config, ('simulation', 'timestamp_column'), "Timestamp")
+            if not sim_file_path.exists():
+                logger.critical(
+                    f"FATAL: Simulation data file not found: {sim_file_path}")
+                sys.exit(1)
+            try:
+                logger.info(
+                    f"SIM MODE: Loading simulation data from: {sim_file_path}")
+                df_sim = pd.read_csv(sim_file_path)
+                logger.info(f"Loaded {len(df_sim)} rows from simulation file.")
+                if not all(col in df_sim.columns for col in req_cols):
+                    logger.critical(f"FATAL: Sim data missing columns.")
+                    sys.exit(1)
+                if ts_col not in df_sim.columns:
+                    logger.critical(
+                        f"FATAL: Timestamp column '{ts_col}' not found.")
+                    sys.exit(1)
+                try:
+                    df_sim['datetime_utc'] = pd.to_datetime(
+                        df_sim[ts_col], unit='ms', utc=True)
+                    logger.debug("Converted simulation timestamp column.")
+                except Exception as e:
+                    logger.critical(
+                        f"FATAL: Failed convert timestamp col '{ts_col}': {e}")
+                    sys.exit(1)
+                for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
+                    df_sim[col] = df_sim[col].apply(to_decimal)
+                df_sim = df_sim.sort_values(
+                    by='datetime_utc').reset_index(drop=True)
+                self.state['simulation_data'] = df_sim
+                min_start_rows = self._get_trading_param('kline_limit', 200)
+                if len(df_sim) < min_start_rows:
+                    logger.critical(
+                        f"FATAL: Not enough data ({len(df_sim)}) for kline limit ({min_start_rows}).")
+                    sys.exit(1)
+                self.state['simulation_end_index'] = len(df_sim) - 1
+                current_sim_index = self.state.get(
+                    'simulation_index', 0)  # Get potentially loaded index
+                if current_sim_index == 0:
+                    self.state['simulation_index'] = min_start_rows - 1
+                elif current_sim_index > self.state['simulation_end_index']:
+                    logger.warning(
+                        f"Loaded sim index ({current_sim_index}) > max ({self.state['simulation_end_index']}). Resetting.")
+                    self.state['simulation_index'] = min_start_rows - 1
+                logger.info(
+                    f"Simulation ready. Current Index: {self.state['simulation_index']}, End Index: {self.state['simulation_end_index']}")
+            except Exception as e:
+                logger.critical(
+                    f"FATAL: Error loading/processing sim data: {e}", exc_info=True)
+                sys.exit(1)
+
+        if self.SIMULATION_MODE:
+            # Only initialize if not loaded from state
+            if not self.state.get('account_balance'):
+                initial_cash_str = get_config_value(
+                    self.config, ('portfolio', 'initial_cash'), '0')
+                initial_cash = to_decimal(
+                    initial_cash_str, default=Decimal('0.0'))
+                quote_asset = get_config_value(
+                    self.config, ('portfolio', 'quote_asset'), 'USDT')
+                symbol_str = self._get_trading_param('symbol', 'BTCUSDT')
+                base_asset = symbol_str.replace(
+                    quote_asset, '') if symbol_str and quote_asset else 'BASE'
+                self.state['account_balance'] = {
+                    quote_asset: initial_cash, base_asset: Decimal('0.0')}
+                logger.info(
+                    f"SIM MODE: Initialized balance from config: {quote_asset}={initial_cash:.2f}, {base_asset}=0.0")
+            else:
+                logger.info(
+                    f"SIM MODE: Using account balance loaded from state: {self.state['account_balance']}")
+        else:
+            self._update_account_balance()
         self._update_symbol_specific_info()
-        self._update_account_balance()
-        # TODO: Load state from file
-        logger.info("Performing initial data fetch & calculations...")
+        logger.info("Performing initial data processing & calculations...")
         if self._update_market_data():
             self._calculate_indicators()
             self._calculate_sr_zones()
             self._calculate_confidence()
             self._update_pivot_points()
         else:
-            logger.warning("Initial market data fetch failed.")
-        # TODO: Reconcile open orders
+            logger.critical("FATAL: Initial market data processing failed.")
+            sys.exit(1)
+
+        # --- Initial Order Reconciliation (Placeholder) ---
+        # if self.order_manager and not self.SIMULATION_MODE:
+        #      logger.info("Performing initial order reconciliation...")
+        #      # self.order_manager.reconcile_all_open_orders() # Needs implementation
+        # --- End Initial Reconciliation ---
+
         self._setup_scheduler()
         logger.info("GeminiTrader Initialization Complete.")
+        print("-" * 30)
 
     def _get_trading_param(self, key: str, default=None):
-        """Helper to get parameters from the [trading] config section."""
         if key == 'pivot_window':
             default = DEFAULT_PIVOT_WINDOW
         elif key == 'zone_proximity_factor':
             default = DEFAULT_ZONE_PROXIMITY_FACTOR
         elif key == 'min_zone_touches':
             default = DEFAULT_MIN_ZONE_TOUCHES
+        elif key == 'entry_confidence_threshold':
+            default = 0.5
+        elif key == 'entry_rsi_threshold':
+            default = 75.0
         return get_config_value(self.config, ('trading', key), default)
 
     def _update_symbol_specific_info(self) -> bool:
-        """Extracts/caches info for trading symbol from full exchange info cache."""
-        symbol = self._get_trading_param('symbol', 'BTCUSD')
-        logger.info(f"Updating specific info for symbol: {symbol}")
+        symbol = self._get_trading_param('symbol', 'BTCUSDT')
+        logger.debug(f"Updating symbol info: {symbol}")
         if not self.connector:
-            logger.error("Connector not available.")
             return False
         full_exchange_info = self.connector.get_exchange_info_cached()
         if full_exchange_info:
             try:
-                from src.utils.formatting import get_symbol_info_from_exchange_info
                 symbol_info = get_symbol_info_from_exchange_info(
                     symbol, full_exchange_info)
                 if symbol_info:
                     self.state['symbol_info'] = symbol_info
-                    logger.debug(f"Updated specific symbol info for {symbol}.")
+                    logger.debug(f"Updated symbol info: {symbol}.")
                     return True
                 else:
                     logger.error(
-                        f"Symbol '{symbol}' not found in cached exchange info.")
+                        f"Symbol '{symbol}' not found in exchange info.")
                     self.state['symbol_info'] = None
                     return False
             except Exception as e:
@@ -166,21 +311,19 @@ class GeminiTrader:
                 self.state['symbol_info'] = None
                 return False
         else:
-            logger.warning(
-                "Exchange info cache empty, attempting fresh fetch...")
+            logger.warning("Exchange info cache empty, refreshing...")
             full_exchange_info = self.connector.get_exchange_info(
                 force_refresh=True)
             return self._update_symbol_specific_info() if full_exchange_info else False
 
     def _update_account_balance(self) -> bool:
-        """ Fetches and caches the current account balance for relevant assets. """
-        logger.info("Updating account balance...")
+        logger.debug(
+            "Updating REAL account balance (for logging/reference)...")
         if not self.connector:
-            logger.error("Connector not available.")
             return False
         quote_asset = get_config_value(
-            self.config, ('portfolio', 'quote_asset'), 'USD')
-        symbol_str = self._get_trading_param('symbol', 'BTCUSD')
+            self.config, ('portfolio', 'quote_asset'), 'USDT')
+        symbol_str = self._get_trading_param('symbol', 'BTCUSDT')
         base_asset = symbol_str.replace(
             quote_asset, '') if symbol_str and quote_asset else None
         if not base_asset:
@@ -190,96 +333,170 @@ class GeminiTrader:
             quote_balance = self.connector.get_asset_balance(quote_asset)
             base_balance = self.connector.get_asset_balance(base_asset)
             if quote_balance is not None and base_balance is not None:
-                self.state['account_balance'] = {
-                    quote_asset: quote_balance, base_asset: base_balance}
                 logger.info(
-                    f"Account balance updated: {quote_asset}={quote_balance:.2f}, {base_asset}={base_balance:.8f}")
+                    f"REAL Balance Check: {quote_asset}={quote_balance:.2f}, {base_asset}={base_balance:.8f}")
                 return True
             else:
-                logger.error(
-                    "Failed to fetch one or both required asset balances.")
+                logger.error("Failed fetch REAL account balances.")
                 return False
         except Exception as e:
-            logger.exception("Error updating account balance.")
+            logger.exception("Error updating REAL account balance.")
             return False
 
     def _update_market_data(self) -> bool:
-        """Fetches the latest kline data."""
-        symbol = self._get_trading_param('symbol', 'BTCUSD')
-        interval = self._get_trading_param('interval', '1h')
-        limit = self._get_trading_param('kline_limit', 200)
-        logger.info(
-            f"Fetching latest {limit} klines for {symbol} ({interval})...")
-        if not self.connector:
-            logger.error("Connector NA.")
-            return False
-        latest_klines_df = fetch_and_prepare_klines(
-            self.connector, symbol, interval, limit=limit)
-        if latest_klines_df is not None and not latest_klines_df.empty:
+        if self.SIMULATION_MODE:
+            logger.debug("SIM MODE: Updating market data...")
+            if self.state['simulation_data'] is None:
+                return False
+            sim_idx = self.state['simulation_index']
+            sim_end_idx = self.state['simulation_end_index']
+            if sim_idx > sim_end_idx:
+                logger.info("SIM MODE: End of simulation data.")
+                return False
+            kline_limit = self._get_trading_param('kline_limit', 200)
+            window_start_idx = max(0, sim_idx - kline_limit + 1)
+            window_end_idx = sim_idx + 1
+            df_window_raw = self.state['simulation_data'].iloc[window_start_idx:window_end_idx].copy(
+            )
+            ts_col = get_config_value(
+                self.config, ('simulation', 'timestamp_column'), "Timestamp")
+            if 'datetime_utc' in df_window_raw.columns:
+                df_window_raw = df_window_raw.set_index('datetime_utc')
+            elif ts_col in df_window_raw.columns:
+                try:
+                    df_window_raw['datetime_utc'] = pd.to_datetime(
+                        df_window_raw[ts_col], unit='ms', utc=True)
+                    df_window_raw = df_window_raw.set_index('datetime_utc')
+                except Exception as e:
+                    logger.error(f"SIM MODE Error: Conv timestamp: {e}")
+                    return False
+            else:
+                logger.error(
+                    f"SIM MODE Error: TS column '{ts_col}'/'datetime_utc' missing.")
+                return False
             req_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
-            if not all(c in latest_klines_df.columns for c in req_cols):
-                logger.error("Fetched data missing cols.")
+            if not all(c in df_window_raw.columns for c in req_cols):
+                logger.error(f"SIM MODE Error: Window missing OHLCV.")
                 return False
-            if not isinstance(latest_klines_df.index, pd.DatetimeIndex):
-                logger.error("Fetched data index invalid.")
-                return False
+            df_window = df_window_raw[req_cols]
+            self.state["klines"] = df_window
+            self.state["last_data_update_time"] = df_window.index[-1]
             logger.debug(
-                f"Fetched {len(latest_klines_df)} klines. Updating state.")
-            self.state["klines"] = latest_klines_df
-            self.state["last_data_update_time"] = pd.Timestamp.utcnow()
+                f"SIM MODE: Updated klines to index {sim_idx}, TS: {self.state['last_data_update_time']}")
+            self.state['simulation_index'] += 1
             return True
-        else:
-            logger.warning(f"Failed fetch/empty kline data for {symbol}.")
-            return False
+        else:  # Live Mode
+            symbol = self._get_trading_param('symbol', 'BTCUSDT')
+            interval = self._get_trading_param('interval', '1h')
+            limit = self._get_trading_param('kline_limit', 200)
+            logger.debug(
+                f"Fetching latest {limit} klines for {symbol} ({interval})...")
+            if not self.connector:
+                return False
+            latest_klines_df = fetch_and_prepare_klines(
+                self.connector, symbol, interval, limit=limit)
+            if latest_klines_df is not None and not latest_klines_df.empty:
+                req_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+                if not all(c in latest_klines_df.columns for c in req_cols):
+                    logger.error("Fetched data missing cols.")
+                    return False
+                if not isinstance(latest_klines_df.index, pd.DatetimeIndex):
+                    logger.error("Fetched data index invalid.")
+                    return False
+                logger.debug(f"Fetched {len(latest_klines_df)} klines.")
+                self.state["klines"] = latest_klines_df
+                self.state["last_data_update_time"] = pd.Timestamp.utcnow()
+                return True
+            else:
+                logger.warning(f"Failed fetch/empty kline data for {symbol}.")
+                return False
 
     def _calculate_indicators(self):
-        """Calculates all required indicators."""
         if self.state["klines"].empty:
-            logger.warning("Kline empty, skip indicators.")
-            self.state["indicators"] = {}
             return
         df = self.state["klines"]
-        logger.info(f"Calculating indicators on {len(df)} klines...")
+        min_len_needed = max(ATR_PERIOD, SMA_SHORT_PERIOD, SMA_LONG_PERIOD,
+                             RSI_PERIOD, MACD_SLOW_PERIOD + MACD_SIGNAL_PERIOD)
+        if len(df) < min_len_needed:
+            logger.warning(
+                f"Not enough data ({len(df)}<{min_len_needed}) for indicators. Skipping.")
+            self.state["indicators"] = {}
+            return
+        logger.debug(f"Calculating indicators on {len(df)} klines...")
         atr_p = get_config_value(
             self.config, ('strategies', 'geometric_grid', 'atr_length'), ATR_PERIOD)
         sma_s, sma_l, rsi_p = SMA_SHORT_PERIOD, SMA_LONG_PERIOD, RSI_PERIOD
         macd_f, macd_s, macd_g = MACD_FAST_PERIOD, MACD_SLOW_PERIOD, MACD_SIGNAL_PERIOD
         calcd_indic = {}
         try:
+            def glv(series: Optional[pd.Series], name: str) -> Optional[Decimal]:
+                if series is None or series.empty:
+                    logger.warning(
+                        f"Indicator {name} calc returned None/empty.")
+                    return None
+                valid_series = series.dropna()
+                if valid_series.empty:
+                    logger.warning(
+                        f"Indicator {name} has no valid values after dropna().")
+                    return None
+                last_valid_value = valid_series.iloc[-1]
+                val = to_decimal(last_valid_value)
+                if val is None:
+                    logger.warning(
+                        f"Indicator {name} last value '{last_valid_value}' couldn't convert to Decimal.")
+                return val
             atr = calculate_atr(df, length=atr_p)
             sma10 = calculate_sma(df, period=sma_s)
             sma50 = calculate_sma(df, period=sma_l)
             rsi = calculate_rsi(df, period=rsi_p)
             macd_df = calculate_macd(
                 df, fast_period=macd_f, slow_period=macd_s, signal_period=macd_g)
-            def glv(s: Optional[pd.Series]) -> Optional[Decimal]: return to_decimal(s.dropna(
-            ).iloc[-1]) if s is not None and not s.empty and not s.dropna().empty else None
-            calcd_indic[f'ATR_{atr_p}'] = glv(atr)
-            calcd_indic[f'SMA_{sma_s}'] = glv(sma10)
-            calcd_indic[f'SMA_{sma_l}'] = glv(sma50)
-            calcd_indic[f'RSI_{rsi_p}'] = glv(rsi)
+            calcd_indic[f'ATR_{atr_p}'] = glv(atr, f'ATR_{atr_p}')
+            calcd_indic[f'SMA_{sma_s}'] = glv(sma10, f'SMA_{sma_s}')
+            calcd_indic[f'SMA_{sma_l}'] = glv(sma50, f'SMA_{sma_l}')
+            calcd_indic[f'RSI_{rsi_p}'] = glv(rsi, f'RSI_{rsi_p}')
+            macd_key_base = f'{MACD_FAST_PERIOD}_{MACD_SLOW_PERIOD}_{MACD_SIGNAL_PERIOD}'
+            macd_key = f'MACD_{macd_key_base}'
+            signal_key = f'MACDs_{macd_key_base}'
+            histo_key = f'MACDh_{macd_key_base}'
+            macd_col = None
+            signal_col = None
+            histo_col = None
             if macd_df is not None and not macd_df.empty:
-                calcd_indic['MACD'], calcd_indic['Signal'], calcd_indic['Histogram'] = glv(
-                    macd_df.get('MACD')), glv(macd_df.get('Signal')), glv(macd_df.get('Histogram'))
+                macd_col_std = macd_df.get('MACD')
+                macd_col = macd_col_std if (
+                    macd_col_std is not None and not macd_col_std.empty) else macd_df.get(macd_key)
+                signal_col_std = macd_df.get('Signal')
+                signal_col = signal_col_std if (
+                    signal_col_std is not None and not signal_col_std.empty) else macd_df.get(signal_key)
+                histo_col_std = macd_df.get('Histogram')
+                histo_col = histo_col_std if (
+                    histo_col_std is not None and not histo_col_std.empty) else macd_df.get(histo_key)
+                calcd_indic[macd_key] = glv(macd_col, macd_key)
+                calcd_indic[signal_key] = glv(signal_col, signal_key)
+                calcd_indic[histo_key] = glv(histo_col, histo_key)
             else:
-                calcd_indic['MACD'], calcd_indic['Signal'], calcd_indic['Histogram'] = None, None, None
+                logger.warning("MACD calculation returned None or empty.")
+                calcd_indic[macd_key] = None
+                calcd_indic[signal_key] = None
+                calcd_indic[histo_key] = None
             self.state["indicators"] = calcd_indic
-            log_items = [
-                f"'{k}': {'{:.4f}'.format(v) if isinstance(v, Decimal) else repr(v)}" for k, v in calcd_indic.items()]
-            log_str = "{ "+", ".join(log_items)+" }"
-            logger.info(f"Latest Indicators calculated: {log_str}")
+            log_items = [f"'{k}': {'{:.4f}'.format(v)}" for k, v in calcd_indic.items(
+            ) if isinstance(v, Decimal)]
+            log_str = "{ "+", ".join(log_items)+" }" if log_items else "{}"
+            logger.debug(f"Indicators calculated: {log_str}")
         except Exception as e:
-            logger.exception("Error during indicator calc.")
+            logger.exception("Error during indicator calculation.")
+            self.state["indicators"] = {}
 
     def _calculate_sr_zones(self):
-        """ Calculates rolling S/R zones based on pivot clustering. """
         if self.state["klines"].empty:
-            logger.warning("Kline empty, skip S/R zone calc.")
-            self.state["sr_zones"] = []
             return
         df_klines = self.state["klines"]
         pivot_window = self._get_trading_param(
             'pivot_window', DEFAULT_PIVOT_WINDOW)
+        if len(df_klines) < pivot_window:
+            return
         proximity = self._get_trading_param(
             'zone_proximity_factor', DEFAULT_ZONE_PROXIMITY_FACTOR)
         min_touches = self._get_trading_param(
@@ -288,39 +505,41 @@ class GeminiTrader:
             zones = calculate_dynamic_zones(
                 df=df_klines, pivot_window=pivot_window, proximity_factor=proximity, min_touches=min_touches)
             self.state["sr_zones"] = zones
+            logger.debug(f"Calculated {len(zones)} S/R zones.")
         except Exception as e:
             logger.exception("Error during S/R zone calc.")
             self.state["sr_zones"] = []
 
     def _calculate_confidence(self):
-        """ Calculates the confidence score based on current indicators. """
         if not self.state["indicators"]:
-            logger.warning("Indicators NA, cannot calc confidence.")
+            logger.debug("Indicators NA, cannot calc confidence.")
             self.state['confidence_score'] = 0.5
             return
         try:
             score = calculate_confidence_v1(self.state["indicators"])
             self.state['confidence_score'] = score
+            logger.info(f"Confidence Score: {score:.4f}")
         except Exception as e:
             logger.exception("Error during confidence calc.")
             self.state['confidence_score'] = 0.5
 
     def _update_pivot_points(self):
-        """Fetches previous period data and calculates daily pivot points."""
         pivot_interval = '1d'
-        symbol = self._get_trading_param('symbol', 'BTCUSD')
-        logger.info(f"Updating {pivot_interval} pivots for {symbol}...")
+        symbol = self._get_trading_param('symbol', 'BTCUSDT')
+        logger.debug(f"Updating {pivot_interval} pivots for {symbol}...")
         if not self.connector:
+            logger.error("Cannot update pivots: Connector NA.")
             return
         now_utc = pd.Timestamp.utcnow()
         end_y = now_utc.normalize()-pd.Timedelta(seconds=1)
         start_y = end_y.normalize()
-        start_ms, end_ms = int(start_y.timestamp() *
-                               1000), int(end_y.timestamp()*1000)
-        logger.debug(f"Fetching prev kline: {start_y} to {end_y}")
+        start_ms_str = str(int(start_y.timestamp() * 1000))
+        end_ms_str = str(int(end_y.timestamp() * 1000))
+        logger.debug(
+            f"Fetching prev kline: {start_y} ({start_ms_str}) to {end_y} ({end_ms_str})")
         try:
             prev_df = fetch_and_prepare_klines(
-                self.connector, symbol, pivot_interval, str(start_ms), str(end_ms), 1)
+                self.connector, symbol, pivot_interval, start_ms_str, end_ms_str, limit=1)
             if prev_df is not None and not prev_df.empty:
                 piv_lvls = calculate_pivot_points(prev_df.iloc[[-1]])
                 if piv_lvls is not None:
@@ -338,28 +557,28 @@ class GeminiTrader:
             logger.exception(f"Error during pivot update.")
 
     def _setup_scheduler(self):
-        """Sets up scheduled tasks."""
         logger.info("Setting up scheduler...")
         try:
             schedule.every().day.at("00:01", "UTC").do(self._update_pivot_points)
             schedule.every().day.at("00:05", "UTC").do(self._update_symbol_specific_info)
-            schedule.every(15).minutes.do(self._update_account_balance)
-            logger.info(
-                "Scheduled daily: Pivots(00:01), SymbolInfo(00:05). Every 15m: Balance.")
+            if not self.SIMULATION_MODE:
+                schedule.every(15).minutes.do(self._update_account_balance)
+                logger.info(
+                    f"Scheduled daily: Pivots(00:01), SymbolInfo(00:05). Every 15m: Balance.")
+            else:
+                logger.info(
+                    f"Scheduled daily: Pivots(00:01), SymbolInfo(00:05). (Balance check disabled in Sim Mode)")
         except Exception as e:
             logger.error(f"Failed schedule setup: {e}", exc_info=True)
 
     def _check_and_calculate_tp(self) -> Optional[Decimal]:
-        """ Checks position, calculates TP price. Returns price or None. """
         position = self.state.get('position')
         if position is None:
             return None
         if not self.state["indicators"]:
-            logger.warning("Skip TP calc: Indicators NA.")
             return None
         full_exchange_info = self.connector.get_exchange_info_cached() if self.connector else None
         if not full_exchange_info:
-            logger.error("Skip TP calc: Exchange info NA.")
             return None
         symbol = position['symbol']
         entry_price = position['entry_price']
@@ -371,497 +590,298 @@ class GeminiTrader:
         conf_to_pass = current_confidence if use_conf_scaling and current_confidence is not None else None
         logger.debug(
             f"Calculating TP for {symbol}: Entry={entry_price}, ATR={current_atr}, Conf={conf_to_pass}")
-        tp_price = calculate_dynamic_tp_price(entry_price=entry_price, current_atr=current_atr, config=self.config,
-                                              exchange_info=full_exchange_info, symbol=symbol, confidence_score=conf_to_pass)
-        if tp_price:
-            logger.info(
-                f"Calculated TP Price target for {symbol} position: {tp_price:.4f}")
-            return tp_price
-        else:
-            logger.warning(
-                f"Failed to calculate TP price for {symbol} position.")
+        try:
+            tp_price = calculate_dynamic_tp_price(entry_price=entry_price, current_atr=current_atr, config=self.config,
+                                                  exchange_info=full_exchange_info, symbol=symbol, confidence_score=conf_to_pass)
+            if tp_price:
+                logger.info(f"Calculated TP Price target: {tp_price:.4f}")
+                return tp_price
+            else:
+                logger.warning(f"Failed to calculate TP price.")
+                return None
+        except Exception as e:
+            logger.exception(f"Error calculating TP price for {symbol}")
             return None
 
     def _evaluate_risk_controls(self):
-        """ Evaluates risk controls. Returns True if position should be closed. """
         position = self.state.get('position')
         if position is None:
             return False
-        try:  # Time Stop Check
+        try:
             exit_signal = check_time_stop(
                 position=position, current_klines=self.state['klines'], config=self.config, confidence_score=self.state.get('confidence_score'))
             if exit_signal:
                 logger.warning(
-                    f"TIME STOP EXIT SIGNAL for position entered at {position.get('entry_time')}")
+                    f"*** RISK CONTROL: TIME STOP EXIT SIGNAL for position entered at {position.get('entry_time')} ***")
+                self.state['sim_market_sells'] += 1
                 return True
         except Exception as e:
             logger.exception("Error during time stop check.")
+            self.state['main_loop_warnings'] += 1
         return False
 
     def _plan_grid_buys(self) -> List[Dict]:
-        """ Plans geometric grid buy orders. Returns list of potential orders. """
         planned_orders = []
         if self.state['position'] is not None:
+            logger.debug("Grid planning skipped: Position exists.")
             return planned_orders
-        if not self.state["indicators"] or self.state.get('confidence_score') is None or self.state['klines'].empty:
-            logger.warning("Grid planning skipped: Missing data.")
+        indicators = self.state.get("indicators")
+        confidence = self.state.get('confidence_score')
+        klines = self.state.get('klines')
+        if not indicators or confidence is None or klines is None or klines.empty:
+            logger.warning(
+                "Grid planning skipped: Missing indicators/confidence/klines.")
             return planned_orders
         full_exchange_info = self.connector.get_exchange_info_cached() if self.connector else None
         if not full_exchange_info:
             logger.warning("Grid planning skipped: Missing exchange info.")
             return planned_orders
         quote_asset = get_config_value(
-            self.config, ('portfolio', 'quote_asset'), 'USD')
+            self.config, ('portfolio', 'quote_asset'), 'USDT')
         available_balance = self.state['account_balance'].get(quote_asset)
-
-        # --- START TEMPORARY SIMULATION HACK ---
-        # Inject a fake balance if the real one is zero/low, ONLY for simulation testing
-        # REMOVE THIS BLOCK FOR LIVE TRADING
-        if self.SIMULATION_MODE and (available_balance is None or available_balance < Decimal('100')):
-            logger.warning(
-                f"SIMULATION HACK: Injecting FAKE ${get_config_value(self.config, ('portfolio', 'initial_cash'), '1000')} balance for testing!")
-            available_balance = to_decimal(get_config_value(
-                self.config, ('portfolio', 'initial_cash'), '1000'))
-        # --- END TEMPORARY SIMULATION HACK ---
-
         if available_balance is None or available_balance <= 0:
             logger.warning(
-                "Grid planning skipped: Quote balance unavailable or zero.")
+                f"Grid planning skipped: {quote_asset} balance zero or None ({available_balance}).")
             return planned_orders
-        symbol = self._get_trading_param('symbol', 'BTCUSD')
-        if 'Close' not in self.state['klines'].columns or self.state['klines']['Close'].dropna().empty:
-            logger.warning("Grid planning skipped: 'Close' unavailable.")
+        entry_condition_met = False
+        conf_threshold = self._get_trading_param(
+            'entry_confidence_threshold', 0.5)
+        rsi_threshold = self._get_trading_param('entry_rsi_threshold', 75.0)
+        rsi_key = f'RSI_{RSI_PERIOD}'
+        current_rsi = indicators.get(rsi_key)
+        if confidence >= conf_threshold:
+            if current_rsi is not None and current_rsi < Decimal(str(rsi_threshold)):
+                sma_short_key = f'SMA_{SMA_SHORT_PERIOD}'
+                sma_long_key = f'SMA_{SMA_LONG_PERIOD}'
+                sma_short = indicators.get(sma_short_key)
+                sma_long = indicators.get(sma_long_key)
+                if sma_short is not None and sma_long is not None:
+                    if sma_short > sma_long:
+                        entry_condition_met = True
+                        logger.debug(
+                            f"Entry conditions met (Conf >= {conf_threshold}, RSI < {rsi_threshold}, Trend OK). Planning grid...")
+                    else:
+                        logger.info(
+                            f"Grid planning skipped: Trend filter failed ({sma_short_key} <= {sma_long_key}).")
+                else:
+                    logger.warning(
+                        f"Grid planning skipped: Could not evaluate trend filter (missing SMAs).")
+                    self.state['main_loop_warnings'] += 1
+            elif current_rsi is None:
+                logger.warning(
+                    f"Grid planning skipped: Could not evaluate RSI filter (missing RSI value).")
+                self.state['main_loop_warnings'] += 1
+            else:
+                logger.info(
+                    f"Grid planning skipped: RSI filter failed ({current_rsi:.2f} >= {rsi_threshold}).")
+        else:
+            logger.info(
+                f"Grid planning skipped: Confidence ({confidence:.2f}) below threshold ({conf_threshold}).")
+        if not entry_condition_met:
             return planned_orders
-        current_price = self.state['klines']['Close'].iloc[-1]
+        symbol = self._get_trading_param('symbol', 'BTCUSDT')
+        if 'Close' not in klines.columns or klines['Close'].dropna().empty:
+            logger.warning("Grid planning skipped: Close price missing.")
+            return planned_orders
+        current_price = klines['Close'].iloc[-1]
         atr_key = f'ATR_{get_config_value(self.config, ("strategies", "geometric_grid", "atr_length"), ATR_PERIOD)}'
-        current_atr = self.state['indicators'].get(atr_key)
-        confidence = self.state['confidence_score']
+        current_atr = indicators.get(atr_key)
         if current_price is None or current_atr is None:
             logger.warning("Grid planning skipped: Missing price or ATR.")
             return planned_orders
-
-        # --- TEMPORARY Entry Condition ---
-        # REMOVE/REPLACE with real logic later
-        entry_condition_met = True
-        conf_threshold = 0.5  # Temporarily lowered for testing
-        if confidence < conf_threshold:
-            entry_condition_met = False
-            logger.info(
-                f"Grid planning skipped: Confidence ({confidence:.2f}) < {conf_threshold}.")
-        # --- END TEMPORARY Entry Condition ---
-
-        if not entry_condition_met:
+        try:
+            planned_orders = plan_buy_grid_v1(symbol=symbol, current_price=current_price, current_atr=current_atr,
+                                              available_quote_balance=available_balance, exchange_info=full_exchange_info, config=self.config, confidence_score=confidence)
+            if planned_orders:
+                logger.info(
+                    f"Planning: Calculated {len(planned_orders)} potential grid buy orders.")
+            else:
+                logger.debug("Grid planning resulted in no valid orders.")
             return planned_orders
+        except Exception as e:
+            logger.exception("Error during grid planning calculation.")
+            self.state['main_loop_warnings'] += 1
+            return []
 
-        logger.info(
-            f"Entry conditions met. Planning grid buy orders for {symbol}...")
-        planned_orders = plan_buy_grid_v1(symbol=symbol, current_price=current_price, current_atr=current_atr,
-                                          available_quote_balance=available_balance, exchange_info=full_exchange_info, config=self.config, confidence_score=confidence)
-        if planned_orders:
-            logger.info(
-                f"Successfully planned {len(planned_orders)} grid buy orders.")
-        else:
-            logger.info("Grid planning resulted in no valid orders.")
-        return planned_orders
-
-    def _check_orders(self):
-        """ Checks status of orders via API (or SIMULATES), updates state. """
-        if not self.connector:
-            logger.error("Cannot check orders: Connector NA.")
-            return
-        symbol = self._get_trading_param('symbol')
-        log_prefix = "(SIM)" if self.SIMULATION_MODE else ""
-        logger.info(f"Checking status of active orders {log_prefix}...")
-        made_state_changes = False
-
-        # Check Grid Orders
-        orders_to_remove_indices = []
-        grid_orders_copy = list(self.state['active_grid_orders'])
-        for i, order_data in enumerate(grid_orders_copy):
-            if not isinstance(order_data, dict):
-                logger.warning(f"Invalid item idx {i}. Removing.")
-                orders_to_remove_indices.append(i)
-                continue
-            order_id = order_data.get('orderId')
-            if not order_id:
-                logger.warning(f"Grid order data missing orderId. Removing.")
-                orders_to_remove_indices.append(i)
-                continue
-            logger.debug(f"Checking grid order ID: {order_id}...")
-            status_info = None
-            if self.SIMULATION_MODE:
-                sim_status = 'NEW'
-                if random.random() < 0.05:
-                    sim_status = 'FILLED'  # 5% fill chance
-                elif random.random() < 0.01:
-                    sim_status = random.choice(
-                        ['CANCELED', 'REJECTED', 'UNKNOWN'])  # 1% fail chance
-                if sim_status != 'NEW':
-                    status_info = {'symbol': symbol, 'orderId': order_id, 'status': sim_status, 'price': str(order_data.get('price', '0')), 'origQty': str(order_data.get(
-                        'origQty', '0')), 'executedQty': str(order_data.get('origQty', '0')) if sim_status == 'FILLED' else '0', 'updateTime': int(time.time()*1000)}
-            else:
-                # status_info = self.connector.get_order_status(symbol, str(order_id)) # REAL CALL
-                pass
-            if status_info:
-                status = status_info.get('status')
-                if status == 'FILLED':
-                    logger.info(
-                        f"{log_prefix} GRID BUY FILLED: {order_id}, Qty:{status_info.get('executedQty')}, Px:{status_info.get('price')}")
-                    entry_price = to_decimal(status_info.get('price'))
-                    filled_qty = to_decimal(status_info.get('executedQty'))
-                    if entry_price and filled_qty and self.state['position'] is None:
-                        self.state['position'] = {'symbol': symbol, 'entry_price': entry_price, 'quantity': filled_qty, 'entry_time': pd.Timestamp(
-                            status_info.get('updateTime'), unit='ms', tz='UTC')}
-                        logger.info(
-                            f"Position CREATED {log_prefix}: Entry={entry_price:.4f}, Qty={filled_qty}")
-                        logger.warning(
-                            f"{log_prefix}: Cancelling remaining grid orders...")
-                        orders_to_remove_indices.extend(
-                            j for j in range(len(grid_orders_copy)) if j != i)
-                        if not self.SIMULATION_MODE:
-                            pass  # Add real cancel loop
-                        made_state_changes = True
-                        break
-                    elif self.state['position'] is not None:
-                        logger.warning(
-                            f"{log_prefix} fill {order_id}, but pos exists. Ignoring.")
-                        orders_to_remove_indices.append(i)
-                    else:
-                        logger.error(
-                            f"Could not parse fill {order_id}. Info: {status_info}")
-                        orders_to_remove_indices.append(i)
-                elif status in ['CANCELED', 'EXPIRED', 'REJECTED', 'UNKNOWN']:
-                    logger.warning(
-                        f"Grid order {order_id} inactive (Status: {status}). Removing.")
-                    orders_to_remove_indices.append(i)
-                    made_state_changes = True
-            else:
-                logger.debug(f"Grid order {order_id} status: NEW.") if sim_status == 'NEW' else logger.error(
-                    f"Failed get status {order_id}. Removing.")
-                orders_to_remove_indices.append(i)
-            time.sleep(0.05 if self.SIMULATION_MODE else 0.1)
-        unique_indices_to_remove = sorted(
-            list(set(orders_to_remove_indices)), reverse=True)
-        if unique_indices_to_remove:
-            logger.debug(
-                f"Removing indices {unique_indices_to_remove} from active_grid_orders")
-            original_length = len(self.state['active_grid_orders'])
-            temp_list = []
-            removed_count = 0
-            indices_set = set(unique_indices_to_remove)
-            for i, item in enumerate(self.state['active_grid_orders']):
-                if i not in indices_set:
-                    temp_list.append(item)
-                else:
-                    removed_count += 1
-            self.state['active_grid_orders'] = temp_list
-            logger.debug(
-                f"Removed {removed_count} orders (Orig:{original_length}, New:{len(self.state['active_grid_orders'])}).")
-
-        # Check TP Order
-        tp_order = self.state.get('active_tp_order')
-        if tp_order and isinstance(tp_order, dict) and tp_order.get('orderId'):
-            order_id = tp_order['orderId']
-            logger.debug(f"Checking TP order ID: {order_id}...")
-            status_info_tp = None
-            if self.SIMULATION_MODE:
-                sim_status_tp = 'NEW'
-                if self.state['position'] and random.random() < 0.02:
-                    sim_status_tp = 'FILLED'  # 2% chance if pos exists
-                elif random.random() < 0.01:
-                    sim_status_tp = random.choice(
-                        ['CANCELED', 'REJECTED', 'UNKNOWN'])
-                if sim_status_tp != 'NEW':
-                    status_info_tp = {'symbol': symbol, 'orderId': order_id, 'status': sim_status_tp, 'price': str(tp_order.get('price', '0')), 'executedQty': str(
-                        self.state['position'].get('quantity', '0')) if sim_status_tp == 'FILLED' and self.state['position'] else '0', 'updateTime': int(time.time()*1000)}
-            else:
-                # status_info_tp = self.connector.get_order_status(symbol, str(order_id)) # REAL CALL
-                pass
-            if status_info_tp:
-                status = status_info_tp.get('status')
-                if status == 'FILLED':
-                    logger.info(
-                        f"{log_prefix} TAKE PROFIT FILLED: {order_id}, Qty:{status_info_tp.get('executedQty')}, Px:{status_info_tp.get('price')}")
-                    self.state['position'] = None
-                    self.state['active_tp_order'] = None
-                    logger.info(f"Position CLEARED {log_prefix}.")
-                    made_state_changes = True
-                elif status in ['CANCELED', 'EXPIRED', 'REJECTED', 'UNKNOWN']:
-                    logger.warning(
-                        f"TP order {order_id} inactive (Status: {status}). Clearing.")
-                    self.state['active_tp_order'] = None
-                    made_state_changes = True
-            else:
-                logger.debug(f"TP order {order_id} status: NEW.") if sim_status_tp == 'NEW' else logger.error(
-                    f"Failed get status TP {order_id}. Clearing.")
-                self.state['active_tp_order'] = None
-        if not made_state_changes:
-            logger.info("Order check complete: No relevant state changes.")
-
-    # --- UPDATED: Order Execution Placeholders with Simulation Control ---
-
-    def _reconcile_and_place_grid(self, planned_orders: List[Dict]):
-        """Compares planned orders to active orders, places new, cancels old (SIMULATED or LIVE)."""
-        if not self.connector:
-            logger.error("Cannot place orders: Connector NA.")
-            return
-        symbol = self._get_trading_param('symbol')
-        log_prefix = "(SIMULATED)" if self.SIMULATION_MODE else "(LIVE)"
-        logger.info(f"Starting Grid Reconciliation {log_prefix}...")
-        active_orders_in_state = list(self.state['active_grid_orders'])
-        cancelled_ids = []
-        placed_orders_state = []
-        # Cancel existing orders
-        for order_data in active_orders_in_state:
-            order_id = order_data.get('orderId')
-            if order_id:
-                logger.info(
-                    f"{log_prefix} Cancelling previous grid order {order_id}...")
-                cancel_result = None
-                if self.SIMULATION_MODE:
-                    cancel_result = {
-                        'orderId': order_id, 'status': 'CANCELED'} if random.random() > 0.05 else None
-                else:
-                    # cancel_result = self.connector.cancel_order(symbol, order_id=str(order_id)) # LIVE
-                    pass
-                if cancel_result and (cancel_result.get('status') == 'CANCELED' or cancel_result.get('status') == 'UNKNOWN'):
-                    cancelled_ids.append(order_id)
-                else:
-                    logger.error(
-                        f"{log_prefix} Cancel FAILED for {order_id}. Result: {cancel_result}")
-                time.sleep(0.05 if self.SIMULATION_MODE else 0.2)
-        # Place new orders
-        for order_to_place in planned_orders:
-            logger.info(
-                f"{log_prefix} Placing new grid order: {order_to_place['quantity']}@{order_to_place['price']}")
-            result = None
-            if self.SIMULATION_MODE:
-                if random.random() > 0.1:  # 90% success sim
-                    sim_order_id = random.randint(10000000, 99999999)
-                    result = {'symbol': symbol, 'orderId': sim_order_id, 'clientOrderId': f"sim_{sim_order_id}", 'transactTime': int(time.time() * 1000), 'price': str(order_to_place['price']), 'origQty': str(
-                        order_to_place['quantity']), 'executedQty': '0.0', 'cummulativeQuoteQty': '0.0', 'status': 'NEW', 'timeInForce': 'GTC', 'type': 'LIMIT', 'side': 'BUY'}
-            else:
-                # result = self.connector.create_limit_buy(symbol=symbol, quantity=order_to_place['quantity'], price=order_to_place['price']) # LIVE
-                pass
-            if result and result.get('orderId'):
-                placed_orders_state.append(result)
-                logger.info(
-                    f"{log_prefix} Placement successful. Order ID: {result.get('orderId')}")
-            else:
-                logger.error(
-                    f"{log_prefix} Placement FAILED for grid order at {order_to_place['price']}.")
-            time.sleep(0.1 if self.SIMULATION_MODE else 0.3)
-        self.state['active_grid_orders'] = placed_orders_state
-        logger.info(
-            f"Grid Reconciliation Complete {log_prefix}. Active Grid Orders: {len(self.state['active_grid_orders'])}")
-
-    def _place_or_update_tp_order(self, tp_price: Decimal):
-        """Places or updates the take profit order (SIMULATED or LIVE)."""
-        if not self.connector or self.state['position'] is None:
-            return
-        log_prefix = "(SIM)" if self.SIMULATION_MODE else "(LIVE)"
-        symbol = self.state['position']['symbol']
-        quantity = self.state['position']['quantity']
-        active_tp_order = self.state.get('active_tp_order')
-        exchange_info = self.connector.get_exchange_info_cached()
-        if not exchange_info:
-            logger.error("Cannot place TP: Exchange info missing.")
-            return
-        # --- Use imported function ---
-        sell_qty = apply_filter_rules_to_qty(
-            symbol, quantity, exchange_info, operation='floor')
-        if sell_qty is None or sell_qty <= 0:
-            logger.error(
-                f"Cannot place TP: Invalid sell qty {quantity} after filter.")
-            return
-        # TODO: Add MIN_NOTIONAL check
-
-        needs_action = False
-        order_to_cancel = None
-        if active_tp_order and isinstance(active_tp_order, dict) and active_tp_order.get('orderId'):
-            sim_current_tp_price = to_decimal(active_tp_order.get('price'))
-            # Update if differs by >= 0.1%
-            if not sim_current_tp_price or abs(tp_price - sim_current_tp_price) / sim_current_tp_price >= Decimal('0.001'):
-                needs_action = True
-                order_to_cancel = active_tp_order['orderId']
-                logger.info(
-                    f"TP target {tp_price:.4f} differs from active {order_to_cancel} @ {sim_current_tp_price:.4f}. Update needed.")
-            else:
-                logger.debug(
-                    f"TP price {tp_price:.4f} close enough to existing {active_tp_order['orderId']} @ {sim_current_tp_price:.4f}. No action.")
-        else:
-            needs_action = True  # Need initial placement
-
-        if needs_action:
-            if order_to_cancel:  # Cancel existing order first
-                logger.info(
-                    f"{log_prefix} Cancelling existing TP order {order_to_cancel} to update...")
-                cancel_success = False
-                if self.SIMULATION_MODE:
-                    cancel_success = random.random() > 0.05
-                else:
-                    # cancel_result = self.connector.cancel_order(symbol, order_id=str(order_to_cancel)); cancel_success = cancel_result is not None;
-                    pass
-                if not cancel_success:
-                    logger.error(
-                        f"{log_prefix} Cancel FAILED for TP {order_to_cancel}. Update aborted.")
-                    return
-                self.state['active_tp_order'] = None
-                time.sleep(0.05 if self.SIMULATION_MODE else 0.2)
-            # Place new/updated TP order
-            logger.info(
-                f"{log_prefix} Placing TP order: Sell {sell_qty}@{tp_price}")
-            result = None
-            if self.SIMULATION_MODE:
-                if random.random() > 0.1:
-                    sim_order_id = random.randint(10000000, 99999999)
-                    result = {'symbol': symbol, 'orderId': sim_order_id, 'status': 'NEW', 'price': str(
-                        tp_price), 'origQty': str(sell_qty)}
-            else:
-                # result = self.connector.create_limit_sell(symbol, sell_qty, tp_price) # LIVE
-                pass
-            if result:
-                self.state['active_tp_order'] = result
-                logger.info(f"{log_prefix} TP placed: {result.get('orderId')}")
-            else:
-                logger.error(f"{log_prefix} Placement FAILED for TP order.")
-                self.state['active_tp_order'] = None
-
-    def _execute_market_sell(self, reason: str):
-        """ Executes a market sell for the current position quantity (SIMULATED or LIVE). """
-        if not self.connector or self.state['position'] is None:
-            return False
-        log_prefix = "(SIM)" if self.SIMULATION_MODE else "(LIVE)"
-        symbol = self.state['position']['symbol']
-        quantity = self.state['position']['quantity']
-        logger.warning(
-            f"{log_prefix} Executing Market SELL for {quantity} {symbol} due to: {reason}")
-        result = None
-        if self.SIMULATION_MODE:
-            sim_order_id = random.randint(10000000, 99999999)
-            result = {'symbol': symbol, 'orderId': sim_order_id,
-                      # Simulate success
-                      'status': 'FILLED', 'executedQty': str(quantity)}
-        else:
-            # result = self.connector.create_market_sell(symbol, quantity) # LIVE
-            pass
-        if result and result.get('status') == 'FILLED':
-            logger.info(
-                f"{log_prefix} Market SELL successful. Order ID: {result.get('orderId')}")
-            self.state['position'] = None
-            active_tp_order = self.state.get('active_tp_order')
-            if active_tp_order and isinstance(active_tp_order, dict) and active_tp_order.get('orderId'):
-                tp_order_id = active_tp_order['orderId']
-                logger.info(
-                    f"{log_prefix} Cancelling associated TP order {tp_order_id}...")
-                if self.SIMULATION_MODE:
-                    pass
-                else:
-                    # self.connector.cancel_order(symbol, str(tp_order_id))
-                    pass
-                self.state['active_tp_order'] = None
-            return True
-        else:
-            logger.error(f"{log_prefix} Market SELL FAILED! Result: {result}.")
-            return False
-
-    # --- Main Loop ---
     def run(self):
-        """Starts the main trading loop."""
         self.is_running = True
-        symbol = self._get_trading_param('symbol', 'BTCUSD')
+        symbol = self._get_trading_param('symbol', 'BTCUSDT')
         interval = self._get_trading_param('interval', '1h')
-        loop_sleep = self._get_trading_param('loop_sleep_time', 60)
+        loop_sleep = self._get_trading_param(
+            'loop_sleep_time', 60) if not self.SIMULATION_MODE else 0
+        sim_step_delay = get_config_value(
+            self.config, ('simulation', 'step_delay_seconds'), 0.05) if self.SIMULATION_MODE else 0
+        kline_limit = self._get_trading_param('kline_limit', 200)
+        state_save_interval_seconds = get_config_value(
+            self.config, ('state_manager', 'save_interval_seconds'), 300)
         logger.info(
-            f"Starting main loop. Symbol:{symbol}, Interval:{interval}, Sleep:{loop_sleep}s")
+            f"Starting main loop. Symbol:{symbol}, Interval:{interval}, Sleep:{loop_sleep}s (Sim Delay: {sim_step_delay}s)")
+        print("-" * 30)
+        if self.order_manager is None:
+            logger.critical("FATAL: OrderManager not initialized.")
+            self.is_running = False
+        if self.state_manager is None:
+            logger.critical("FATAL: StateManager not initialized.")
+            self.is_running = False
+        if self.SIMULATION_MODE and self.state.get('simulation_data') is None:
+            logger.critical("FATAL: Sim mode active but no sim data loaded.")
+            self.is_running = False
+        total_sim_steps = (self.state['simulation_end_index'] - self.state['simulation_index'] +
+                           1) if self.SIMULATION_MODE and 'simulation_end_index' in self.state and 'simulation_index' in self.state else 0
+        pbar = None
+        # --- Correct initial value for tqdm ---
+        initial_step = 0
+        if self.SIMULATION_MODE and 'simulation_index' in self.state and 'simulation_end_index' in self.state:
+            # Calculate already completed steps
+            initial_step = max(
+                0, self.state['simulation_index'] - (kline_limit - 1))
+        if self.SIMULATION_MODE and total_sim_steps > 0:
+            pbar = tqdm(total=total_sim_steps, initial=initial_step, desc="Simulating", unit="step", leave=True,
+                        dynamic_ncols=True, bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]')
+        last_state_save_time = time.monotonic()
 
         while self.is_running:
             loop_start = time.monotonic()
             try:
-                # 1. Scheduled Tasks
-                schedule.run_pending()
-                # 2. Market Data & Balance
+                if self.SIMULATION_MODE and pbar and self.state['simulation_index'] > self.state['simulation_end_index']:
+                    logger.info(
+                        "SIM MODE: End of simulation data reached. Final Save & Stop.")
+                    if not pbar.disable and pbar.n < pbar.total:
+                        pbar.update(pbar.total - pbar.n)  # Update to 100%
+                    self._save_current_state()
+                    sim_duration = time.monotonic(
+                    ) - self.state['simulation_start_time']
+                    total_steps = pbar.n if pbar else 0
+                    logger.info(
+                        f"Simulation Summary: Ran {total_steps} steps in {sim_duration:.2f} seconds.")
+                    final_counts = {k: v for k, v in self.state.items() if k.startswith(
+                        'sim_') or k in ['main_loop_errors', 'main_loop_warnings']}
+                    logger.info(f"Final Sim Counts: {final_counts}")
+                    self.is_running = False
+                    continue
+                if not self.SIMULATION_MODE:
+                    schedule.run_pending()
                 data_updated = self._update_market_data()
-                # 3. Calculations
-                if data_updated or not self.state["indicators"]:
-                    self._calculate_indicators()
-                    self._calculate_sr_zones()
-                    self._calculate_confidence()
-
-                # --- TRADING LOGIC ---
-                if self.state["indicators"] and self.state.get('confidence_score') is not None:
-
-                    # 4. Check Active Orders & Update State <<< Moved Up
-                    # Updates self.state['position'] if fills occur
-                    self._check_orders()
-
-                    # 5. Position / TP / Risk Management (If Position Exists)
+                if not data_updated:
+                    logger.warning(
+                        "Market data update failed or sim ended. Skipping cycle.")
+                    time.sleep(loop_sleep if not self.SIMULATION_MODE else 0.1)
+                    continue
+                self._calculate_indicators()
+                self._calculate_sr_zones()
+                self._calculate_confidence()
+                if self.order_manager and self.state["indicators"] and self.state.get('confidence_score') is not None:
+                    self.order_manager.check_orders()
                     if self.state['position']:
-                        tp_target_price = self._check_and_calculate_tp()  # Calculate potential TP price
-                        # Check time stops etc.
+                        tp_target_price = self._check_and_calculate_tp()
                         exit_signal = self._evaluate_risk_controls()
-
                         if exit_signal:
-                            self._execute_market_sell(
-                                reason="Risk Control Trigger")  # Attempt market sell
-                            # Position state is cleared inside _execute_market_sell if successful
+                            self.order_manager.execute_market_sell(
+                                reason="Risk Control Trigger")
                         elif tp_target_price:
-                            self._place_or_update_tp_order(
-                                tp_target_price)  # Place/Update TP order
-
-                    # 6. Strategy Execution (If NO Position Exists)
+                            self.order_manager.place_or_update_tp_order(
+                                tp_target_price)
                     if not self.state['position']:
                         planned_buy_orders = self._plan_grid_buys()
                         if planned_buy_orders:
-                            self._reconcile_and_place_grid(
-                                planned_buy_orders)  # Place/Cancel Grid orders
-
+                            self.order_manager.reconcile_and_place_grid(
+                                planned_buy_orders)
                 else:
                     logger.warning(
-                        "Skipping logic: Indicators or Confidence Score NA.")
-                # --- End Logic ---
-
-                # --- Save State Periodically (Phase 7) ---
-                # self._save_state()
-
+                        "Skipping trading logic: OrderMgr/Indicators/Confidence NA.")
+                    self.state['main_loop_warnings'] += 1
+                current_time = time.monotonic()
+                if current_time - last_state_save_time >= state_save_interval_seconds:
+                    self._save_current_state()
+                    last_state_save_time = current_time
                 elapsed = time.monotonic() - loop_start
-                sleep = max(0, loop_sleep - elapsed)
-                if elapsed > loop_sleep * 1.1:
-                    logger.warning(
-                        f"Loop time ({elapsed:.2f}s) > target ({loop_sleep}s).")
-                time.sleep(sleep)
-
+                if self.SIMULATION_MODE and pbar:
+                    if sim_step_delay > 0:
+                        time.sleep(sim_step_delay)
+                    pbar.update(1)
+                    ts = self.state['last_data_update_time']
+                    ts_str = ts.strftime(
+                        '%y%m%d-%H%M') if pd.notna(ts) else "N/A"
+                    pos_qty = self.state['position']['quantity'] if self.state['position'] else Decimal(
+                        '0.0')
+                    pos_entry = self.state['position']['entry_price'] if self.state['position'] else Decimal(
+                        '0.0')
+                    grid_count = len(self.state['active_grid_orders'])
+                    tp_id_short = str(self.state['active_tp_order']['orderId'])[
+                        -4:] if self.state['active_tp_order'] else "--"
+                    conf = self.state['confidence_score'] if self.state['confidence_score'] is not None else 0.5
+                    total_errors = self.state.get('main_loop_errors', 0) + self.state.get('sim_grid_place_fail', 0) + self.state.get(
+                        'sim_tp_place_fail', 0) + self.state.get('sim_grid_cancel_fail', 0) + self.state.get('sim_tp_cancel_fail', 0)
+                    postfix_data = {"T": ts_str, "Pos": f"{pos_qty:.5f}@{pos_entry:.1f}", "Gr": grid_count, "TP": tp_id_short, "Cf": f"{conf:.2f}", "GF": self.state.get('sim_grid_fills', 0), "TF": self.state.get(
+                        'sim_tp_fills', 0), "MS": self.state.get('sim_market_sells', 0), "W": self.state.get('main_loop_warnings', 0), "E": total_errors, "L": f"{elapsed:.3f}s"}
+                    pbar.set_postfix(postfix_data, refresh=False)
+                    sim_idx = self.state['simulation_index'] - 1
+                    if sim_idx > 0 and sim_idx % 100 == 0:
+                        logger.info(
+                            f"Sim Progress: Step {sim_idx}/{self.state['simulation_end_index']+1}, Last Sim Time: {ts}")
+                else:
+                    sleep = max(0, loop_sleep - elapsed)
+                    time.sleep(sleep)
+                    if elapsed > loop_sleep * 1.1:
+                        logger.warning(
+                            f"Loop time ({elapsed:.2f}s) > target ({loop_sleep}s).")
             except KeyboardInterrupt:
-                logger.warning("KeyboardInterrupt. Stopping...")
+                logger.warning("KeyboardInterrupt received. Stopping...")
                 self.is_running = False
             except Exception as e:
                 logger.exception("CRITICAL Error in main loop.")
-                time.sleep(loop_sleep * 5)  # Longer sleep on error
+                self.state['main_loop_errors'] += 1
+                if pbar:
+                    tqdm.write(f"!! CRITICAL ERROR in loop: {e} !!")
+                time.sleep(loop_sleep * 5 if not self.SIMULATION_MODE else 0.5)
+        if pbar:
+            pbar.close()
         logger.info("Run loop finished.")
-        # --- Save State on Exit ---
-        # self._save_state()
 
-    def stop(self):
-        """Signals the main loop to stop gracefully."""
-        logger.info("Stop signal received.")
-        self.is_running = False
+    def _save_current_state(self):
+        if not self.state_manager:
+            logger.error("Cannot save state: StateManager not initialized.")
+            return
+        try:
+            state_to_save = {
+                'position': self.state.get('position'), 'active_grid_orders': self.state.get('active_grid_orders', []),
+                'active_tp_order': self.state.get('active_tp_order'), 'simulation_index': self.state.get('simulation_index', 0),
+                "sim_grid_fills": self.state.get('sim_grid_fills', 0), "sim_tp_fills": self.state.get('sim_tp_fills', 0),
+                "sim_market_sells": self.state.get('sim_market_sells', 0), "sim_grid_place_fail": self.state.get('sim_grid_place_fail', 0),
+                "sim_tp_place_fail": self.state.get('sim_tp_place_fail', 0), "sim_grid_cancel_fail": self.state.get('sim_grid_cancel_fail', 0),
+                "sim_tp_cancel_fail": self.state.get('sim_tp_cancel_fail', 0), "main_loop_errors": self.state.get('main_loop_errors', 0),
+                "main_loop_warnings": self.state.get('main_loop_warnings', 0), "last_state_save_time": pd.Timestamp.utcnow(),
+                "account_balance": self.state.get('account_balance', {})
+            }
+            self.state_manager.save_state(state_to_save)
+            self.state['last_state_save_time'] = state_to_save['last_state_save_time']
+        except Exception as e:
+            logger.exception("Failed to prepare or save state.")
+
+    def stop(self): logger.info(
+        "Stop signal received."); self.is_running = False
 
 
-# --- Entry Point ---
 if __name__ == '__main__':
+    trader = None
     try:
         trader = GeminiTrader()
         trader.run()
     except SystemExit:
-        print("Exiting: Init failure.")
+        print("Exiting: SystemExit called, likely during initialization.")
         sys.exit(1)
     except Exception as e:
-        logging.critical(f"Unhandled exception: {e}", exc_info=True)
-        print(f"FATAL: {e}")
+        logging.critical(
+            f"Unhandled exception at main entry point: {e}", exc_info=True)
+        print(f"FATAL Unhandled Exception: {e}")
         sys.exit(1)
     finally:
-        logger.info("GeminiTrader finished.")
-        print("Process finished.")
+        if trader and trader.state_manager:
+            logger.info("Performing final state save on exit.")
+            trader._save_current_state()
+        logger.info("GeminiTrader process finished.")
+        print("\nProcess finished.")
+        # --- ADDED Explicit Exit ---
         sys.exit(0)
 
 # END OF FILE: src/main_trader.py

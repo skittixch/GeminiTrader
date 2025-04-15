@@ -639,3 +639,158 @@ The authoritative project plan is locally managed `SSOT.md` (based on v6.5). Thi
 1.  **(User Action):** Save *this* Markdown block to a file named `handover_latest.md` in the project root directory.
 2.  **(User Action):** Run the context manager script to process the handover file, update the SSoT, and generate the next context file. Recommended command: `python scripts/context_manager.py --update-ssot --handover-file handover_latest.md --commit` (add `--push` if desired).
 3.  **(Development):** Proceed to the next development task outlined in the *previous* handover (2025-04-14 ~18:40 UTC), which was **Step 3: (Simulation Refinement)** Implement robust order reconciliation logic in `_reconcile_and_place_grid` within the `src/main_trader.py` file. (This involves fetching open orders - simulated first - and comparing intelligently against the bot's internal state).
+
+------- SESSION HANDOVER APPENDED [2025-04-15 ~04:07 UTC] -------
+# GeminiTrader - Handover Document (2025-04-15 ~04:00 UTC)
+
+**Project Goal:** Develop GeminiTrader, an autonomous cryptocurrency trading system aiming for long-term capital growth via a hybrid strategy (DCA, adaptive geometric dip-buying, confidence layer) and robust risk management, using the v6.5 development plan and the local SSoT management workflow.
+
+**Session Focus & Current Status:**
+*   **Focus:** This session primarily focused on debugging, refining the simulation framework, implementing state persistence, refactoring core logic, and improving the development workflow/output.
+*   **Key Activities & Status:**
+    *   **Simulation Data:** Created a script (`scripts/download_sim_data.py`) to fetch historical data; identified `BTCUSD` data scarcity and switched to `BTCUSDT`; downloaded Q1 2024 data for `BTCUSDT` to `data/simulation/`.
+    *   **Simulation Integration:** Modified `main_trader.py` (`_initialize`, `_update_market_data`, `run`) to load and step through the CSV simulation data when `SIMULATION_MODE = True`.
+    *   **Debugging:** Resolved multiple errors encountered during simulation runs:
+        *   `TypeError` in `_update_pivot_points` (incorrect arguments to `fetch_and_prepare_klines`).
+        *   `AttributeError: 'numpy.ndarray' object has no attribute 'idxmax'` in `find_rolling_pivots` (fixed rolling apply logic).
+        *   `ValueError: The truth value of a Series is ambiguous...` in `_calculate_indicators` (fixed MACD column retrieval logic).
+        *   `NameError: name 'indices_set' is not defined` in `OrderManager.check_orders` (fixed variable scope issue after refactoring).
+        *   `NameError: name 'Dict' is not defined` in `StateManager` (added typing import).
+    *   **Refactoring (`OrderManager`):** Successfully created `src/core/order_manager.py` and moved order checking, reconciliation, placement, and market sell logic from `main_trader.py` into the new `OrderManager` class. `main_trader.py` now delegates these tasks.
+    *   **State Persistence (`StateManager`):** Implemented `src/core/state_manager.py` with `save_state` and `load_state` methods using JSON. Added helper functions to handle `Decimal` and `Timestamp` conversion. Integrated state loading into `_initialize` and state saving periodically and on exit in `main_trader.py`. Confirmed persistence works across restarts during simulation.
+    *   **S/R Zone Scoring:** Implemented basic scoring logic (`score_zones` v1) in `src/analysis/support_resistance.py`, calculating touches and determining type (support/resistance/range), removing the "not implemented" warning. Added recency and composite scores.
+    *   **Entry Conditions:** Refined entry logic in `_plan_grid_buys` to use configurable thresholds (`entry_confidence_threshold`, `entry_rsi_threshold`) and added trend (SMA cross) and RSI filters. Removed the balance injection hack/warning.
+    *   **Logging/Output:** Refined logging levels (moving many INFO to DEBUG), implemented `tqdm` progress bar with status postfix for simulations, added a dedicated `errors.log` file handler, and configured console level via `config.yaml` for cleaner output.
+*   **Current Status:** The simulation runs successfully end-to-end using CSV data, state persists across restarts, confidence score is calculated correctly, entry conditions are applied, S/R zones are scored (v1), order logic is handled by `OrderManager`, and console output is clean via `tqdm`. The system is stable in simulation mode. We completed refactoring (Step 9), state management (Step 8), S/R scoring (Step 5), and entry condition refinement (Step 6).
+
+**Key Files/Modules Implemented or Modified (Session):**
+*   - src/main_trader.py (Major changes: Refactoring delegation, State integration, Sim data loading, Entry logic, tqdm, Logging calls)
+*   - src/core/order_manager.py (Created: Moved order logic, Integrated state/config, Added counters)
+*   - src/core/state_manager.py (Created: Save/Load logic, Type helpers, Atomic saves)
+*   - src/analysis/support_resistance.py (Fixed pivot bug, Implemented score_zones v1)
+*   - src/analysis/confidence.py (Fixed key issues, Adjusted logging)
+*   - src/utils/logging_setup.py (Added error handler, console level param, color formatter, root level adjustment)
+*   - config/config.yaml (Added state_manager section, trading entry params, updated logging section)
+*   - requirements.txt (Added scikit-learn, tqdm)
+*   - scripts/download_sim_data.py (Created)
+*   - data/simulation/BTCUSDT_1h_2024-01-01_2024-03-31.csv (Created via script by user)
+
+**Authoritative Roadmap Reference:**
+The authoritative project plan is locally managed `SSOT.md` (based on v6.5). This session completed Steps 5, 6, 8, 9, and simulation framework refinements related to Steps 3 & 4.
+
+**Key Learnings, Decisions & Conventions Established (Session):**
+*   Confirmed refactoring `main_trader.py` significantly improves clarity and organization.
+*   Established CSV-based simulation as the method for deterministic testing.
+*   Switched primary trading pair to `BTCUSDT` due to data availability.
+*   Adopted `tqdm` for cleaner simulation progress display on the console.
+*   Implemented separate error logging for focused issue tracking.
+*   Successfully debugged multiple integration issues across different modules.
+*   Confirmed state persistence mechanism works as intended for simulation resumption.
+*   **User Directives Review & Meta-Instructions:**
+    *   **Full Code:** The directive for providing full code blocks remains critical and was reinforced. I will continue to strive for 100% adherence.
+    *   **Handover Content:** User prefers explicit next steps, references to specific files/functions, and inclusion of meta-instructions/learnings like these in the handover.
+    *   **Clarity > Brevity:** Clear, step-by-step instructions and explanations are preferred, even if slightly longer.
+    *   **Proactive Guidance:** User values proactive suggestions for improvement (like refactoring, logging changes) aligned with project goals.
+
+**User Directives (Session):**
+*   Requested help creating simulation data CSV.
+*   Requested fixes for noisy console output and implementation of `tqdm`.
+*   Consistently **required full code blocks** for all file modifications.
+*   Asked clarifying questions about state persistence and simulation restart behavior.
+*   Approved refactoring approach (`OrderManager`) before S/R integration.
+*   Approved implementing S/R scoring v1.
+*   Approved implementing enhanced entry conditions (config thresholds, trend/RSI filters).
+*   Requested session end and handover generation with Git command.
+
+**Actionable Next Steps:**
+
+1.  **(User Action):** Save this **entire Markdown block** to the file `handover_latest.md` in your project root directory.
+2.  **(User Action):** Open your terminal in the project root, ensure your virtual environment is active, stage your changes, and commit using a message generated by the context manager. Then run the context manager script:
+    ```bash
+    # Stage ALL changes (including new core dir, scripts, data dir if needed, config, requirements etc.)
+    git add .
+    # Commit using a standard message for end-of-session SSoT update
+    git commit -m "chore(SSoT): Update SSoT with handover [2025-04-15 ~04:00 UTC]"
+    # Run the context manager to append handover and generate next context file
+    python scripts/context_manager.py --update-ssot --handover-file handover_latest.md
+    # (Optional: git push)
+    ```
+3.  **(User Action - Next Session):** Copy the *entire content* of the generated `context_for_llm.md` file and paste it as the first message in our next session.
+4.  **(Development - Next Session):** Proceed with **Step 7: Uncomment Read-Only API Calls**.
+    *   **File:** `src/core/order_manager.py`
+    *   **Action:** Uncomment the `self.connector.get_order_status(...)` calls within the `else:` block of the `check_orders` method.
+    *   **Action:** Uncomment the `fetched_orders = self.connector.get_open_orders(symbol)` line within the `else:` block of the `reconcile_and_place_grid` method.
+    *   **Goal:** Run `python src/main_trader.py` (with `SIMULATION_MODE = True`) and verify in the logs (`trader.log`, `errors.log`) that the bot successfully connects to the Binance.US API, makes these read-only calls, and handles the responses (including potential errors for simulated order IDs) without crashing. The simulation's internal logic for fills/placements will still drive the state changes.
+
+------- SESSION HANDOVER APPENDED [2025-04-15 ~04:09 UTC] -------
+# GeminiTrader - Handover Document (2025-04-15 ~04:15 UTC)
+
+**Project Goal:** Develop GeminiTrader, an autonomous cryptocurrency trading system aiming for long-term capital growth via a hybrid strategy (DCA, adaptive geometric dip-buying, confidence layer) and robust risk management, using the v6.5 development plan and the local SSoT management workflow.
+
+**Session Focus & Current Status:**
+*   **Focus:** This session primarily focused on debugging, refining the simulation framework, implementing state persistence, refactoring core logic, and improving the development workflow/output.
+*   **Key Activities & Status:**
+    *   **Simulation Data:** Created `scripts/download_sim_data.py`; identified `BTCUSD` data scarcity, switched to `BTCUSDT`; downloaded Q1 2024 data.
+    *   **Simulation Integration:** Modified `main_trader.py` to load and step through CSV simulation data.
+    *   **Debugging:** Resolved `TypeError` (pivot fetch), `AttributeError` (rolling pivots), `ValueError` (Series truthiness in indicator calc), `NameError` (OrderManager state update), `NameError` (StateManager typing import). Fixed simulation not terminating cleanly (`sys.exit`).
+    *   **Refactoring (`OrderManager`):** Successfully created `src/core/order_manager.py` and moved order logic from `main_trader.py`.
+    *   **State Persistence (`StateManager`):** Implemented `src/core/state_manager.py` (JSON save/load, type helpers, atomic saves). Integrated into `main_trader.py`. Confirmed persistence works across restarts.
+    *   **S/R Zone Scoring:** Implemented basic scoring (`score_zones` v1) in `src/analysis/support_resistance.py` (touches, type, recency, composite).
+    *   **Entry Conditions:** Refined `_plan_grid_buys` using configurable thresholds (confidence, RSI) and added trend filter (SMA cross). Removed balance hack warning.
+    *   **Logging/Output:** Refined logging levels (more DEBUG), implemented `tqdm` progress bar with status postfix, added dedicated `errors.log` file, configured console level via `config.yaml`.
+*   **Current Status:** The simulation runs successfully using CSV data, state persists, confidence score calculates, entry conditions are applied, S/R zones are scored (v1), order logic is handled by `OrderManager`, console output is clean via `tqdm`, and error logging is separate. The system is stable in simulation mode. Completed refactoring (Step 9), state management (Step 8), S/R scoring (Step 5), and entry condition refinement (Step 6).
+
+**Key Files/Modules Implemented or Modified (Session):**
+*   - src/main_trader.py (Major changes)
+*   - src/core/order_manager.py (Created)
+*   - src/core/state_manager.py (Created)
+*   - src/analysis/support_resistance.py (Fixed pivot bug, Implemented score_zones v1, Fixed FutureWarning initialization)
+*   - src/analysis/confidence.py (Fixed key issues, Adjusted logging)
+*   - src/utils/logging_setup.py (Added error handler, console level param, color formatter, root level adjustment)
+*   - config/config.yaml (Added state_manager, trading entry params, updated logging section, updated symbol/quote asset)
+*   - requirements.txt (Added scikit-learn, tqdm)
+*   - scripts/download_sim_data.py (Created)
+*   - data/simulation/BTCUSDT_1h_2024-01-01_2024-03-31.csv (Created via script by user)
+
+**Authoritative Roadmap Reference:**
+The authoritative project plan is locally managed `SSOT.md` (based on v6.5). This session completed Steps 5, 6, 8, 9, and simulation framework refinements related to Steps 3 & 4.
+
+**Key Learnings, Decisions & Conventions Established (Session):**
+*   Confirmed refactoring `main_trader.py` improves clarity.
+*   Established CSV-based simulation for deterministic testing.
+*   Switched primary pair to `BTCUSDT`.
+*   Adopted `tqdm` for cleaner simulation console output.
+*   Implemented separate error logging.
+*   Successfully debugged multiple integration issues (TypeError, AttributeError, ValueError, NameError).
+*   Confirmed state persistence works for simulation resumption/completion recognition.
+*   Confirmed log rotation (`trader.log.1`, etc.) is working as expected.
+*   **User Directives Review & Meta-Instructions:**
+    *   **Full Code:** The directive for providing full code blocks remains critical and was reinforced. I need to maintain 100% adherence. *Self-correction: Need to avoid providing only code snippets.*
+    *   **Handover Content:** User prefers explicit next steps, references to specific files/functions, and inclusion of meta-instructions/learnings like these.
+    *   **Clarity & Proactive Guidance:** User values clear explanations and proactive suggestions.
+    *   **Git Commit Command:** **User explicitly requested that the handover document *always* include the version of the `context_manager.py` command that includes the `--commit` flag in the next steps section.**
+
+**User Directives (Session):**
+*   Consistently **required full code blocks** for all file modifications.
+*   Requested help creating simulation data CSV.
+*   Requested fixes for noisy console output and implementation of `tqdm`.
+*   Asked clarifying questions about state persistence and simulation restart behavior.
+*   Approved refactoring approach (`OrderManager`).
+*   Approved implementing S/R scoring v1.
+*   Approved implementing enhanced entry conditions.
+*   Requested session end and handover generation with **specific inclusion of the commit command**.
+
+**Actionable Next Steps:**
+
+1.  **(User Action):** Save this **entire Markdown block** to the file `handover_latest.md` in the project root directory, overwriting the previous version.
+2.  **(User Action):** Open your terminal in the project root, ensure your virtual environment is active, stage your changes (e.g., `git add .`), and then run the context manager script **using the commit option** to update the SSoT and commit changes simultaneously:
+    ```bash
+    python scripts/context_manager.py --update-ssot --handover-file handover_latest.md --commit
+    ```
+    *(Optional: If you prefer not to commit automatically, you can omit the `--commit` flag and commit manually afterwards.)*
+3.  **(User Action - Next Session):** Copy the *entire content* of the generated `context_for_llm.md` file and paste it as the first message in our next session.
+4.  **(Development - Next Session):** Proceed with **Step 7: Uncomment Read-Only API Calls**.
+    *   **File:** `src/core/order_manager.py`
+    *   **Action:** Uncomment the `self.connector.get_order_status(...)` calls within the `else:` block of the `check_orders` method.
+    *   **Action:** Uncomment the `fetched_orders = self.connector.get_open_orders(symbol)` line within the `else:` block of the `reconcile_and_place_grid` method.
+    *   **Goal:** Run `python src/main_trader.py` (with `SIMULATION_MODE = True`) and verify in the logs (`trader.log`, `errors.log`) that the bot successfully connects to the Binance.US API, makes these read-only calls, and handles the responses without crashing.
