@@ -1,619 +1,979 @@
 # START OF FILE: src/core/order_manager.py
 
 import logging
+from decimal import Decimal, ROUND_DOWN, InvalidOperation
+from typing import List, Dict, Optional, TYPE_CHECKING, Any
+import pandas as pd
 import time
-import random
-from decimal import Decimal
-from typing import Optional, Dict, Any, List, Set
 
-import pandas as pd  # Used for type hints and Timestamp
+if TYPE_CHECKING:
+    from src.connectors.binance_us import BinanceUSConnector
+    from src.core.state_manager import StateManager
 
-# Project Imports (relative paths assuming main_trader.py runs from root)
 try:
     from config.settings import get_config_value
-    from src.connectors.binance_us import BinanceUSConnector
-    from src.utils.formatting import to_decimal, apply_filter_rules_to_qty
-except ImportError as e:
-    # Provide fallbacks for standalone testing or if imports fail initially
-    logging.basicConfig(level=logging.ERROR)
-    logging.critical(f"OrderManager Import Error: {e}. Using dummy functions.")
-    def get_config_value(config, key, default=None): return default
-    def to_decimal(v, default=None): return Decimal(
-        str(v)) if v is not None else default
+except ImportError:
+    # Dummy function for potential standalone testing or type checking issues
+    def get_config_value(cfg, path, default=None): return default
+    _logger_om = logging.getLogger(__name__)
+    if not _logger_om.hasHandlers():
+        logging.basicConfig(level=logging.WARNING)
+    _logger_om.warning("Using dummy get_config_value in order_manager.py")
 
-    def apply_filter_rules_to_qty(symbol, qty, info, op='floor'): return qty
-
-    class BinanceUSConnector:
-        pass  # Dummy class
-
-logger = logging.getLogger(__name__)  # Logger for this module
+logger = logging.getLogger(__name__)
 
 
 class OrderManager:
     """
-    Manages order checking, placement, cancellation, and reconciliation logic.
-    Interacts with the connector and updates the shared application state.
+    Manages order placement, tracking, and reconciliation.
+    Separates order logic from the main trading loop.
     """
 
-    def __init__(self, connector: BinanceUSConnector, state: Dict[str, Any], config: Dict[str, Any]):
-        """
-        Initializes the OrderManager.
-
-        Args:
-            connector: Instance of BinanceUSConnector.
-            state: The shared application state dictionary (will be modified directly).
-            config: The application configuration dictionary.
-        """
-        if connector is None:
-            raise ValueError(
-                "OrderManager requires a valid connector instance.")
-        if state is None:
-            raise ValueError(
-                "OrderManager requires a valid state dictionary instance.")
-        if config is None:
-            raise ValueError(
-                "OrderManager requires a valid config dictionary instance.")
-
+    def __init__(self, config_dict: Dict[str, Any], connector: 'BinanceUSConnector', state_manager: 'StateManager'):
+        self.config_dict = config_dict
         self.connector = connector
-        self.state = state  # Reference to the main state dictionary
-        self.config = config
-        # Determine simulation mode from the main state if available, else default
-        # Default to True if not set in state yet
-        self.SIMULATION_MODE = self.state.get('simulation_mode', True)
-        self.SIM_PLACEMENT_SUCCESS_RATE = self.state.get(
-            'sim_placement_success_rate', 0.99)  # Get from state or default
+        self.state_manager = state_manager
 
-        # Initialize state keys if they don't exist (more robust)
-        self.state.setdefault('active_grid_orders', [])
-        self.state.setdefault('active_tp_order', None)
-        self.state.setdefault('position', None)
-        self.state.setdefault('sim_grid_fills', 0)
-        self.state.setdefault('sim_tp_fills', 0)
-        self.state.setdefault('sim_market_sells', 0)
-        self.state.setdefault('sim_grid_place_fail', 0)
-        self.state.setdefault('sim_tp_place_fail', 0)
-        self.state.setdefault('sim_grid_cancel_fail', 0)
-        self.state.setdefault('sim_tp_cancel_fail', 0)
+        # Get simulation_mode and symbol/assets from the top-level 'trading' section
+        # as used in main_trader.py for consistency
+        self.simulation_mode = get_config_value(
+            self.config_dict, ('trading', 'simulation_mode'), False)
+        self.symbol = get_config_value(
+            self.config_dict, ('trading', 'symbol'), 'BTCUSDT')
+        self.quote_asset = get_config_value(
+            self.config_dict, ('portfolio', 'quote_asset'), 'USDT')
 
-        logger.info(
-            f"OrderManager initialized (SIM_MODE: {self.SIMULATION_MODE})")
+        # Infer base asset (same logic as main_trader.py)
+        if self.symbol.endswith(self.quote_asset):
+            self.base_asset = self.symbol[:-len(self.quote_asset)]
+        else:
+            common_bases = ['BTC', 'ETH']
+            inferred = False
+            for base in common_bases:
+                if self.symbol.startswith(base):
+                    self.base_asset = base
+                    inferred = True
+                    break
+            if not inferred:
+                self.base_asset = 'UNKNOWN_BASE'
+                logger.error(
+                    f"OrderManager could not infer base asset for symbol '{self.symbol}' and quote '{self.quote_asset}'. Defaulting to {self.base_asset}.")
 
-    def _get_trading_param(self, key: str, default=None):
-        return get_config_value(self.config, ('trading', key), default)
+        # Simulation counters (initialize here)
+        self.sim_order_id_counter = 1
+        self.place_attempts = 0  # Added for tracking
+        self.place_failures = 0  # Added for tracking
+        self.cancel_attempts = 0  # Added for tracking
+        self.cancel_failures = 0  # Added for tracking
+        self.sim_market_sell_counter = 0
+        self.sim_tp_fill_counter = 0
+        self.sim_grid_fill_counter = 0
 
-    # ==========================================================================
-    # ORDER CHECKING LOGIC (Moved from main_trader.py)
-    # ==========================================================================
-    def check_orders(self):
-        """
-        Checks status of active orders via API (or SIMULATES based on price),
-        updates internal state (position, active orders).
-        """
-        if not self.connector:
-            logger.error("OrderManager: Connector not available.")
-            return
-        symbol = self._get_trading_param('symbol', 'BTCUSDT')
-        # Use LIVE prefix if not SIM
-        log_prefix = "(SIM)" if self.SIMULATION_MODE else "(LIVE)"
-        logger.debug(f"OrderManager checking status {log_prefix}...")
-        made_state_changes = False
-        current_price_for_sim, current_low_for_sim, current_high_for_sim = None, None, None
+        # Load initial state to initialize active orders (important!)
+        self._load_order_state()
 
-        # Get current price from shared state for simulation
-        if self.SIMULATION_MODE and 'klines' in self.state and not self.state['klines'].empty:
-            latest_kline = self.state['klines'].iloc[-1]
-            current_price_for_sim = latest_kline.get('Close')
-            current_low_for_sim = latest_kline.get('Low')
-            current_high_for_sim = latest_kline.get('High')
-            logger.debug(
-                f"OrderManager Sim Price Check: L={current_low_for_sim}, H={current_high_for_sim}, C={current_price_for_sim}")
+    def _load_order_state(self):
+        """Loads active grid and TP orders from the state manager."""
+        state = self.state_manager.load_state()
+        state = state if state else {}
+        self.active_grid_orders = state.get('active_grid_orders', [])
+        self.active_tp_order = state.get('active_tp_order', None)
+        logger.debug(
+            f"OrderManager state loaded: Grid={len(self.active_grid_orders)}, TP={self.active_tp_order is not None}")
 
-        # --- Check Grid Orders ---
-        orders_to_remove_indices = []
-        grid_orders_copy = list(self.state['active_grid_orders'])
-        for i, order_data in enumerate(grid_orders_copy):
-            if not isinstance(order_data, dict):
-                orders_to_remove_indices.append(i)
-                continue
-            order_id = order_data.get('orderId')
-            if not order_id:
-                orders_to_remove_indices.append(i)
-                continue
-            logger.debug(f"Checking grid order ID: {order_id}...")
-            status_info = None
-            sim_status = 'NEW'
-            if self.SIMULATION_MODE:
-                # --- Simulation fill logic ---
-                order_price = to_decimal(order_data.get('price'))
-                check_price = current_low_for_sim if current_low_for_sim is not None else current_price_for_sim
-                if order_price and check_price and check_price <= order_price:
-                    if random.random() < 0.95:
-                        sim_status = 'FILLED'
-                        logger.debug(
-                            f"{log_prefix} Price ({check_price}) <= Order Price ({order_price}). Simulating FILL for {order_id}.")
-                    else:
-                        logger.debug(
-                            f"{log_prefix} Price ({check_price}) <= Order Price ({order_price}) but simulating NEW for {order_id}.")
-                        sim_status = 'NEW'
-                if sim_status == 'NEW':
-                    if random.random() < 0.005:
-                        sim_status = random.choice(
-                            ['CANCELED', 'REJECTED', 'UNKNOWN'])
-                        logger.warning(
-                            f"{log_prefix} Simulating random failure ({sim_status}) for {order_id}.")
-                if sim_status != 'NEW':
-                    status_info = {'symbol': symbol, 'orderId': order_id, 'status': sim_status, 'price': str(order_data.get('price', '0')), 'origQty': str(order_data.get(
-                        'origQty', '0')), 'executedQty': str(order_data.get('origQty', '0')) if sim_status == 'FILLED' else '0', 'updateTime': int(time.time()*1000)}
-            else:  # Live mode
-                try:
-                    # --- UNCOMMENTED READ-ONLY API CALL ---
-                    status_info = self.connector.get_order_status(
-                        symbol, str(order_id))
-                    logger.debug(
-                        f"API check grid order {order_id}: Status={status_info.get('status') if status_info else 'Error'}")
-                except Exception as e:
-                    logger.error(
-                        f"API Error checking order {order_id}: {e}", exc_info=True)
-                    status_info = None
+    def _save_order_state(self):
+        """Saves the current active orders back to the state manager."""
+        # It's often better practice for OrderManager *not* to save state directly,
+        # but rather have the main loop save the entire state after calling OM methods.
+        # However, if immediate persistence after OM actions is needed:
+        state = self.state_manager.load_state()
+        state = state if state else {}
+        state['active_grid_orders'] = self.active_grid_orders
+        state['active_tp_order'] = self.active_tp_order
+        self.state_manager.save_state(state)
+        logger.debug("OrderManager state saved.")
 
-            # --- Process Status Update ---
-            if status_info:
-                status = status_info.get('status')
-                if status == 'FILLED':
-                    logger.info(
-                        f"{log_prefix} *** GRID BUY FILLED ***: OrderID={order_id}, Qty={status_info.get('executedQty')}, Px={status_info.get('price')}")
-                    entry_price = to_decimal(status_info.get('price'))
-                    filled_qty = to_decimal(status_info.get('executedQty'))
-                    if entry_price and filled_qty and self.state['position'] is None:
-                        self.state['position'] = {'symbol': symbol, 'entry_price': entry_price, 'quantity': filled_qty, 'entry_time': pd.Timestamp(
-                            status_info.get('updateTime'), unit='ms', tz='UTC')}
-                        logger.info(
-                            f"+++ Position CREATED {log_prefix} +++: Entry={entry_price:.4f}, Qty={filled_qty}")
-                        if self.SIMULATION_MODE:
-                            self.state['sim_grid_fills'] += 1
-                        logger.warning(
-                            f"{log_prefix}: Fill detected, marking remaining grid orders for removal state update...")
-                        orders_to_remove_indices.extend(
-                            j for j in range(len(grid_orders_copy)) if j != i)
-                        made_state_changes = True
-                        break
-                    elif self.state['position'] is not None:
-                        logger.warning(
-                            f"{log_prefix} fill {order_id}, but pos exists. Marking removal.")
-                        orders_to_remove_indices.append(i)
-                    else:
-                        logger.error(
-                            f"Could not parse fill {order_id}. Info: {status_info}. Marking removal.")
-                        orders_to_remove_indices.append(i)
-                elif status in ['CANCELED', 'EXPIRED', 'REJECTED', 'UNKNOWN', 'PENDING_CANCEL']:
-                    logger.warning(
-                        f"Grid order {order_id} inactive (Status: {status}). Marking removal.")
-                    orders_to_remove_indices.append(i)
-                    made_state_changes = True
-                elif status not in ['NEW', 'PARTIALLY_FILLED']:
-                    logger.warning(
-                        f"Unhandled order status '{status}' for grid order {order_id}. Marking removal.")
-                    orders_to_remove_indices.append(i)
-                    made_state_changes = True
-            else:
-                if self.SIMULATION_MODE and sim_status == 'NEW':
-                    logger.debug(f"Grid order {order_id} status: NEW.")
-                else:
-                    logger.error(
-                        f"Failed get status grid order {order_id}. Marking removal.")
-                    orders_to_remove_indices.append(i)
-                    made_state_changes = True
-            if not self.SIMULATION_MODE:
-                time.sleep(0.1)
-            else:
-                time.sleep(0.01)
+    def _get_next_sim_order_id(self) -> str:
+        # Simple counter for simulation order IDs
+        order_id = f"sim_{int(time.time() * 1000)}_{self.sim_order_id_counter}"
+        self.sim_order_id_counter += 1
+        return order_id
 
-        # --- Update state by removing marked grid orders ---
-        unique_indices_to_remove = sorted(
-            list(set(orders_to_remove_indices)), reverse=True)
-        if unique_indices_to_remove:
-            logger.debug(
-                f"OrderManager removing indices {unique_indices_to_remove} from active_grid_orders state")
-            indices_set = set(unique_indices_to_remove)
-            self.state['active_grid_orders'] = [o for i, o in enumerate(
-                self.state['active_grid_orders']) if i not in indices_set]
-            logger.debug(
-                f"OrderManager removed {len(unique_indices_to_remove)} grid orders from state. New count: {len(self.state['active_grid_orders'])}.")
-            made_state_changes = True
-
-        # --- Check TP Order ---
-        tp_order = self.state.get('active_tp_order')
-        if tp_order and isinstance(tp_order, dict) and tp_order.get('orderId'):
-            order_id = tp_order['orderId']
-            logger.debug(f"Checking TP order ID: {order_id}...")
-            status_info_tp = None
-            sim_status_tp = 'NEW'
-            if self.SIMULATION_MODE:
-                order_price_tp = to_decimal(tp_order.get('price'))
-                check_price_tp = current_high_for_sim if current_high_for_sim is not None else current_price_for_sim
-                if order_price_tp and check_price_tp and check_price_tp >= order_price_tp:
-                    if random.random() < 0.95:
-                        sim_status_tp = 'FILLED'
-                        logger.debug(
-                            f"{log_prefix} Price ({check_price_tp}) >= TP Price ({order_price_tp}). Simulating FILL for {order_id}.")
-                    else:
-                        logger.debug(
-                            f"{log_prefix} Price ({check_price_tp}) >= TP Price ({order_price_tp}) but simulating NEW for {order_id}.")
-                        sim_status_tp = 'NEW'
-                if sim_status_tp == 'NEW':
-                    if random.random() < 0.005:
-                        sim_status_tp = random.choice(
-                            ['CANCELED', 'REJECTED', 'UNKNOWN'])
-                        logger.warning(
-                            f"{log_prefix} Simulating random failure ({sim_status_tp}) for TP order {order_id}.")
-                if sim_status_tp != 'NEW':
-                    status_info_tp = {'symbol': symbol, 'orderId': order_id, 'status': sim_status_tp, 'price': str(tp_order.get('price', '0')), 'executedQty': str(
-                        self.state['position'].get('quantity', '0')) if sim_status_tp == 'FILLED' and self.state['position'] else '0', 'updateTime': int(time.time()*1000)}
-            else:  # Live mode
-                try:
-                    # --- UNCOMMENTED READ-ONLY API CALL ---
-                    status_info_tp = self.connector.get_order_status(
-                        symbol, str(order_id))
-                    logger.debug(
-                        f"API check TP order {order_id}: Status={status_info_tp.get('status') if status_info_tp else 'Error'}")
-                except Exception as e:
-                    logger.error(
-                        f"API Error checking TP order {order_id}: {e}", exc_info=True)
-                    status_info_tp = None
-
-            # --- Process Status Update ---
-            if status_info_tp:
-                status = status_info_tp.get('status')
-                if status == 'FILLED':
-                    logger.info(
-                        f"{log_prefix} *** TAKE PROFIT FILLED ***: OrderID={order_id}, Qty={status_info_tp.get('executedQty')}, Px={status_info_tp.get('price')}")
-                    if self.SIMULATION_MODE:
-                        self.state['sim_tp_fills'] += 1
-                    self.state['position'] = None
-                    self.state['active_tp_order'] = None
-                    logger.info(f"--- Position CLEARED {log_prefix} ---")
-                    made_state_changes = True
-                elif status in ['CANCELED', 'EXPIRED', 'REJECTED', 'UNKNOWN', 'PENDING_CANCEL']:
-                    logger.warning(
-                        f"TP order {order_id} inactive (Status: {status}). Clearing state.")
-                    self.state['active_tp_order'] = None
-                    made_state_changes = True
-                elif status not in ['NEW', 'PARTIALLY_FILLED']:
-                    logger.warning(
-                        f"Unhandled order status '{status}' for TP order {order_id}. Clearing state.")
-                    self.state['active_tp_order'] = None
-                    made_state_changes = True
-            else:
-                if self.SIMULATION_MODE and sim_status_tp == 'NEW':
-                    logger.debug(f"TP order {order_id} status: NEW.")
-                else:
-                    logger.error(
-                        f"Failed get status TP order {order_id}. Clearing state.")
-                    self.state['active_tp_order'] = None
-                    made_state_changes = True
-
-        if not made_state_changes:
-            logger.debug(
-                "Order check complete: No relevant state changes detected.")
-
-    def reconcile_and_place_grid(self, planned_orders: List[Dict]):
-        """ Fetches open orders, reconciles with state, cancels discrepancies/old orders, places new ones. """
-        if not self.connector:
-            logger.error("OrderManager: Connector NA.")
-            return
-        symbol = self._get_trading_param('symbol', 'BTCUSDT')
-        log_prefix = "(SIM)" if self.SIMULATION_MODE else "(LIVE)"
-        logger.info(
-            f"--- OrderManager: Starting Grid Reconciliation & Placement {log_prefix} ---")
-        exchange_open_orders: List[Dict] = []
+    def _simulate_fill(self, order: Dict, current_price: Decimal) -> bool:
+        """Simulates if a limit order would fill based on the current price."""
         try:
-            if self.SIMULATION_MODE:
-                logger.debug(
-                    f"Simulating fetch open orders based on state: {len(self.state['active_grid_orders'])} orders")
-                for order_in_state in self.state['active_grid_orders']:
-                    if random.random() > 0.1:
-                        exchange_open_orders.append(order_in_state.copy())
-                logger.info(
-                    f"{log_prefix} Recon: Simulated {len(exchange_open_orders)} open orders based on current state.")
-            else:  # Live Mode
-                # --- UNCOMMENTED READ-ONLY API CALL ---
-                logger.info(
-                    f"Attempting to fetch REAL open orders for {symbol}...")
-                fetched_orders = self.connector.get_open_orders(symbol)
-                if fetched_orders is None:
-                    logger.error(
-                        "API Error fetching open orders. Cannot reconcile.")
-                    return
-                exchange_open_orders = fetched_orders
-                logger.info(
-                    f"{log_prefix} Recon: Found {len(exchange_open_orders)} open orders on exchange for {symbol}.")
-        except Exception as e:
-            logger.exception(f"Error fetching open orders {log_prefix}")
-            return
-
-        # --- Reconciliation Logic (remains the same) ---
-        state_order_ids: Set[int] = {
-            int(o['orderId']) for o in self.state['active_grid_orders'] if o.get('orderId')}
-        exchange_order_ids: Set[int] = {
-            int(o['orderId']) for o in exchange_open_orders if o.get('orderId')}
-        orders_in_state_only = state_order_ids - exchange_order_ids
-        orders_on_exchange_only = exchange_order_ids - state_order_ids
-        orders_match = state_order_ids.intersection(exchange_order_ids)
-        if orders_in_state_only:
+            order_price = Decimal(order.get('price', '0'))
+        except (InvalidOperation, TypeError):
             logger.warning(
-                f"{log_prefix} Recon: Orders in state but NOT on exchange: {orders_in_state_only}")
-            self.state['active_grid_orders'] = [o for o in self.state['active_grid_orders'] if int(
-                o.get('orderId', -1)) not in orders_in_state_only]
-        if orders_on_exchange_only:
-            logger.warning(
-                f"{log_prefix} Recon: Orders ON exchange but NOT in state (rogue?): {orders_on_exchange_only}")
-        logger.info(
-            f"{log_prefix} Recon: Matching orders in state & on exchange: {len(orders_match)}")
-        orders_to_cancel_ids = list(orders_match)
-        successfully_cancelled_ids = []
+                f"SimFill: Invalid price '{order.get('price')}' in order {order.get('clientOrderId', order.get('orderId'))}. Cannot simulate fill.")
+            return False
 
-        # --- Cancel matching orders ---
-        if orders_to_cancel_ids:
-            logger.info(
-                f"{log_prefix} Cancelling {len(orders_to_cancel_ids)} matching grid orders...")
-            for order_id_to_cancel in orders_to_cancel_ids:
-                logger.debug(
-                    f"{log_prefix} Attempting cancel order {order_id_to_cancel}...")
-                cancel_result = None
-                if self.SIMULATION_MODE:  # Simulate cancel
-                    if random.random() < self.SIM_PLACEMENT_SUCCESS_RATE:
-                        cancel_result = {
-                            'orderId': order_id_to_cancel, 'status': 'CANCELED'}
-                        logger.debug(
-                            f"{log_prefix} Sim CANCEL success for {order_id_to_cancel}")
-                    else:
-                        logger.error(
-                            f"{log_prefix} Sim CANCEL failure for {order_id_to_cancel}")
-                        self.state['sim_grid_cancel_fail'] += 1
-                else:  # Live mode - CANCEL REMAINS COMMENTED FOR SAFETY
-                    logger.warning(
-                        f"LIVE MODE: Skipping actual cancel for order {order_id_to_cancel}")
-                    # Assume cancel would work
-                    cancel_result = {
-                        'orderId': order_id_to_cancel, 'status': 'CANCELED'}
-                    # --- KEEP CANCEL COMMENTED ---
-                    # try: cancel_result = self.connector.cancel_order(symbol, order_id=str(order_id_to_cancel))
-                    # except Exception as e: logger.error(f"API Error cancelling order {order_id_to_cancel}: {e}", exc_info=True); cancel_result = None
-                    # --- END KEEP CANCEL COMMENTED ---
-                if cancel_result and (cancel_result.get('status') == 'CANCELED' or cancel_result.get('status') == 'UNKNOWN'):
-                    successfully_cancelled_ids.append(order_id_to_cancel)
-                else:
-                    logger.error(
-                        f"{log_prefix} Cancel FAILED for {order_id_to_cancel}. Result: {cancel_result}")
-                    if not self.SIMULATION_MODE:
-                        self.state['sim_grid_cancel_fail'] += 1
-                time.sleep(0.01 if self.SIMULATION_MODE else 0.2)
-        # Update state post-cancel/stale
-        cancelled_or_stale_ids = set(
-            successfully_cancelled_ids) | orders_in_state_only
-        if cancelled_or_stale_ids:
-            self.state['active_grid_orders'] = [o for o in self.state['active_grid_orders'] if int(
-                o.get('orderId', -1)) not in cancelled_or_stale_ids]
-        if orders_to_cancel_ids and self.state['active_grid_orders']:
-            logger.warning(
-                f"State has orders after cancel: {self.state['active_grid_orders']}. Clearing.")
-            self.state['active_grid_orders'] = []
+        order_side = order.get('side')
+        order_type = order.get('type')
 
-        # --- Place new orders ---
-        placed_orders_state_update = []
-        success_count = 0
-        failure_count = 0
-        if planned_orders:
-            logger.info(
-                f"{log_prefix} Placing {len(planned_orders)} new grid orders...")
-            for order_to_place in planned_orders:
-                price = order_to_place.get('price')
-                quantity = order_to_place.get('quantity')
-                if price is None or quantity is None:
-                    logger.error(
-                        f"Skipping invalid planned order: {order_to_place}")
-                    failure_count += 1
-                    continue
-                logger.debug(
-                    f"{log_prefix} Placing new grid order: {quantity}@{price}")
-                result = None
-                if self.SIMULATION_MODE:  # Simulate placement
-                    if random.random() < self.SIM_PLACEMENT_SUCCESS_RATE:
-                        sim_order_id = random.randint(10000000, 99999999)
-                        result = {'symbol': symbol, 'orderId': sim_order_id, 'clientOrderId': f"sim_{sim_order_id}", 'transactTime': int(time.time() * 1000), 'price': str(
-                            price), 'origQty': str(quantity), 'executedQty': '0.0', 'cummulativeQuoteQty': '0.0', 'status': 'NEW', 'timeInForce': 'GTC', 'type': 'LIMIT', 'side': 'BUY'}
-                        logger.debug(
-                            f"{log_prefix} Sim placement success. ID: {sim_order_id}")
-                    else:
-                        logger.error(
-                            f"{log_prefix} Sim placement failure for order at {price}.")
-                else:  # Live mode - PLACEMENT REMAINS COMMENTED
-                    logger.warning(
-                        f"LIVE MODE: Skipping actual placement for grid order at {price}")
-                    sim_order_id = random.randint(10000000, 99999999)
-                    result = {'symbol': symbol, 'orderId': sim_order_id, 'status': 'NEW', 'price': str(
-                        price), 'origQty': str(quantity)}  # Fake result
-                    # --- KEEP PLACE COMMENTED ---
-                    # try: result = self.connector.create_limit_buy(symbol=symbol, quantity=quantity, price=price)
-                    # except Exception as e: logger.error(f"API Error placing grid order at {price}: {e}", exc_info=True); result = None
-                    # --- END KEEP PLACE COMMENTED ---
-                if result and result.get('orderId'):
-                    placed_orders_state_update.append(result)
-                    success_count += 1
-                else:
-                    logger.error(
-                        f"{log_prefix} Placement FAILED grid order at {price}.")
-                    failure_count += 1
-                    if self.SIMULATION_MODE:
-                        self.state['sim_grid_place_fail'] += 1
-                time.sleep(0.01 if self.SIMULATION_MODE else 0.3)
-            logger.info(
-                f"{log_prefix} Grid Placement Summary: {success_count} succeeded, {failure_count} failed.")
-        else:
-            logger.info(f"{log_prefix} No new grid orders were planned.")
-        self.state['active_grid_orders'] = placed_orders_state_update
-        logger.info(
-            f"--- OrderManager: Grid Recon & Placement Complete {log_prefix}. Final Active Grid Orders: {len(self.state['active_grid_orders'])} ---")
+        # Only simulate fills for LIMIT orders
+        if order_type != 'LIMIT':
+            return False
 
-    def place_or_update_tp_order(self, tp_price: Decimal):
-        # ... (Cancellation and Placement logic remains COMMENTED for LIVE mode) ...
-        if not self.connector:
-            logger.error("OrderManager: Connector NA.")
-            return
-        if self.state.get('position') is None:
+        cid = order.get('clientOrderId', order.get('orderId', 'N/A'))
+
+        # Buy order fills if current price drops to or below order price
+        if order_side == 'BUY' and current_price <= order_price:
             logger.debug(
-                "place_or_update_tp_order called but no position exists.")
-            return
-        log_prefix = "(SIM)" if self.SIMULATION_MODE else "(LIVE)"
-        symbol = self.state['position']['symbol']
-        quantity = self.state['position']['quantity']
-        active_tp_order = self.state.get('active_tp_order')
-        exchange_info = self.connector.get_exchange_info_cached()
-        if not exchange_info:
-            logger.error("Cannot place TP: Exchange info missing.")
-            return
-        sell_qty = apply_filter_rules_to_qty(
-            symbol, quantity, exchange_info, operation='floor')
-        if sell_qty is None or sell_qty <= 0:
-            logger.error(
-                f"Cannot place TP: Invalid sell qty {quantity} after filter.")
-            return
-        needs_action = False
-        order_to_cancel = None
-        if active_tp_order and isinstance(active_tp_order, dict) and active_tp_order.get('orderId'):
-            current_tp_price_in_state = to_decimal(
-                active_tp_order.get('price'))
-            if not current_tp_price_in_state or abs(tp_price - current_tp_price_in_state) / current_tp_price_in_state >= Decimal('0.001'):
-                needs_action = True
-                order_to_cancel = active_tp_order['orderId']
-                logger.info(
-                    f"TP target {tp_price:.4f} differs from active {order_to_cancel} @ {current_tp_price_in_state:.4f}. Update needed.")
-            else:
-                logger.debug(
-                    f"TP price {tp_price:.4f} close to existing {active_tp_order['orderId']}. No action.")
-        else:
-            needs_action = True
-            logger.info(
-                f"No active TP order found. Placing new one at {tp_price:.4f}.")
-        if needs_action:
-            if order_to_cancel:
-                logger.info(
-                    f"{log_prefix} Cancelling existing TP order {order_to_cancel} to update...")
-                cancel_success = False
-                if self.SIMULATION_MODE:
-                    cancel_success = random.random() < self.SIM_PLACEMENT_SUCCESS_RATE
-                else:  # Live mode - CANCEL COMMENTED
-                    logger.warning(
-                        f"LIVE MODE: Skipping actual cancel for TP order {order_to_cancel}")
-                    cancel_success = True
-                    # --- KEEP CANCEL COMMENTED ---
-                    # try: cancel_result = self.connector.cancel_order(symbol, order_id=str(order_to_cancel)); cancel_success = cancel_result is not None
-                    # except Exception as e: logger.error(f"API Error cancelling TP order {order_to_cancel}: {e}", exc_info=True); cancel_success = False
-                if not cancel_success:
-                    logger.error(
-                        f"{log_prefix} Cancel FAILED for TP {order_to_cancel}. Update aborted.")
-                    if self.SIMULATION_MODE:
-                        self.state['sim_tp_cancel_fail'] += 1
-                        self.state['active_tp_order'] = None
-                        return
-                self.state['active_tp_order'] = None
-                logger.info(
-                    f"{log_prefix} Successfully cancelled TP order {order_to_cancel}.")
-                time.sleep(0.01 if self.SIMULATION_MODE else 0.2)
-            logger.info(
-                f"{log_prefix} Placing TP order: Sell {sell_qty}@{tp_price}")
-            result = None
-            if self.SIMULATION_MODE:
-                if random.random() < self.SIM_PLACEMENT_SUCCESS_RATE:
-                    sim_order_id = random.randint(10000000, 99999999)
-                    result = {'symbol': symbol, 'orderId': sim_order_id, 'status': 'NEW', 'price': str(
-                        tp_price), 'origQty': str(sell_qty)}
-            else:  # Live mode - PLACE COMMENTED
-                logger.warning(
-                    f"LIVE MODE: Skipping actual placement for TP order at {tp_price}")
-                sim_order_id = random.randint(10000000, 99999999)
-                result = {'symbol': symbol, 'orderId': sim_order_id, 'status': 'NEW', 'price': str(
-                    tp_price), 'origQty': str(sell_qty)}  # Fake result
-                # --- KEEP PLACE COMMENTED ---
-                # try: result = self.connector.create_limit_sell(symbol, sell_qty, tp_price)
-                # except Exception as e: logger.error(f"API Error placing TP order at {tp_price}: {e}", exc_info=True); result = None
-            if result and result.get('orderId'):
-                self.state['active_tp_order'] = result
-                logger.info(
-                    f"{log_prefix} TP placed/updated successfully. New Order ID: {result.get('orderId')}")
-            else:
-                logger.error(f"{log_prefix} Placement FAILED for TP order.")
-                self.state['active_tp_order'] = None
-                if self.SIMULATION_MODE:
-                    self.state['sim_tp_place_fail'] += 1
+                f"[SIM] Buy fill condition met for {cid} @ {order_price} (Current Price: {current_price})")
+            self.sim_grid_fill_counter += 1
+            return True
+        # Sell order (TP) fills if current price rises to or above order price
+        elif order_side == 'SELL' and current_price >= order_price:
+            logger.debug(
+                f"[SIM] Sell fill condition met for {cid} @ {order_price} (Current Price: {current_price})")
+            self.sim_tp_fill_counter += 1
+            return True
 
-    def execute_market_sell(self, reason: str) -> bool:
-        # ... (Cancellation and Placement logic remains COMMENTED for LIVE mode) ...
-        if not self.connector:
-            logger.error("OrderManager: Connector NA.")
-            return False
-        if self.state.get('position') is None:
-            logger.warning("Market sell requested but no position exists.")
-            return False
-        log_prefix = "(SIM)" if self.SIMULATION_MODE else "(LIVE)"
-        symbol = self.state['position']['symbol']
-        quantity = self.state['position']['quantity']
-        logger.warning(
-            f"*** {log_prefix} Executing Market SELL for {quantity} {symbol} due to: {reason} ***")
-        active_tp_order = self.state.get('active_tp_order')
-        if active_tp_order and isinstance(active_tp_order, dict) and active_tp_order.get('orderId'):
-            tp_order_id = active_tp_order['orderId']
-            logger.info(
-                f"{log_prefix} Cancelling associated TP order {tp_order_id} before market sell...")
-            cancel_tp_success = False
-            if self.SIMULATION_MODE:
-                cancel_tp_success = random.random() < self.SIM_PLACEMENT_SUCCESS_RATE
-            else:  # Live mode - CANCEL COMMENTED
-                logger.warning(
-                    f"LIVE MODE: Skipping actual cancel for TP order {tp_order_id}")
-                cancel_tp_success = True
-                # --- KEEP CANCEL COMMENTED ---
-                # try: cancel_tp_result = self.connector.cancel_order(symbol, str(tp_order_id)); cancel_tp_success = cancel_tp_result is not None
-                # except Exception as e: logger.error(f"API Error cancelling TP order {tp_order_id}: {e}", exc_info=True); cancel_tp_success = False
-            if cancel_tp_success:
+        # No fill condition met
+        return False
+
+    def check_orders(self, current_price: Decimal) -> Dict[str, Any]:
+        """
+        Checks status of active grid and TP orders.
+        In simulation, checks against current_price.
+        In live mode, queries the exchange API (read-only).
+        Returns a dictionary containing lists of filled orders.
+        Modifies internal state (active_grid_orders, active_tp_order).
+        """
+        # Load the latest order state before checking
+        self._load_order_state()
+
+        filled_grid_orders, filled_tp_order = [], None
+        logger.debug(
+            f"Checking Orders: Active Grid={len(self.active_grid_orders)}, Active TP={self.active_tp_order is not None}")
+
+        if self.simulation_mode:
+            remaining_grid = []
+            for order in self.active_grid_orders:
+                if self._simulate_fill(order, current_price):
+                    # Simulate the fill response structure
+                    filled_order_data = {
+                        **order,  # Keep original order data
+                        # Assume full fill
+                        'executedQty': order.get('origQty', '0.0'),
+                        'cummulativeQuoteQty': str(Decimal(order.get('price', '0')) * Decimal(order.get('origQty', '0'))),
+                        'status': 'FILLED',
+                        'updateTime': int(time.time() * 1000)
+                    }
+                    filled_grid_orders.append(filled_order_data)
+                    logger.info(
+                        f"[SIM] Grid order filled: {order.get('clientOrderId', order.get('orderId'))}")
+                else:
+                    remaining_grid.append(order)  # Keep order if not filled
+            self.active_grid_orders = remaining_grid  # Update internal state
+
+            if self.active_tp_order and self._simulate_fill(self.active_tp_order, current_price):
+                filled_tp_data = {
+                    **self.active_tp_order,
+                    'executedQty': self.active_tp_order.get('origQty', '0.0'),
+                    'cummulativeQuoteQty': str(Decimal(self.active_tp_order.get('price', '0')) * Decimal(self.active_tp_order.get('origQty', '0'))),
+                    'status': 'FILLED',
+                    'updateTime': int(time.time() * 1000)
+                }
+                filled_tp_order = filled_tp_data
                 logger.info(
-                    f"{log_prefix} TP order {tp_order_id} cancelled successfully.")
-                self.state['active_tp_order'] = None
+                    f"[SIM] TP order filled: {self.active_tp_order.get('clientOrderId', self.active_tp_order.get('orderId'))}")
+                self.active_tp_order = None  # Update internal state
+            # No need to explicitly save state here, let main loop handle it after getting results
+
+        else:  # Live Mode (Read-only calls to check status)
+            indices_to_remove = set()
+            for i, order in enumerate(self.active_grid_orders):
+                order_id = order.get('orderId')
+                client_order_id = order.get('clientOrderId')
+                display_id = client_order_id or order_id or f"Index_{i}"
+
+                if not order_id and not client_order_id:
+                    logger.warning(
+                        f"Skipping grid order check: Missing both orderId and clientOrderId in order data: {order}")
+                    continue
+
+                try:
+                    # Use the connector's status check
+                    status_data = self.connector.get_order_status(
+                        symbol=self.symbol,
+                        orderId=order_id,
+                        origClientOrderId=client_order_id
+                    )
+
+                    if status_data is None:
+                        # Error logged within connector, skip processing this order
+                        logger.warning(
+                            f"Could not get status for grid order {display_id}. Assuming still active.")
+                        continue
+
+                    status = status_data.get(
+                        'status', 'ERROR').upper()  # Normalize status
+                    logger.debug(
+                        f"Checked live grid order {display_id}: Status={status}")
+
+                    if status == 'FILLED':
+                        logger.info(f"Live grid order FILLED: {display_id}")
+                        # Merge original metadata with potentially updated status data
+                        filled_order_data = {**order, **status_data}
+                        filled_grid_orders.append(filled_order_data)
+                        indices_to_remove.add(i)
+                    elif status in ['CANCELED', 'EXPIRED', 'REJECTED', 'PENDING_CANCEL']:
+                        logger.info(
+                            f"Live grid order {display_id} is inactive (Status: {status}). Removing from active list.")
+                        indices_to_remove.add(i)
+                    elif status in ['NEW', 'PARTIALLY_FILLED']:
+                        # Still active, do nothing, keep in list
+                        logger.debug(
+                            f"Live grid order {display_id} is active (Status: {status}).")
+                        # Optionally update the state with the latest partial fill info if needed
+                        # self.active_grid_orders[i] = {**order, **status_data}
+                    else:  # UNKNOWN or ERROR status
+                        logger.warning(
+                            f"Live grid order {display_id} has unexpected status: {status}. Keeping for now.")
+
+                except Exception as e:
+                    logger.error(
+                        f"Error checking status for grid order {display_id}: {e}", exc_info=False)
+                    logger.debug(
+                        "Traceback for grid order check error:", exc_info=True)
+
+            # Update active grid orders list based on checks
+            if indices_to_remove:
+                self.active_grid_orders = [o for i, o in enumerate(
+                    self.active_grid_orders) if i not in indices_to_remove]
+
+            # Check Take Profit Order
+            if self.active_tp_order:
+                order_id = self.active_tp_order.get('orderId')
+                client_order_id = self.active_tp_order.get('clientOrderId')
+                display_id = client_order_id or order_id or "Unknown_TP_ID"
+
+                if not order_id and not client_order_id:
+                    logger.error(
+                        f"Active TP order is missing required IDs: {self.active_tp_order}. Removing.")
+                    self.active_tp_order = None
+                else:
+                    try:
+                        status_data = self.connector.get_order_status(
+                            symbol=self.symbol,
+                            orderId=order_id,
+                            origClientOrderId=client_order_id
+                        )
+
+                        if status_data is None:
+                            logger.warning(
+                                f"Could not get status for TP order {display_id}. Assuming still active.")
+                        else:
+                            status = status_data.get('status', 'ERROR').upper()
+                            logger.debug(
+                                f"Checked live TP order {display_id}: Status={status}")
+
+                            if status == 'FILLED':
+                                logger.info(
+                                    f"Live TP order FILLED: {display_id}")
+                                filled_tp_order = {
+                                    **self.active_tp_order, **status_data}
+                                self.active_tp_order = None  # Remove from active state
+                            elif status in ['CANCELED', 'EXPIRED', 'REJECTED', 'PENDING_CANCEL']:
+                                logger.info(
+                                    f"Live TP order {display_id} is inactive (Status: {status}). Removing from active list.")
+                                self.active_tp_order = None
+                            elif status in ['NEW', 'PARTIALLY_FILLED']:
+                                logger.debug(
+                                    f"Live TP order {display_id} is active (Status: {status}).")
+                                # Optionally update state with latest info
+                                # self.active_tp_order = {**self.active_tp_order, **status_data}
+                            else:
+                                logger.warning(
+                                    f"Live TP order {display_id} has unexpected status: {status}. Keeping for now.")
+
+                    except Exception as e:
+                        logger.error(
+                            f"Error checking status for TP order {display_id}: {e}", exc_info=False)
+                        logger.debug(
+                            "Traceback for TP order check error:", exc_info=True)
+
+        # Save the updated active orders back to the state manager after checks
+        self._save_order_state()
+
+        # Return the fills detected during this check cycle
+        return {'grid_fills': filled_grid_orders, 'tp_fill': filled_tp_order}
+
+    def reconcile_and_place_grid(self, planned_grid: List[Dict]) -> Dict[str, List]:
+        """
+        Compares planned grid orders with active orders, cancels outdated ones,
+        and places new ones.
+        Returns a dictionary summarizing actions taken.
+        Modifies internal state (active_grid_orders).
+        """
+        self._load_order_state()  # Load current active orders
+
+        result = {"placed": [], "cancelled": [], "failed": [], "unchanged": []}
+        current_ts_float = time.time()
+
+        logger.info(
+            f"Reconciling Grid Orders: Planned={len(planned_grid)}, Currently Active={len(self.active_grid_orders)}")
+
+        # --- Create sets for efficient comparison ---
+        # Use a consistent precision for price comparison
+        # Example precision, adjust if needed
+        price_precision = Decimal('1e-8')
+
+        # Planned orders: {price: plan_dict}
+        planned_orders_map = {}
+        for plan in planned_grid:
+            try:
+                price = Decimal(plan['price']).quantize(price_precision)
+                planned_orders_map[price] = plan
+            except (InvalidOperation, TypeError):
+                logger.warning(
+                    f"Invalid price in planned grid order, skipping: {plan.get('price')}")
+                result['failed'].append(
+                    {**plan, 'reason': 'Invalid price format'})
+
+        # Active orders: {price: order_dict}
+        active_orders_map = {}
+        valid_active_grid = []
+        for order in self.active_grid_orders:
+            try:
+                price = Decimal(order['price']).quantize(price_precision)
+                # Store the first active order found at a given price level
+                if price not in active_orders_map:
+                    active_orders_map[price] = order
+                valid_active_grid.append(order)  # Keep track of valid orders
+            except (InvalidOperation, TypeError):
+                logger.warning(
+                    f"Invalid price in active grid order state, ignoring: {order.get('price')}, ID: {order.get('clientOrderId')}")
+        self.active_grid_orders = valid_active_grid  # Update state with only valid ones
+
+        planned_prices = set(planned_orders_map.keys())
+        active_prices = set(active_orders_map.keys())
+
+        # --- Identify Orders to Cancel ---
+        prices_to_cancel = active_prices - planned_prices
+        orders_to_cancel = [active_orders_map[price]
+                            for price in prices_to_cancel]
+
+        # --- Identify Orders to Place ---
+        prices_to_place = planned_prices - active_prices
+        orders_to_place = [planned_orders_map[price]
+                           for price in prices_to_place]
+
+        # --- Identify Unchanged Orders ---
+        prices_unchanged = active_prices.intersection(planned_prices)
+        orders_unchanged = [active_orders_map[price]
+                            for price in prices_unchanged]
+        # Add unchanged orders to result
+        result['unchanged'] = orders_unchanged
+
+        logger.debug(
+            f"Grid Reconcile: Place={len(orders_to_place)}, Cancel={len(orders_to_cancel)}, Unchanged={len(orders_unchanged)}")
+
+        # --- Execute Cancellations ---
+        remaining_active_after_cancel = list(
+            orders_unchanged)  # Start with unchanged ones
+        for order in orders_to_cancel:
+            cid = order.get('clientOrderId')
+            oid = order.get('orderId')
+            price = order.get('price')
+            logger.debug(
+                f"Attempting to cancel outdated grid order at price {price} (ID: {cid or oid})")
+            # Use the dedicated cancel method which handles sim/live
+            cancel_success_id = self.cancel_order(cid, oid, "Grid (Reconcile)")
+            if cancel_success_id is not None:
+                # Log the ID that was targeted
+                result['cancelled'].append(cid or oid or f"Price_{price}")
             else:
                 logger.error(
-                    f"{log_prefix} FAILED to cancel TP order {tp_order_id}. Market sell aborted!")
-                if self.SIMULATION_MODE:
-                    self.state['sim_tp_cancel_fail'] += 1
-                    return False
-        else:
-            logger.debug(
-                "No active TP order found in state to cancel before market sell.")
-        result = None
-        if self.SIMULATION_MODE:
-            sim_order_id = random.randint(10000000, 99999999)
-            result = {'symbol': symbol, 'orderId': sim_order_id,
-                      'status': 'FILLED', 'executedQty': str(quantity)}
-        else:  # Live mode - MARKET SELL COMMENTED
-            logger.warning(
-                f"LIVE MODE: Skipping actual market sell for {quantity} {symbol}")
-            sim_order_id = random.randint(10000000, 99999999)
-            result = {'symbol': symbol, 'orderId': sim_order_id,
-                      # Fake result
-                      'status': 'FILLED', 'executedQty': str(quantity)}
-            # --- KEEP MARKET SELL COMMENTED ---
-            # try: result = self.connector.create_market_sell(symbol, quantity)
-            # except Exception as e: logger.error(f"API Error executing market sell: {e}", exc_info=True); result = None
-        if result and result.get('status') == 'FILLED':
-            logger.warning(
-                f"{log_prefix} *** Market SELL successful ***. Order ID: {result.get('orderId')}")
-            logger.info(f"--- Position CLEARED {log_prefix} ---")
-            if self.SIMULATION_MODE:
-                self.state['sim_market_sells'] += 1
-            self.state['position'] = None
-            self.state['active_tp_order'] = None
-            return True
-        else:
-            logger.error(f"{log_prefix} Market SELL FAILED! Result: {result}.")
-            return False
+                    f"Failed to cancel grid order at price {price} (ID: {cid or oid}). It might remain active.")
+                # Decide if we should keep it in the active list despite failed cancel
+                remaining_active_after_cancel.append(order)  # Keep it for now
 
-# END OF FILE: src/core/order_manager.py
+        # --- Execute Placements ---
+        newly_placed_orders = []
+        for plan in orders_to_place:
+            # Generate a unique client order ID
+            grid_level = plan.get('metadata', {}).get('grid_level', 'N')
+            cid = f"gt_grid_{int(current_ts_float * 1000)}_{grid_level}"
+            # Use original string price from plan for logging/API
+            plan_price = plan['price']
+            plan_quantity = plan['quantity']  # Use correct key
+
+            try:
+                if self.simulation_mode:
+                    logger.debug(
+                        # !!! CORRECTED KEY HERE !!!
+                        f"Attempting place SIM grid: {cid} for {plan_quantity} @ {plan_price}")
+                    sim_order = {
+                        'symbol': plan['symbol'],
+                        'orderId': self._get_next_sim_order_id(),  # Generate sim ID
+                        'clientOrderId': cid,
+                        'price': str(plan_price),  # Store as string like API
+                        'origQty': str(plan_quantity),  # Store as string
+                        'executedQty': '0.00000000',
+                        'cummulativeQuoteQty': '0.00000000',
+                        'status': 'NEW',
+                        'timeInForce': 'GTC',  # Assuming GTC for limit orders
+                        'type': plan['type'],
+                        'side': plan['side'],
+                        'isWorking': True,  # Assume working when placed in sim
+                        'time': int(time.time() * 1000),
+                        'updateTime': int(time.time() * 1000),
+                        # Include metadata
+                        'metadata': plan.get('metadata', {})
+                    }
+                    newly_placed_orders.append(sim_order)
+                    # Use the generated sim order data
+                    result['placed'].append(sim_order)
+                    self.place_attempts += 1
+                    logger.info(f"Simulated grid order placed: {cid}")
+                else:
+                    # Place live order using connector
+                    logger.info(  # Use INFO for live placement attempts
+                        # !!! CORRECTED KEY HERE !!!
+                        f"Attempting place LIVE grid order: {cid} for {plan_quantity} @ {plan_price}")
+                    order_response = self.connector.create_limit_buy(
+                        symbol=plan['symbol'],
+                        quantity=plan_quantity,  # Use Decimal quantity
+                        price=Decimal(plan_price),  # Use Decimal price
+                        newClientOrderId=cid
+                    )
+                    if order_response and isinstance(order_response, dict):
+                        logger.info(
+                            f"LIVE Grid order placement successful: {order_response.get('clientOrderId')} (ID: {order_response.get('orderId')}), Status: {order_response.get('status')}")
+                        # Add necessary metadata back if not included in response
+                        order_response_with_meta = {
+                            **order_response, 'metadata': plan.get('metadata', {})}
+                        newly_placed_orders.append(order_response_with_meta)
+                        result['placed'].append(
+                            order_response_with_meta)  # Use API response
+                        self.place_attempts += 1
+                    else:
+                        logger.error(
+                            f"LIVE Grid order placement failed for plan: Price={plan_price}, Qty={plan_quantity}. Response: {order_response}")
+                        result['failed'].append(
+                            {**plan, 'reason': 'API placement failed', 'response': order_response})
+                        self.place_failures += 1
+            except Exception as e:
+                logger.error(
+                    f"Exception occurred placing {'live' if not self.simulation_mode else 'simulated'} grid order for plan {plan}: {e}", exc_info=True)
+                result['failed'].append(
+                    {**plan, 'reason': f'Exception during placement: {e}'})
+                self.place_failures += 1
+
+        # Update the internal state with the final list of active orders
+        self.active_grid_orders = remaining_active_after_cancel + newly_placed_orders
+
+        # Save the updated state
+        self._save_order_state()
+
+        return result
+
+    def place_or_update_tp_order(self, tp_price: Optional[Decimal], position_size: Decimal) -> Optional[Dict]:
+        """
+        Places a new Take Profit order or updates/cancels the existing one.
+        Returns the active TP order dict if successful/unchanged, None otherwise.
+        Modifies internal state (active_tp_order).
+        """
+        self._load_order_state()  # Load current TP order state
+
+        # If position is closed or TP price is None, ensure any active TP is cancelled
+        if position_size <= Decimal('0') or tp_price is None:
+            if self.active_tp_order:
+                logger.info(
+                    f"Position closed or no TP planned. Cancelling active TP order: {self.active_tp_order.get('clientOrderId')}")
+                self.cancel_order(
+                    self.active_tp_order.get('clientOrderId'),
+                    self.active_tp_order.get('orderId'),
+                    "TP (Position Closed/No Plan)"
+                )
+                self.active_tp_order = None  # Clear internal state
+                self._save_order_state()  # Save cleared state
+            else:
+                logger.debug(
+                    "No position or no TP planned, and no active TP order found.")
+            return None  # No TP should be active
+
+        # --- Validate TP Quantity against filters ---
+        try:
+            # Ensure connector has filters loaded
+            filters = self.connector.get_filters(self.symbol)
+            if not filters:
+                logger.error(
+                    f"Cannot place/update TP order for {self.symbol}: Exchange filters not available.")
+                return None
+
+            # Import formatting utils locally if needed (or ensure available via imports)
+            from src.utils.formatting import apply_filter_rules_to_qty, apply_filter_rules_to_price, validate_min_notional
+
+            # Adjust quantity based on LOT_SIZE filter
+            tp_qty_adjusted = apply_filter_rules_to_qty(
+                position_size, filters, is_base_asset=True, symbol=self.symbol)
+            if tp_qty_adjusted is None or tp_qty_adjusted <= Decimal('0'):
+                logger.warning(
+                    f"Take Profit quantity {position_size} is invalid or zero after applying LOT_SIZE filter for {self.symbol}. Cannot place/update TP.")
+                # Cancel existing TP if qty becomes invalid
+                if self.active_tp_order:
+                    logger.info(
+                        "Cancelling existing TP due to invalid quantity.")
+                    self.cancel_order(self.active_tp_order.get(
+                        'clientOrderId'), self.active_tp_order.get('orderId'), "TP (Invalid Qty)")
+                    self.active_tp_order = None
+                    self._save_order_state()
+                return None
+
+            # Adjust price based on PRICE_FILTER and PERCENT_PRICE filters
+            tp_price_adjusted = apply_filter_rules_to_price(
+                tp_price, filters, symbol=self.symbol)
+            if tp_price_adjusted is None or tp_price_adjusted <= Decimal('0'):
+                logger.warning(
+                    f"Take Profit price {tp_price} is invalid after applying price filters for {self.symbol}. Cannot place/update TP.")
+                if self.active_tp_order:
+                    logger.info("Cancelling existing TP due to invalid price.")
+                    self.cancel_order(self.active_tp_order.get(
+                        'clientOrderId'), self.active_tp_order.get('orderId'), "TP (Invalid Price)")
+                    self.active_tp_order = None
+                    self._save_order_state()
+                return None
+
+            # Validate MIN_NOTIONAL
+            if not validate_min_notional(tp_price_adjusted, tp_qty_adjusted, filters, symbol=self.symbol):
+                logger.warning(
+                    f"Take Profit order ({tp_qty_adjusted} @ {tp_price_adjusted}) does not meet MIN_NOTIONAL filter for {self.symbol}. Cannot place/update TP.")
+                if self.active_tp_order:
+                    logger.info(
+                        "Cancelling existing TP due to MIN_NOTIONAL failure.")
+                    self.cancel_order(self.active_tp_order.get(
+                        'clientOrderId'), self.active_tp_order.get('orderId'), "TP (Min Notional Fail)")
+                    self.active_tp_order = None
+                    self._save_order_state()
+                return None
+
+            logger.debug(
+                f"Validated TP parameters: Qty={tp_qty_adjusted}, Price={tp_price_adjusted}")
+            target_tp_qty = tp_qty_adjusted
+            target_tp_price = tp_price_adjusted
+
+        except Exception as e:
+            logger.error(
+                f"Error applying filters to TP order (Qty:{position_size}, Price:{tp_price}): {e}", exc_info=True)
+            return None  # Cannot proceed without valid filtered parameters
+
+        # --- Compare with active TP order ---
+        needs_update = False
+        if self.active_tp_order:
+            try:
+                # Use consistent precision for comparison
+                price_precision = Decimal('1e-8')  # Match reconcile logic
+                # Match reconcile logic (adjust based on actual asset precision if needed)
+                qty_precision = Decimal('1e-8')
+
+                active_price = Decimal(self.active_tp_order.get(
+                    'price', '0')).quantize(price_precision)
+                active_qty = Decimal(self.active_tp_order.get(
+                    'origQty', '0')).quantize(qty_precision)
+                target_price_q = target_tp_price.quantize(price_precision)
+                target_qty_q = target_tp_qty.quantize(qty_precision)
+
+                price_differs = active_price != target_price_q
+                qty_differs = active_qty != target_qty_q
+
+                if price_differs or qty_differs:
+                    logger.info(
+                        f"Take Profit order needs update. Active: {active_qty} @ {active_price}, Target: {target_qty_q} @ {target_price_q}")
+                    needs_update = True
+                    # Cancel the existing order before placing a new one
+                    logger.debug(
+                        f"Cancelling existing TP order {self.active_tp_order.get('clientOrderId')} before update.")
+                    cancel_success_id = self.cancel_order(
+                        self.active_tp_order.get('clientOrderId'),
+                        self.active_tp_order.get('orderId'),
+                        "TP (Update)"
+                    )
+                    if cancel_success_id is not None:
+                        logger.info(
+                            f"Successfully cancelled existing TP order {cancel_success_id} for update.")
+                        self.active_tp_order = None  # Clear internal state after successful cancel
+                    else:
+                        logger.error(
+                            "Failed to cancel existing TP order. Cannot place updated TP.")
+                        self._save_order_state()  # Save state even if cancel failed
+                        return None  # Abort update if cancellation fails
+                else:
+                    logger.debug(
+                        f"Active TP order already matches target ({target_tp_qty} @ {target_tp_price}). No update needed.")
+                    # No need to save state if nothing changed
+                    return self.active_tp_order  # Return the existing order
+
+            except (InvalidOperation, TypeError) as parse_err:
+                logger.warning(
+                    f"Could not parse active TP order details for comparison: {parse_err}. Will attempt to cancel and replace. Active TP: {self.active_tp_order}")
+                needs_update = True
+                cancel_success_id = self.cancel_order(
+                    self.active_tp_order.get('clientOrderId'),
+                    self.active_tp_order.get('orderId'),
+                    "TP (Parse Error)"
+                )
+                if cancel_success_id is not None:
+                    self.active_tp_order = None
+                else:
+                    logger.error("Failed cancel TP after parse error.")
+                    return None
+
+        # --- Place New TP Order (if no active one or if update needed) ---
+        if self.active_tp_order is None:  # Place if no active order or if cancelled for update
+            client_order_id = f"gt_tp_{self.symbol}_{int(time.time() * 1000)}"
+            new_tp_order_data = None
+
+            if self.simulation_mode:
+                sim_order_id = self._get_next_sim_order_id()
+                new_tp_order_data = {
+                    'symbol': self.symbol,
+                    'orderId': sim_order_id,
+                    'clientOrderId': client_order_id,
+                    'price': str(target_tp_price),  # Use validated price
+                    'origQty': str(target_tp_qty),  # Use validated quantity
+                    'executedQty': '0.00000000',
+                    'cummulativeQuoteQty': '0.00000000',
+                    'status': 'NEW',
+                    'timeInForce': 'GTC',  # Assuming GTC
+                    'type': 'LIMIT',
+                    'side': 'SELL',
+                    'isWorking': True,
+                    'time': int(time.time() * 1000),
+                    'updateTime': int(time.time() * 1000)
+                }
+                logger.info(
+                    f"[SIM] Placing new Take Profit order: {client_order_id} for {target_tp_qty} @ {target_tp_price}")
+                self.place_attempts += 1
+            else:  # Live Mode
+                try:
+                    logger.info(
+                        f"Attempting to place LIVE Take Profit order: {client_order_id} for {target_tp_qty} @ {target_tp_price}")
+                    order_response = self.connector.create_limit_sell(
+                        symbol=self.symbol,
+                        quantity=target_tp_qty,  # Use validated Decimal qty
+                        price=target_tp_price,  # Use validated Decimal price
+                        newClientOrderId=client_order_id
+                    )
+                    if order_response and isinstance(order_response, dict):
+                        logger.info(
+                            f"LIVE Take Profit order placement successful: {order_response.get('clientOrderId')} (ID: {order_response.get('orderId')}), Status: {order_response.get('status')}")
+                        new_tp_order_data = order_response
+                        self.place_attempts += 1
+                    else:
+                        logger.error(
+                            f"LIVE Take Profit order placement failed. Qty={target_tp_qty}, Price={target_tp_price}. Response: {order_response}")
+                        self.place_failures += 1
+                except Exception as e:
+                    logger.error(
+                        f"Exception occurred placing live Take Profit order (Qty:{target_tp_qty}, Price:{target_tp_price}): {e}", exc_info=True)
+                    self.place_failures += 1
+
+            # Update internal state and save if placement (sim or live) was successful
+            if new_tp_order_data:
+                self.active_tp_order = new_tp_order_data
+                self._save_order_state()
+                return self.active_tp_order
+            else:
+                # Placement failed, ensure active_tp_order remains None
+                self.active_tp_order = None
+                self._save_order_state()
+                return None
+        else:
+            # This case should only be reached if the existing order matched the target and no update was needed
+            return self.active_tp_order
+
+    def cancel_order(self, client_order_id: Optional[str], order_id: Optional[str], order_type_label: str) -> Optional[str]:
+        """
+        Attempts to cancel an order using clientOrderId or orderId.
+        Handles simulation vs live mode.
+        Returns the ID used for cancellation if successful or handled, None otherwise.
+        """
+        if not client_order_id and not order_id:
+            logger.warning(
+                f"Cannot cancel {order_type_label} order: No clientOrderId or orderId provided.")
+            return None
+
+        # Prefer clientOrderId if available, fallback to orderId
+        target_id = client_order_id or order_id
+        id_type = "ClientOrderId" if client_order_id else "OrderId"
+        self.cancel_attempts += 1
+
+        if self.simulation_mode:
+            # In simulation, simply log the cancellation attempt and assume success
+            logger.info(
+                f"[SIM] Cancelling {order_type_label} order ({id_type}={target_id})")
+            # Remove the order from internal state if found (match by either ID)
+            original_grid_count = len(self.active_grid_orders)
+            self.active_grid_orders = [o for o in self.active_grid_orders if not (
+                (client_order_id and o.get('clientOrderId') == client_order_id) or
+                (order_id and o.get('orderId') == order_id)
+            )]
+            if len(self.active_grid_orders) < original_grid_count:
+                logger.debug(
+                    f"[SIM] Removed cancelled grid order {target_id} from state.")
+
+            if self.active_tp_order and (
+                (client_order_id and self.active_tp_order.get('clientOrderId') == client_order_id) or
+                    (order_id and self.active_tp_order.get('orderId') == order_id)):
+                logger.debug(
+                    f"[SIM] Removed cancelled TP order {target_id} from state.")
+                self.active_tp_order = None
+
+            self._save_order_state()  # Save updated state after simulated cancel
+            return target_id  # Indicate handled
+
+        else:  # Live Mode
+            try:
+                logger.info(
+                    f"Attempting to cancel LIVE {order_type_label} order ({id_type}={target_id})")
+                # Use the connector's cancel method
+                result = self.connector.cancel_order(
+                    symbol=self.symbol,
+                    orderId=order_id,  # Pass None if not available
+                    origClientOrderId=client_order_id  # Pass None if not available
+                )
+
+                # Check the result from the connector
+                if result and isinstance(result, dict):
+                    # Binance API often returns the cancelled order details
+                    status = result.get('status', 'UNKNOWN').upper()
+                    final_id = result.get('clientOrderId') or result.get(
+                        'orderId') or target_id
+                    if status in ['CANCELED', 'EXPIRED']:  # Definite success
+                        logger.info(
+                            f"Successfully cancelled LIVE {order_type_label} order {final_id}. Final Status: {status}")
+                        # Remove from internal state immediately on confirmation
+                        self.active_grid_orders = [o for o in self.active_grid_orders if not (
+                            (client_order_id and o.get('clientOrderId') == client_order_id) or
+                            (order_id and o.get('orderId') == order_id)
+                        )]
+                        if self.active_tp_order and (
+                            (client_order_id and self.active_tp_order.get('clientOrderId') == client_order_id) or
+                                (order_id and self.active_tp_order.get('orderId') == order_id)):
+                            self.active_tp_order = None
+                        self._save_order_state()
+                        return final_id
+                    elif status in ['PENDING_CANCEL']:
+                        logger.info(
+                            f"LIVE {order_type_label} order {final_id} cancellation pending. Status: {status}. Assuming success for now.")
+                        # Remove from internal state optimistically
+                        self.active_grid_orders = [o for o in self.active_grid_orders if not (
+                            (client_order_id and o.get('clientOrderId') == client_order_id) or
+                            (order_id and o.get('orderId') == order_id)
+                        )]
+                        if self.active_tp_order and (
+                           (client_order_id and self.active_tp_order.get('clientOrderId') == client_order_id) or
+                           (order_id and self.active_tp_order.get('orderId') == order_id)):
+                            self.active_tp_order = None
+                        self._save_order_state()
+                        return final_id  # Indicate handled
+                    else:
+                        # This might happen if the order was already FILLED or REJECTED
+                        logger.warning(
+                            f"Cancel request for LIVE {order_type_label} order {final_id} returned status '{status}'. Order might not have been open.")
+                        # Check if it was already filled - check_orders should handle this, but maybe remove here too
+                        if status not in ['NEW', 'PARTIALLY_FILLED']:
+                            self.active_grid_orders = [o for o in self.active_grid_orders if not (
+                                (client_order_id and o.get('clientOrderId') == client_order_id) or
+                                (order_id and o.get('orderId') == order_id)
+                            )]
+                            if self.active_tp_order and (
+                                (client_order_id and self.active_tp_order.get('clientOrderId') == client_order_id) or
+                                    (order_id and self.active_tp_order.get('orderId') == order_id)):
+                                self.active_tp_order = None
+                            self._save_order_state()
+                        # Indicate handled (even if not actually cancelled now)
+                        return target_id
+                # Handle cases where the connector might return a simple boolean or None
+                # Adjust based on your connector's specific cancel_order implementation
+                elif result is True:  # Simple success indicator
+                    logger.info(
+                        f"Cancel request for LIVE {order_type_label} order {target_id} successful (Boolean response).")
+                    # Remove from state
+                    self.active_grid_orders = [o for o in self.active_grid_orders if not (
+                        (client_order_id and o.get('clientOrderId') == client_order_id) or
+                        (order_id and o.get('orderId') == order_id)
+                    )]
+                    if self.active_tp_order and (
+                       (client_order_id and self.active_tp_order.get('clientOrderId') == client_order_id) or
+                       (order_id and self.active_tp_order.get('orderId') == order_id)):
+                        self.active_tp_order = None
+                    self._save_order_state()
+                    return target_id
+                else:  # Result is None, False, or unexpected type
+                    logger.error(
+                        f"Cancel request for LIVE {order_type_label} order {target_id} failed or returned unexpected result: {result}")
+                    self.cancel_failures += 1
+                    return None
+
+            except Exception as e:
+                # Specific handling for "Order does not exist" could go here if the connector raises distinct exceptions
+                # Example: if isinstance(e, OrderNotFoundException): logger.info(...) return target_id
+                logger.error(
+                    f"Exception occurred cancelling LIVE {order_type_label} order {target_id}: {e}", exc_info=True)
+                self.cancel_failures += 1
+                # Decide if an "Order does not exist" error should be treated as success for removal purposes
+                # For now, treat all exceptions as failure to cancel.
+                return None
+
+    def execute_market_sell(self, quantity: Decimal, reason: str) -> Optional[Dict]:
+        """Executes an immediate market sell order for the specified quantity."""
+        self._load_order_state()  # Load state to access current kline for sim price
+
+        if quantity <= Decimal('0'):
+            logger.warning(
+                f"Market sell ({reason}) requested with invalid quantity: {quantity}. Skipping.")
+            return None
+
+        # --- Validate Quantity against filters ---
+        try:
+            filters = self.connector.get_filters(self.symbol)
+            if not filters:
+                logger.error(
+                    f"Cannot execute market sell ({reason}): Exchange filters not available for {self.symbol}.")
+                return None
+
+            from src.utils.formatting import apply_filter_rules_to_qty, validate_notional_market
+
+            # Apply LOT_SIZE filter
+            sell_qty_adjusted = apply_filter_rules_to_qty(
+                quantity, filters, is_base_asset=True, symbol=self.symbol)
+            if sell_qty_adjusted is None or sell_qty_adjusted <= Decimal('0'):
+                logger.error(
+                    f"Market sell ({reason}) quantity {quantity} is invalid or zero after applying LOT_SIZE filter for {self.symbol}.")
+                return None
+
+            # Apply MARKET_LOT_SIZE filter if present (often same as LOT_SIZE)
+            # Re-apply using the potentially adjusted quantity
+            sell_qty_adjusted = apply_filter_rules_to_qty(
+                sell_qty_adjusted, filters, is_base_asset=True, symbol=self.symbol, filter_type='MARKET_LOT_SIZE')
+            if sell_qty_adjusted is None or sell_qty_adjusted <= Decimal('0'):
+                logger.error(
+                    f"Market sell ({reason}) quantity {quantity} is invalid or zero after applying MARKET_LOT_SIZE filter for {self.symbol}.")
+                return None
+
+            # Validate NOTIONAL (Market) - requires estimated price
+            # Get current price for estimation (use last close price from state)
+            current_kline_data = self.state_manager.load_state().get('current_kline', {})
+            est_price = to_decimal(current_kline_data.get('close'))
+            if est_price is None or est_price <= 0:
+                logger.warning(
+                    f"Market sell ({reason}): Cannot estimate price for NOTIONAL check. Proceeding with caution.")
+                # Optionally fail here if NOTIONAL check is critical
+            elif not validate_notional_market(est_price, sell_qty_adjusted, filters, symbol=self.symbol):
+                logger.error(
+                    f"Market sell ({reason}) order ({sell_qty_adjusted} @ ~{est_price}) does not meet NOTIONAL (Market) filter for {self.symbol}.")
+                return None
+
+            logger.debug(
+                f"Validated market sell quantity ({reason}): {sell_qty_adjusted}")
+            target_sell_qty = sell_qty_adjusted
+
+        except Exception as e:
+            logger.error(
+                f"Error applying filters to market sell ({reason}) order (Qty:{quantity}): {e}", exc_info=True)
+            return None
+
+        # --- Execute Order ---
+        client_order_id = f"gt_mkt_sell_{self.symbol}_{reason}_{int(time.time() * 1000)}"
+
+        if self.simulation_mode:
+            self.sim_market_sell_counter += 1
+            # Estimate fill price (e.g., use current close or open price)
+            current_kline = self.state.get('current_kline', {})
+            # Use close if available, otherwise open, default to 1 to avoid zero division
+            sim_fill_price = to_decimal(current_kline.get('close')) or to_decimal(
+                current_kline.get('open')) or Decimal('1')
+
+            sim_quote_proceeds = target_sell_qty * sim_fill_price
+
+            # Simulate the response structure
+            sim_response = {
+                'symbol': self.symbol,
+                'orderId': f"sim_mkt_{self.sim_market_sell_counter}",
+                'clientOrderId': client_order_id,
+                'transactTime': int(time.time() * 1000),
+                'price': '0',  # Market orders have price 0
+                'origQty': str(target_sell_qty),
+                'executedQty': str(target_sell_qty),  # Assume full fill in sim
+                'cummulativeQuoteQty': str(sim_quote_proceeds),
+                'status': 'FILLED',
+                'type': 'MARKET',
+                'side': 'SELL',
+                # Simulate a single fill entry
+                'fills': [{
+                    'price': str(sim_fill_price),
+                    'qty': str(target_sell_qty),
+                    'commission': '0',  # Simulating zero fees for now
+                    'commissionAsset': self.quote_asset,
+                    'tradeId': self.sim_market_sell_counter  # Simple sim trade ID
+                }]
+            }
+            logger.info(
+                f"[SIM] Executing Market Sell ({reason}): {client_order_id} for {target_sell_qty} @ ~{sim_fill_price}")
+
+            # Manually update simulated balances immediately
+            # Need to load current state to update balances
+            current_state = self.state_manager.load_state()
+            current_state['balance_quote'] = current_state.get(
+                'balance_quote', Decimal('0')) + sim_quote_proceeds
+            current_state['balance_base'] = max(Decimal('0'), current_state.get(
+                'balance_base', Decimal('0')) - target_sell_qty)
+            # Also clear position info immediately after market sell execution in sim
+            current_state['position_size'] = Decimal('0')
+            current_state['position_entry_price'] = Decimal('0')
+            current_state['position_entry_timestamp'] = None
+            # Cancel any active TP order immediately
+            if current_state.get('active_tp_order'):
+                logger.info(
+                    "[SIM] Clearing active TP order due to market sell.")
+                current_state['active_tp_order'] = None
+            self.state_manager.save_state(current_state)  # Save updated state
+
+            return sim_response
+
+        else:  # Live Mode
+            try:
+                logger.info(
+                    f"Attempting to execute LIVE Market Sell ({reason}): {client_order_id} for {target_sell_qty}")
+                # Use the connector's market sell method
+                order_response = self.connector.create_market_sell(
+                    symbol=self.symbol,
+                    quantity=target_sell_qty,  # Use validated Decimal qty
+                    newClientOrderId=client_order_id
+                )
+
+                if order_response and isinstance(order_response, dict):
+                    # Market orders usually return FILLED status immediately if successful
+                    logger.info(
+                        f"LIVE Market Sell ({reason}) submitted/executed: {order_response.get('clientOrderId')} (ID: {order_response.get('orderId')}), Status: {order_response.get('status')}")
+                    # NOTE: Actual balance update happens when _process_fills sees this based on check_orders or webhook
+                    # We *don't* modify main state here for live, just return the response.
+                    # However, we *should* immediately cancel any active TP order in our state
+                    self._load_order_state()
+                    if self.active_tp_order:
+                        logger.info(
+                            f"Market sell placed. Cancelling tracked active TP order {self.active_tp_order.get('clientOrderId')} preventatively.")
+                        self.cancel_order(self.active_tp_order.get(
+                            'clientOrderId'), self.active_tp_order.get('orderId'), "TP (Post Market Sell)")
+                        self.active_tp_order = None
+                        self._save_order_state()
+
+                else:
+                    logger.error(
+                        f"LIVE Market Sell ({reason}) failed for quantity {target_sell_qty}. Response: {order_response}")
+
+                # Return API response (or None if initial call failed)
+                return order_response
+
+            except Exception as e:
+                logger.error(
+                    f"Exception occurred executing live market sell ({reason}) for quantity {target_sell_qty}: {e}", exc_info=True)
+                return None
+
+
+# EOF: src/core/order_manager.py

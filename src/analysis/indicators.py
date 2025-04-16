@@ -1,22 +1,22 @@
 # START OF FILE: src/analysis/indicators.py
 
 import pandas as pd
-import pandas_ta as ta  # Use pandas-ta for common indicators
+import pandas_ta as ta  # type: ignore # Use pandas-ta for common indicators
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 import logging
-from typing import Optional  # Added for type hinting
+from typing import Optional, Dict, Any  # Added Dict, Any
 
 # --- Setup Logger ---
 logger = logging.getLogger(__name__)
 
-# --- Constants ---
-ATR_PERIOD = 14
-SMA_SHORT_PERIOD = 10
-SMA_LONG_PERIOD = 50
-RSI_PERIOD = 14
-MACD_FAST_PERIOD = 12
-MACD_SLOW_PERIOD = 26
-MACD_SIGNAL_PERIOD = 9
+# --- Default Constants (can be overridden by config) ---
+DEFAULT_ATR_PERIOD = 14
+DEFAULT_SMA_FAST_PERIOD = 50  # Match config default if possible
+DEFAULT_SMA_SLOW_PERIOD = 200  # Match config default if possible
+DEFAULT_RSI_PERIOD = 14
+DEFAULT_MACD_FAST_PERIOD = 12
+DEFAULT_MACD_SLOW_PERIOD = 26
+DEFAULT_MACD_SIGNAL_PERIOD = 9
 
 # --- Helper for pandas-ta conversion ---
 
@@ -26,25 +26,22 @@ def _convert_to_float_df(df: pd.DataFrame, cols: list) -> pd.DataFrame:
     try:
         float_df = df[cols].copy()
         for col in cols:
-            # Convert to numeric, coercing errors to NaN
             float_df[col] = pd.to_numeric(float_df[col], errors='coerce')
-            # *** ADDED: Explicitly set dtype to float64 ***
             float_df[col] = float_df[col].astype('float64')
-        # Check if all values in any required column became NaN after conversion
         if float_df.isnull().all().any():
             logger.warning(
                 f"All values in one or more columns ({cols}) became NaN after conversion. Check input data.")
-            # Return empty, as calculation is impossible
-            return pd.DataFrame()
+            # Return empty with original index
+            return pd.DataFrame(index=df.index)
         return float_df
     except KeyError as e:
         logger.error(
             f"Required column missing for float conversion: {e}. Available columns: {list(df.columns)}")
-        return pd.DataFrame()
+        return pd.DataFrame(index=df.index)
     except Exception as e:
         logger.error(
             f"Error converting columns {cols} to float: {e}", exc_info=True)
-        return pd.DataFrame()
+        return pd.DataFrame(index=df.index)
 
 
 def _convert_series_to_decimal(series: pd.Series, precision: str = '1e-8') -> pd.Series:
@@ -53,28 +50,31 @@ def _convert_series_to_decimal(series: pd.Series, precision: str = '1e-8') -> pd
         return pd.Series(dtype=object, index=series.index if series is not None else None)
     try:
         quantizer = Decimal(precision)
-        # Apply conversion, robustly handling None/NaN
         decimal_series = series.apply(
             lambda x: Decimal(str(x)).quantize(
                 quantizer, rounding=ROUND_HALF_UP)
             if pd.notna(x) and isinstance(x, (int, float, str))
             else (Decimal(x).quantize(quantizer, rounding=ROUND_HALF_UP) if isinstance(x, Decimal)
-                  else None)  # None for Decimal NaN
+                  else None)
         )
         return decimal_series.astype(object)
     except (InvalidOperation, TypeError, ValueError) as e:
+        # Reduce log noise
         logger.error(
-            f"Error converting Series elements to Decimal: {e}", exc_info=True)
+            f"Error converting Series elements to Decimal: {e}", exc_info=False)
+        # Log full trace to debug
+        logger.debug(
+            f"Full error converting Series to Decimal: {e}", exc_info=True)
         return pd.Series(dtype=object, index=series.index)
     except Exception as e:
         logger.error(
             f"Unexpected error converting Series to Decimal: {e}", exc_info=True)
         return pd.Series(dtype=object, index=series.index)
 
-# --- Indicator Functions ---
+# --- Individual Indicator Functions (Mostly unchanged) ---
 
 
-def calculate_atr(df: pd.DataFrame, length: int = ATR_PERIOD) -> pd.Series:
+def calculate_atr(df: pd.DataFrame, length: int = DEFAULT_ATR_PERIOD) -> pd.Series:
     """Calculates ATR using pandas-ta."""
     required_cols_case_insensitive = ['high', 'low', 'close']
     if df is None or df.empty:
@@ -90,11 +90,12 @@ def calculate_atr(df: pd.DataFrame, length: int = ATR_PERIOD) -> pd.Series:
             required_cols_case_insensitive, original_case_cols) if not orig]
         logger.error(
             f"DataFrame must contain {missing} columns (case-insensitive) for ATR.")
-        return pd.Series(dtype=object)
+        # Return empty with index
+        return pd.Series(dtype=object, index=df.index)
 
     if length <= 0:
         logger.error("ATR length must be positive.")
-        return pd.Series(dtype=object)
+        return pd.Series(dtype=object, index=df.index)
     if len(df) < length:
         logger.debug(f"ATR: Not enough data ({len(df)}<{length}).")
         return pd.Series(dtype=object, index=df.index)
@@ -104,7 +105,6 @@ def calculate_atr(df: pd.DataFrame, length: int = ATR_PERIOD) -> pd.Series:
         logger.warning("ATR: Failed HLC float conversion.")
         return pd.Series(dtype=object, index=df.index)
 
-    # *** ADDED: Drop rows with NaNs in necessary columns BEFORE calculating ***
     float_df.dropna(subset=original_case_cols, inplace=True)
     if len(float_df) < length:
         logger.debug(
@@ -114,9 +114,7 @@ def calculate_atr(df: pd.DataFrame, length: int = ATR_PERIOD) -> pd.Series:
     try:
         logger.debug(
             f"Calculating ATR with length {length} using pandas-ta...")
-        # RENAME columns in the float copy to lowercase for pandas-ta
-        # Assign standard lowercase names
-        float_df.columns = required_cols_case_insensitive
+        float_df.columns = required_cols_case_insensitive  # Rename copy to lowercase
 
         atr_series_float = float_df.ta.atr(length=length, append=False)
 
@@ -128,7 +126,6 @@ def calculate_atr(df: pd.DataFrame, length: int = ATR_PERIOD) -> pd.Series:
         atr_series_decimal = _convert_series_to_decimal(atr_series_float)
         atr_series_decimal.name = f'ATR_{length}'
         logger.debug(f"Successfully calculated ATR_{length}.")
-        # Reindex to the original DataFrame's index to include NaNs where calculation wasn't possible
         return atr_series_decimal.reindex(df.index)
 
     except AttributeError:
@@ -151,7 +148,7 @@ def calculate_sma(df: pd.DataFrame, period: int, price_col: str = 'close') -> pd
 
     if not original_price_col:
         logger.warning(f"SMA: Price column '{price_col}' not found.")
-        return pd.Series(dtype=object)
+        return pd.Series(dtype=object, index=df.index)
     if len(df) < period:
         logger.debug(f"SMA: Not enough data ({len(df)}<{period}).")
         return pd.Series(dtype=object, index=df.index)
@@ -161,7 +158,6 @@ def calculate_sma(df: pd.DataFrame, period: int, price_col: str = 'close') -> pd
         logger.warning(f"SMA: Failed '{original_price_col}' float conversion.")
         return pd.Series(dtype=object, index=df.index)
 
-    # *** ADDED: Drop NaNs from the specific price column BEFORE calculating ***
     float_df.dropna(subset=[original_price_col], inplace=True)
     if len(float_df) < period:
         logger.debug(
@@ -171,8 +167,9 @@ def calculate_sma(df: pd.DataFrame, period: int, price_col: str = 'close') -> pd
     try:
         logger.debug(
             f"Calculating SMA with period {period} using pandas-ta...")
+        # Use original case name for pandas_ta call if it exists
         sma_series_float = float_df.ta.sma(
-            close=original_price_col, length=period, append=False)
+            close=float_df[original_price_col], length=period, append=False)
 
         if sma_series_float is None or sma_series_float.empty:
             logger.warning(
@@ -182,7 +179,7 @@ def calculate_sma(df: pd.DataFrame, period: int, price_col: str = 'close') -> pd
         sma_series_decimal = _convert_series_to_decimal(sma_series_float)
         sma_series_decimal.name = f'SMA_{period}'
         logger.debug(f"Successfully calculated SMA_{period}.")
-        return sma_series_decimal.reindex(df.index)  # Reindex to original
+        return sma_series_decimal.reindex(df.index)
 
     except AttributeError:
         logger.error("SMA: Check pandas-ta install/DataFrame.")
@@ -193,7 +190,7 @@ def calculate_sma(df: pd.DataFrame, period: int, price_col: str = 'close') -> pd
         return pd.Series(dtype=object, index=df.index)
 
 
-def calculate_rsi(df: pd.DataFrame, period: int = RSI_PERIOD, price_col: str = 'close') -> pd.Series:
+def calculate_rsi(df: pd.DataFrame, period: int = DEFAULT_RSI_PERIOD, price_col: str = 'close') -> pd.Series:
     """Calculates RSI using pandas-ta."""
     if df is None or df.empty:
         logger.warning("RSI: Input DataFrame empty.")
@@ -205,7 +202,7 @@ def calculate_rsi(df: pd.DataFrame, period: int = RSI_PERIOD, price_col: str = '
 
     if not original_price_col:
         logger.warning(f"RSI: Price column '{price_col}' not found.")
-        return pd.Series(dtype=object)
+        return pd.Series(dtype=object, index=df.index)
     if len(df) <= period:
         logger.debug(f"RSI: Not enough data ({len(df)}<={period}).")
         return pd.Series(dtype=object, index=df.index)
@@ -215,7 +212,6 @@ def calculate_rsi(df: pd.DataFrame, period: int = RSI_PERIOD, price_col: str = '
         logger.warning(f"RSI: Failed '{original_price_col}' float conversion.")
         return pd.Series(dtype=object, index=df.index)
 
-    # *** ADDED: Drop NaNs from the specific price column BEFORE calculating ***
     float_df.dropna(subset=[original_price_col], inplace=True)
     if len(float_df) <= period:
         logger.debug(
@@ -226,7 +222,7 @@ def calculate_rsi(df: pd.DataFrame, period: int = RSI_PERIOD, price_col: str = '
         logger.debug(
             f"Calculating RSI with period {period} using pandas-ta...")
         rsi_series_float = float_df.ta.rsi(
-            close=original_price_col, length=period, append=False)
+            close=float_df[original_price_col], length=period, append=False)
 
         if rsi_series_float is None or rsi_series_float.empty:
             logger.warning(
@@ -237,7 +233,7 @@ def calculate_rsi(df: pd.DataFrame, period: int = RSI_PERIOD, price_col: str = '
             rsi_series_float, precision='0.01')
         rsi_series_decimal.name = f'RSI_{period}'
         logger.debug(f"Successfully calculated RSI_{period}.")
-        return rsi_series_decimal.reindex(df.index)  # Reindex to original
+        return rsi_series_decimal.reindex(df.index)
 
     except AttributeError:
         logger.error("RSI: Check pandas-ta install/DataFrame.")
@@ -249,9 +245,9 @@ def calculate_rsi(df: pd.DataFrame, period: int = RSI_PERIOD, price_col: str = '
 
 
 def calculate_macd(df: pd.DataFrame,
-                   fast_period: int = MACD_FAST_PERIOD,
-                   slow_period: int = MACD_SLOW_PERIOD,
-                   signal_period: int = MACD_SIGNAL_PERIOD,
+                   fast_period: int = DEFAULT_MACD_FAST_PERIOD,
+                   slow_period: int = DEFAULT_MACD_SLOW_PERIOD,
+                   signal_period: int = DEFAULT_MACD_SIGNAL_PERIOD,
                    price_col: str = 'close') -> pd.DataFrame:
     """Calculates MACD using pandas-ta."""
     if df is None or df.empty:
@@ -264,9 +260,7 @@ def calculate_macd(df: pd.DataFrame,
 
     if not original_price_col:
         logger.warning(f"MACD: Price column '{price_col}' not found.")
-        return pd.DataFrame(dtype=object)
-    # MACD calculation (specifically EMA) technically only needs slow_period, but more helps convergence
-    # A slightly safer minimum length estimate
+        return pd.DataFrame(dtype=object, index=df.index)
     min_len = slow_period + signal_period
     if len(df) < min_len:
         logger.debug(f"MACD: Not enough data ({len(df)}<{min_len}).")
@@ -278,7 +272,6 @@ def calculate_macd(df: pd.DataFrame,
             f"MACD: Failed '{original_price_col}' float conversion.")
         return pd.DataFrame(dtype=object, index=df.index)
 
-    # *** ADDED: Drop NaNs from the specific price column BEFORE calculating ***
     float_df.dropna(subset=[original_price_col], inplace=True)
     if len(float_df) < min_len:
         logger.debug(
@@ -289,13 +282,14 @@ def calculate_macd(df: pd.DataFrame,
         logger.debug(
             f"Calculating MACD ({fast_period},{slow_period},{signal_period}) using pandas-ta...")
         macd_df_float = float_df.ta.macd(
-            close=original_price_col, fast=fast_period, slow=slow_period, signal=signal_period, append=False)
+            close=float_df[original_price_col], fast=fast_period, slow=slow_period, signal=signal_period, append=False)
 
         if macd_df_float is None or macd_df_float.empty:
             logger.warning("pandas_ta.macd returned None/empty.")
             return pd.DataFrame(dtype=object, index=df.index)
 
         macd_df_decimal = pd.DataFrame(index=macd_df_float.index, dtype=object)
+        # Standardized column names
         expected_ta_cols = {
             f'MACD_{fast_period}_{slow_period}_{signal_period}': 'MACD',
             f'MACDh_{fast_period}_{slow_period}_{signal_period}': 'Histogram',
@@ -312,14 +306,13 @@ def calculate_macd(df: pd.DataFrame,
                     logger.warning(
                         f"Expected MACD columns like '{col_ta}' not found.")
                 macd_df_decimal[col_std] = pd.Series(
-                    dtype=object, index=macd_df_float.index)
+                    dtype=object, index=macd_df_float.index)  # Empty series placeholder
 
         if cols_found == 0:
             logger.error("Failed to find any expected columns in MACD output.")
             return pd.DataFrame(dtype=object, index=df.index)
 
         logger.debug(f"Successfully calculated MACD.")
-        # Reindex to original DataFrame's index
         return macd_df_decimal.reindex(df.index)
 
     except AttributeError:
@@ -332,10 +325,11 @@ def calculate_macd(df: pd.DataFrame,
 
 
 def calculate_pivot_points(df_period: pd.DataFrame) -> Optional[pd.Series]:
-    """Calculates standard Pivot Points (Manual calculation)."""
+    """Calculates standard Pivot Points (Manual calculation for a single prior period)."""
     required_cols = ['high', 'low', 'close']
     if df_period is None or len(df_period) != 1:
-        logger.error("Pivot: Input must be 1 row.")
+        logger.error(
+            "Pivot: Input must be 1 row (representing the prior period).")
         return None
 
     col_map = {col.lower(): col for col in df_period.columns}
@@ -351,18 +345,15 @@ def calculate_pivot_points(df_period: pd.DataFrame) -> Optional[pd.Series]:
         prev_high_val = df_period[original_case_cols[0]].iloc[0]
         prev_low_val = df_period[original_case_cols[1]].iloc[0]
         prev_close_val = df_period[original_case_cols[2]].iloc[0]
-
         prev_high = Decimal(str(prev_high_val)) if pd.notna(
             prev_high_val) else None
         prev_low = Decimal(str(prev_low_val)) if pd.notna(
             prev_low_val) else None
         prev_close = Decimal(str(prev_close_val)) if pd.notna(
             prev_close_val) else None
-
         if None in [prev_high, prev_low, prev_close]:
             logger.error("Pivot: HLC missing/invalid.")
             return None
-
     except (InvalidOperation, TypeError, ValueError) as e:
         logger.error(
             f"Pivot: HLC Decimal conversion error: {e}", exc_info=True)
@@ -375,22 +366,17 @@ def calculate_pivot_points(df_period: pd.DataFrame) -> Optional[pd.Series]:
         three, two = Decimal('3.0'), Decimal('2.0')
         pp = (prev_high + prev_low + prev_close) / three
         range_hl = prev_high - prev_low
-
         r1, s1 = (two * pp) - prev_low, (two * pp) - prev_high
         r2, s2 = pp + range_hl, pp - range_hl
         r3, s3 = prev_high + (two * (pp - prev_low)
                               ), prev_low - (two * (prev_high - pp))
-
         pivot_levels = {'PP': pp, 'R1': r1, 'S1': s1,
                         'R2': r2, 'S2': s2, 'R3': r3, 'S3': s3}
-        quantizer = Decimal('1e-8')  # Adjust precision as needed
+        quantizer = Decimal('1e-8')
         for key, value in pivot_levels.items():
             pivot_levels[key] = value.quantize(
                 quantizer, rounding=ROUND_HALF_UP)
-
-        # Return object dtype Series
         return pd.Series(pivot_levels, dtype=object)
-
     except (ArithmeticError, InvalidOperation) as e:
         logger.error(f"Pivot: Arithmetic error: {e}", exc_info=True)
         return None
@@ -399,13 +385,143 @@ def calculate_pivot_points(df_period: pd.DataFrame) -> Optional[pd.Series]:
         return None
 
 
-# --- Example Usage ---
+# --- Main Calculation Function (NEW) ---
+def calculate_indicators(df: pd.DataFrame, config: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
+    """
+    Calculates all configured technical indicators and returns them in a single DataFrame.
+
+    Args:
+        df (pd.DataFrame): Input DataFrame with OHLCV data (index=timestamp).
+        config (Optional[Dict[str, Any]], optional): Analysis configuration dictionary.
+                                                     Defaults to None, using default periods.
+
+    Returns:
+        pd.DataFrame: DataFrame with calculated indicators, indexed like input df.
+                      Returns an empty DataFrame if input is invalid or calculations fail.
+    """
+    if df is None or df.empty:
+        logger.warning("calculate_indicators: Input DataFrame is empty.")
+        return pd.DataFrame()
+
+    if not isinstance(df.index, pd.DatetimeIndex):
+        logger.error(
+            "calculate_indicators: DataFrame index must be a DatetimeIndex.")
+        return pd.DataFrame()
+
+    if config is None:
+        config = {}  # Use empty dict if no config provided, rely on defaults
+
+    logger.info(f"Calculating indicators for DataFrame with {len(df)} rows...")
+
+    # Initialize results DataFrame with the same index
+    indicators_df = pd.DataFrame(index=df.index)
+
+    # Get config values or use defaults
+    atr_period = config.get('atr_period', DEFAULT_ATR_PERIOD)
+    sma_fast_period = config.get('sma_fast_period', DEFAULT_SMA_FAST_PERIOD)
+    sma_slow_period = config.get('sma_slow_period', DEFAULT_SMA_SLOW_PERIOD)
+    rsi_period = config.get('rsi_period', DEFAULT_RSI_PERIOD)
+    macd_fast = config.get('macd_fast_period', DEFAULT_MACD_FAST_PERIOD)
+    macd_slow = config.get('macd_slow_period', DEFAULT_MACD_SLOW_PERIOD)
+    macd_signal = config.get('macd_signal_period', DEFAULT_MACD_SIGNAL_PERIOD)
+    # Configurable price column
+    price_col = config.get('price_column_name', 'close')
+
+    # --- Calculate Individual Indicators ---
+
+    # ATR
+    atr_series = calculate_atr(df, length=atr_period)
+    if atr_series is not None and not atr_series.empty:
+        indicators_df[atr_series.name] = atr_series
+    else:
+        logger.warning(f"Failed to calculate ATR_{atr_period}.")
+        indicators_df[f'ATR_{atr_period}'] = pd.Series(
+            dtype=object, index=df.index)  # Placeholder
+
+    # SMA Fast
+    sma_fast_series = calculate_sma(
+        df, period=sma_fast_period, price_col=price_col)
+    if sma_fast_series is not None and not sma_fast_series.empty:
+        indicators_df[sma_fast_series.name] = sma_fast_series
+    else:
+        logger.warning(f"Failed to calculate SMA_{sma_fast_period}.")
+        indicators_df[f'SMA_{sma_fast_period}'] = pd.Series(
+            dtype=object, index=df.index)
+
+    # SMA Slow
+    sma_slow_series = calculate_sma(
+        df, period=sma_slow_period, price_col=price_col)
+    if sma_slow_series is not None and not sma_slow_series.empty:
+        indicators_df[sma_slow_series.name] = sma_slow_series
+    else:
+        logger.warning(f"Failed to calculate SMA_{sma_slow_period}.")
+        indicators_df[f'SMA_{sma_slow_period}'] = pd.Series(
+            dtype=object, index=df.index)
+
+    # RSI
+    rsi_series = calculate_rsi(df, period=rsi_period, price_col=price_col)
+    if rsi_series is not None and not rsi_series.empty:
+        indicators_df[rsi_series.name] = rsi_series
+    else:
+        logger.warning(f"Failed to calculate RSI_{rsi_period}.")
+        indicators_df[f'RSI_{rsi_period}'] = pd.Series(
+            dtype=object, index=df.index)
+
+    # MACD
+    macd_df = calculate_macd(df,
+                             fast_period=macd_fast,
+                             slow_period=macd_slow,
+                             signal_period=macd_signal,
+                             price_col=price_col)
+    if macd_df is not None and not macd_df.empty:
+        # Check which columns actually got calculated before merging
+        valid_macd_cols = [col for col in [
+            'MACD', 'Histogram', 'Signal'] if col in macd_df and macd_df[col].notna().any()]
+        if valid_macd_cols:
+            # Use merge to align by index, prevents potential issues with concat if indices differ slightly
+            indicators_df = pd.merge(
+                indicators_df, macd_df[valid_macd_cols], left_index=True, right_index=True, how='left')
+        else:
+            logger.warning(
+                "MACD calculation returned DataFrame but no valid columns found.")
+            # Add placeholders if MACD failed validation
+            for col in ['MACD', 'Histogram', 'Signal']:
+                indicators_df[col] = pd.Series(dtype=object, index=df.index)
+    else:
+        logger.warning("Failed to calculate MACD.")
+        # Add placeholders if MACD failed entirely
+        for col in ['MACD', 'Histogram', 'Signal']:
+            indicators_df[col] = pd.Series(dtype=object, index=df.index)
+
+    # Pivot Points (Note: This calculates pivots based on the *previous* candle for each row, which is not typical daily/weekly pivots)
+    # For standard daily pivots, you'd resample the data first.
+    # This rolling calculation might be useful for short-term S/R but isn't standard pivots.
+    # We might want to remove this or make it optional / clarify its purpose later.
+    # For now, let's comment it out from the main combined function to avoid confusion.
+    # logger.debug("Skipping rolling pivot point calculation in combined function for now.")
+    # indicators_df['PP'] = df.rolling(window=2).apply(lambda x: calculate_pivot_points(x.iloc[[0]])['PP'] if len(x) == 2 else None, raw=False).shift(1)
+    # ... (similarly for R1, S1 etc.)
+
+    logger.info(
+        f"Finished calculating indicators. Result shape: {indicators_df.shape}")
+    # logger.debug(f"Indicator DataFrame tail:\n{indicators_df.tail()}") # Optional: Log tail for verification
+
+    # Ensure all columns have object dtype if they contain Decimals or None
+    for col in indicators_df.columns:
+        if indicators_df[col].apply(lambda x: isinstance(x, Decimal)).any():
+            indicators_df[col] = indicators_df[col].astype(object)
+
+    return indicators_df
+
+
+# --- Example Usage (Updated to use the main function) ---
 if __name__ == '__main__':
     logging.basicConfig(
         level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    logger.info("Starting indicator calculation example using pandas-ta...")
+    logger.info(
+        "Starting indicator calculation example using main calculate_indicators function...")
 
-    # Data remains the same...
+    # Sample Data (same as before)
     data = {
         'open_time': pd.to_datetime(['2023-01-01 00:00:00', '2023-01-01 01:00:00', '2023-01-01 02:00:00', '2023-01-01 03:00:00', '2023-01-01 04:00:00', '2023-01-01 05:00:00', '2023-01-01 06:00:00', '2023-01-01 07:00:00', '2023-01-01 08:00:00', '2023-01-01 09:00:00', '2023-01-01 10:00:00', '2023-01-01 11:00:00', '2023-01-01 12:00:00', '2023-01-01 13:00:00', '2023-01-01 14:00:00', '2023-01-01 15:00:00', '2023-01-01 16:00:00', '2023-01-01 17:00:00', '2023-01-01 18:00:00', '2023-01-01 19:00:00', '2023-01-01 20:00:00', '2023-01-01 21:00:00', '2023-01-01 22:00:00', '2023-01-01 23:00:00', '2023-01-02 00:00:00', '2023-01-02 01:00:00', '2023-01-02 02:00:00'], utc=True),
         'Open': ['16500.1', '16510.5', '16520.3', '16505.0', '16490.7', '16500.0', '16530.8', '16555.2', '16540.1', '16560.9', '16570.0', '16585.5', '16600.2', '16590.7', '16580.3', '16610.0', '16625.5', '16640.0', '16635.1', '16650.0', '16660.5', '16645.8', '16670.2', '16685.9', '16700.0', '16690.5', '16710.8'],
@@ -416,6 +532,7 @@ if __name__ == '__main__':
     }
     df = pd.DataFrame(data)
     df = df.set_index('open_time')
+    # Convert to Decimal (using original case names from data dict)
     decimal_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
     for col in decimal_cols:
         try:
@@ -429,71 +546,33 @@ if __name__ == '__main__':
     logger.info("\nDataFrame Info:")
     df.info()
 
-    results_df = df[['Close']].copy()
-
-    # --- Calculate and Add Indicators ---
-    indicator_funcs = {
-        f'ATR_{ATR_PERIOD}': lambda d: calculate_atr(d, length=ATR_PERIOD),
-        f'SMA_{SMA_SHORT_PERIOD}': lambda d: calculate_sma(d, period=SMA_SHORT_PERIOD, price_col='Close'),
-        # Keep trying SMA 50
-        f'SMA_{SMA_LONG_PERIOD}': lambda d: calculate_sma(d, period=SMA_LONG_PERIOD, price_col='Close'),
-        f'RSI_{RSI_PERIOD}': lambda d: calculate_rsi(d, period=RSI_PERIOD, price_col='Close'),
+    # --- Call the main function ---
+    # Example config dict (could be loaded from YAML)
+    analysis_config = {
+        'atr_period': 14,
+        'sma_fast_period': 10,  # Using different periods for testing
+        'sma_slow_period': 20,
+        'rsi_period': 14,
+        'macd_fast_period': 12,
+        'macd_slow_period': 26,
+        'macd_signal_period': 9,
+        # Specify the column name (case-sensitive matches input df)
+        'price_column_name': 'Close'
     }
+    logger.info(
+        f"\n--- Calculating all indicators with config: {analysis_config} ---")
+    indicators_result_df = calculate_indicators(df, analysis_config)
 
-    for name, func in indicator_funcs.items():
-        logger.info(f"\n--- Calculating {name} ---")
-        series = func(df)
-        # *** FIX: Check if series is valid before adding ***
-        if series is not None and not series.empty and series.notna().any():
-            results_df[name] = series
-            print(results_df[[name]].tail().to_markdown(
-                numalign="left", stralign="left"))
-        else:
-            logger.warning(
-                f"{name} calculation returned None or empty/all-NaN series.")
-            # Add empty column if failed
-            results_df[name] = pd.Series(dtype=object, index=df.index)
-
-    logger.info("\n--- Calculating MACD ---")
-    macd_df = calculate_macd(df, price_col='Close')
-    if macd_df is not None and not macd_df.empty:
-        # *** FIX: Check if columns exist and have data before concat ***
-        valid_macd_cols = [col for col in [
-            'MACD', 'Signal', 'Histogram'] if col in macd_df and macd_df[col].notna().any()]
-        if valid_macd_cols:
-            results_df = pd.concat(
-                [results_df, macd_df[valid_macd_cols]], axis=1)
-            print(results_df[valid_macd_cols].tail().to_markdown(
-                numalign="left", stralign="left"))
-        else:
-            logger.warning(
-                "MACD DataFrame was returned but contained no valid data columns.")
+    # --- Display results ---
+    if indicators_result_df is not None and not indicators_result_df.empty:
+        logger.info("\n--- Calculated Indicators DataFrame Tail ---")
+        print(indicators_result_df.tail().to_markdown(
+            numalign="left", stralign="left"))
+        logger.info("\nCalculated Indicators DataFrame Info:")
+        indicators_result_df.info()
     else:
-        logger.warning("MACD calculation returned None or empty DataFrame.")
-        # Add empty columns if MACD failed entirely
-        for col in ['MACD', 'Signal', 'Histogram']:
-            if col not in results_df:
-                results_df[col] = pd.Series(dtype=object, index=df.index)
-
-    logger.info("\n--- Calculating Pivot Points ---")
-    previous_period_data = df.iloc[[-1]]
-    logger.debug(
-        f"Using this data for Pivot Point calculation:\n{previous_period_data.to_markdown(numalign='left', stralign='left')}")
-    pivot_levels = calculate_pivot_points(previous_period_data)
-    if pivot_levels is not None and not pivot_levels.empty:
-        print("Pivot Levels calculated:")
-        print(pivot_levels.to_markdown(numalign="left", stralign="left"))
-    else:
-        logger.warning("Could not calculate pivot points.")
-
-    logger.info("\n--- Final Results DataFrame Tail ---")
-    print(results_df.tail().to_markdown(numalign="left", stralign="left"))
-    logger.info("\nFinal Results DataFrame Info:")
-    # Replace potential None columns created on failure with object dtype for info()
-    for col in results_df.columns:
-        if results_df[col].isnull().all():
-            results_df[col] = pd.Series(dtype=object, index=results_df.index)
-    results_df.info()
+        logger.warning(
+            "calculate_indicators returned None or an empty DataFrame.")
 
     logger.info("Indicator calculation example finished.")
 
