@@ -185,7 +185,13 @@ def _adjust_qty_internal(quantity: Decimal, symbol_info: Dict, operation: str = 
     return adjusted_qty
 
 
-def _check_min_notional_internal(price: Decimal, quantity: Decimal, symbol_info: Dict) -> bool:
+# <<< MODIFIED: Accepts estimated_price >>>
+def _check_min_notional_internal(
+    price: Decimal,  # Price from the order (0 for market)
+    quantity: Decimal,
+    symbol_info: Dict,
+    estimated_price: Optional[Decimal] = None  # Add optional estimated price
+) -> bool:
     """Internal: Checks if the order meets the MIN_NOTIONAL filter."""
     min_notional_filter = get_symbol_filter(symbol_info, 'MIN_NOTIONAL')
     if not min_notional_filter:
@@ -194,25 +200,138 @@ def _check_min_notional_internal(price: Decimal, quantity: Decimal, symbol_info:
     min_notional = to_decimal(min_notional_filter.get('minNotional'))
     if min_notional is None or min_notional <= 0:
         logger.error(
-            f"Invalid minNotional in MIN_NOTIONAL for {symbol_info.get('symbol', 'N/A')}")
+            f"Invalid minNotional in filter for {symbol_info.get('symbol', 'N/A')}")
+        return False  # Cannot validate with invalid filter
+
+    if quantity is None or quantity <= Decimal('0'):
+        logger.warning("MIN_NOTIONAL check: Invalid quantity provided.")
+        return False  # Cannot calculate notional
+
+    # Determine the price to use for calculation
+    # If price is > 0, it's likely a LIMIT order, use that price.
+    # If price is 0 or None, it's likely MARKET, use estimated_price if available.
+    price_to_use = None
+    is_market_check = False
+    if price is not None and price > Decimal('0'):
+        price_to_use = price
+    elif estimated_price is not None and estimated_price > Decimal('0'):
+        price_to_use = estimated_price
+        is_market_check = True
+        logger.debug(
+            f"MIN_NOTIONAL check using estimated market price: {estimated_price}")
+    else:
+        # Cannot determine price for calculation
+        logger.warning(
+            f"MIN_NOTIONAL check: Cannot determine price to use (Price: {price}, Estimated: {estimated_price}).")
+        # Fail validation if price is required (i.e., if minNotional filter exists)
         return False
 
-    if price is None or quantity is None:
-        logger.warning("Price/Qty None for min_notional check.")
-        return False
-
+    # Calculate and check notional value
     try:
-        notional_value = price * quantity
+        notional_value = price_to_use * quantity
         passes = notional_value >= min_notional
         if not passes:
+            check_type = "Estimated Market" if is_market_check else "Limit Order"
             logger.debug(
-                f"Order notional {notional_value:.8f} < MIN_NOTIONAL {min_notional:.8f}")
-        # else: logger.debug(f"Order notional {notional_value:.8f} >= MIN_NOTIONAL {min_notional:.8f}")
+                f"Validation Fail: {check_type} Notional {notional_value:.8f} < MIN_NOTIONAL {min_notional:.8f} (Px={price_to_use}, Qty={quantity})")
         return passes
     except Exception as e:
         logger.error(
-            f"Error calculating notional value (P:{price}, Q:{quantity}): {e}")
+            f"Error calculating notional value (PxUse:{price_to_use}, Qty:{quantity}): {e}")
         return False
+# <<< END MODIFICATION >>>
+
+
+def _check_price_filter(price: Decimal, symbol_info: Dict) -> bool:
+    """Internal: Checks PRICE_FILTER (min/max). Assumes tickSize already applied."""
+    price_filter = get_symbol_filter(symbol_info, 'PRICE_FILTER')
+    if not price_filter:
+        return True  # Pass if no filter
+
+    min_p = to_decimal(price_filter.get('minPrice'))
+    max_p = to_decimal(price_filter.get('maxPrice'))
+
+    if min_p is not None and price < min_p:
+        logger.debug(f"Validation Fail: Price {price} < minPrice {min_p}")
+        return False
+    if max_p is not None and price > max_p:
+        logger.debug(f"Validation Fail: Price {price} > maxPrice {max_p}")
+        return False
+    return True
+
+
+def _check_lot_size_filter(quantity: Decimal, symbol_info: Dict) -> bool:
+    """Internal: Checks LOT_SIZE filter (min/max). Assumes stepSize already applied."""
+    lot_filter = get_symbol_filter(symbol_info, 'LOT_SIZE')
+    if not lot_filter:
+        return True  # Pass if no filter
+
+    min_q = to_decimal(lot_filter.get('minQty'))
+    max_q = to_decimal(lot_filter.get('maxQty'))
+
+    if min_q is not None and quantity < min_q:
+        logger.debug(f"Validation Fail: Qty {quantity} < minQty {min_q}")
+        return False
+    if max_q is not None and quantity > max_q:
+        logger.debug(f"Validation Fail: Qty {quantity} > maxQty {max_q}")
+        return False
+    return True
+
+
+# --- Public Combined Validation Function ---
+# <<< MODIFIED: ADDED optional estimated_price parameter >>>
+def validate_order_filters(
+    symbol: str,
+    price: Decimal,  # The actual order price (0 for market)
+    quantity: Decimal,
+    exchange_info: Dict,
+    estimated_price: Optional[Decimal] = None  # <<< ADDED THIS LINE
+) -> bool:  # Return only boolean now
+    # <<< END MODIFICATION >>>
+    """
+    Validates if a given price and quantity combination satisfies all relevant
+    exchange filters (PRICE_FILTER min/max, LOT_SIZE min/max, MIN_NOTIONAL).
+
+    Assumes tickSize and stepSize have already been applied to price/quantity
+    by the calling function if necessary.
+
+    Args:
+        symbol (str): The trading symbol.
+        price (Decimal): The proposed order price (0 for market orders).
+        quantity (Decimal): The proposed order quantity.
+        exchange_info (Dict): The FULL exchange info dictionary.
+        estimated_price (Optional[Decimal]): Current approximate market price,
+                                             required only for MIN_NOTIONAL check
+                                             on MARKET orders.
+
+    Returns:
+        bool: True if all applicable filters pass, False otherwise.
+    """
+    symbol_info = get_symbol_info_from_exchange_info(symbol, exchange_info)
+    if not symbol_info:
+        logger.error(f"Cannot validate filters: Symbol '{symbol}' not found.")
+        return False  # Cannot validate without symbol info
+
+    # 1. Check Price Filter (Min/Max) - Only for Limit orders (price > 0)
+    if price is not None and price > Decimal('0'):
+        if not _check_price_filter(price, symbol_info):
+            # Debug log happens inside _check_price_filter
+            return False
+
+    # 2. Check Lot Size Filter (Min/Max)
+    if not _check_lot_size_filter(quantity, symbol_info):
+        # Debug log happens inside _check_lot_size_filter
+        return False
+
+    # 3. Check Min Notional Filter
+    # Pass both price and estimated_price to the internal check
+    if not _check_min_notional_internal(price, quantity, symbol_info, estimated_price):
+        # Debug log happens inside _check_min_notional_internal
+        return False
+
+    # If all checks passed
+    return True
+# <<< END MODIFICATION >>>
 
 # --- Public Filter Application Functions ---
 
@@ -278,35 +397,6 @@ def apply_filter_rules_to_qty(
         return None
 
     return _adjust_qty_internal(quantity, symbol_info, operation)
-
-
-def validate_order_filters(
-    symbol: str,
-    price: Decimal,
-    quantity: Decimal,
-    exchange_info: Dict
-) -> bool:
-    """
-    Validates if a given price and quantity combination satisfies MIN_NOTIONAL filter.
-    (Assumes price and quantity have already been adjusted for tick/step size if necessary).
-
-    Args:
-        symbol (str): The trading symbol (e.g., 'BTCUSD').
-        price (Decimal): The proposed order price (should ideally be pre-adjusted).
-        quantity (Decimal): The proposed order quantity (should ideally be pre-adjusted).
-        exchange_info (Dict): The FULL exchange info dictionary.
-
-    Returns:
-        bool: True if the order meets MIN_NOTIONAL (or if filter doesn't exist), False otherwise.
-    """
-    symbol_info = get_symbol_info_from_exchange_info(symbol, exchange_info)
-    if not symbol_info:
-        logger.error(
-            f"Cannot validate MIN_NOTIONAL: Symbol '{symbol}' not found in exchange info.")
-        return False  # Fail if symbol info not found
-
-    return _check_min_notional_internal(price, quantity, symbol_info)
-
 
 # --- Deprecated? Keep for compatibility? Decide later ---
 # def apply_filter_rules( ... ): <-- The old function working on dict

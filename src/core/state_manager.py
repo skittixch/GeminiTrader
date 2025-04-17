@@ -2,374 +2,459 @@
 
 import logging
 import json
-from pathlib import Path
-from decimal import Decimal, InvalidOperation
-import pandas as pd
-import os
 import shutil
-from typing import Optional, Dict, Any, List, Union  # Added Union
+from pathlib import Path
+from decimal import Decimal
+from typing import Dict, Any, Optional, List  # Added List
+import pandas as pd
+
+try:
+    from src.utils.formatting import to_decimal
+except ImportError:
+    def to_decimal(v, default=None):
+        try:
+            return Decimal(str(v)) if v is not None else default
+        except:
+            return default
+    logging.warning("StateManager using fallback to_decimal converter.")
 
 logger = logging.getLogger(__name__)
 
-# --- Conversion Helpers ---
-
-
-def _prepare_for_save(data: Any) -> Any:
-    """Recursively converts Decimal, Timestamp, DataFrame for JSON."""
-    if isinstance(data, dict):
-        new_dict = {}
-        for k, v in data.items():
-            # --- DataFrame Handling ---
-            if isinstance(v, pd.DataFrame):
-                try:
-                    df_dict = v.to_dict(orient='split')
-                    df_dict['_is_dataframe'] = True
-                    if isinstance(v.index, pd.DatetimeIndex) and v.index.tz is not None:
-                        df_dict['_index_timezone'] = str(v.index.tz)
-                    # Recursively prepare the contents of the DataFrame dict
-                    new_dict[k] = _prepare_for_save(
-                        df_dict)  # Prepare the converted dict
-                except Exception as e:
-                    logger.error(f"Could not convert DF key '{k}': {e}")
-                    new_dict[k] = None
-            # --- Recursive Call for other dict values ---
-            else:
-                new_dict[k] = _prepare_for_save(v)
-        return new_dict
-    elif isinstance(data, list):
-        # Recursively process list items
-        return [_prepare_for_save(item) for item in data]
-    # --- Direct Type Conversions ---
-    elif isinstance(data, Decimal):
-        return str(data)
-    elif isinstance(data, pd.Timestamp):
-        return data.isoformat()
-    # --- Numpy/Pandas Specific Handling ---
-    elif hasattr(data, 'tolist'):  # Handle numpy arrays
-        return data.tolist()
-    elif pd.isna(data):  # Handle NaT/NaN - return None for JSON
-        return None
-    # --- Basic Types Pass Through ---
-    elif isinstance(data, (str, int, float, bool, type(None))):
-        return data
-    # --- Fallback for Unknown Types ---
-    else:
-        logger.warning(
-            f"Prepare unknown type {type(data)}, converting to string.")
-        try:
-            return str(data)
-        except Exception:
-            logger.error(f"Could not convert {type(data)} to string.")
-            return None
-
-
-def _restore_after_load(data: Any) -> Any:
-    """Recursively converts specific strings/dicts back to Decimal/Timestamp/DataFrame."""
-    if isinstance(data, dict):
-        # --- DataFrame Restoration ---
-        if data.get('_is_dataframe'):
-            try:
-                logger.debug("Restoring DataFrame from dict...")
-                data.pop('_is_dataframe', None)
-                timezone = data.pop('_index_timezone', None)
-                # IMPORTANT: Recursively restore items *within* the dict *before* creating DF
-                restored_data = {
-                    'data': _restore_after_load(data.get('data')),
-                    'index': _restore_after_load(data.get('index')),
-                    'columns': _restore_after_load(data.get('columns'))
-                }
-                # Filter out None values if restore failed partially
-                restored_data = {k: v for k,
-                                 v in restored_data.items() if v is not None}
-
-                df = pd.DataFrame.from_dict(restored_data, orient='split')
-                # Restore index type and timezone
-                try:
-                    df.index = pd.to_datetime(df.index, errors='coerce')
-                    if isinstance(df.index, pd.DatetimeIndex) and timezone:
-                        try:
-                            df.index = df.index.tz_localize(timezone)
-                        except TypeError:
-                            df.index = df.index.tz_convert(timezone)
-                        except Exception as tz_err:
-                            logger.warning(
-                                f"Could not apply TZ '{timezone}': {tz_err}")
-                    logger.debug(
-                        f"DF restored (Shape:{df.shape}, Index:{df.index.dtype})")
-                except Exception as idx_e:
-                    logger.warning(
-                        f"Could not convert DF index to DatetimeIndex: {idx_e}")
-                # Convert known columns back to Decimal (more robust check)
-                # List potentially containing Decimals in DataFrames
-                df_decimal_cols = ['Open', 'High', 'Low', 'Close', 'Volume', 'Quote_asset_volume',  # Klines
-                                   'MACD', 'Signal', 'Histogram',  # MACD
-                                   'PP', 'R1', 'S1', 'R2', 'S2', 'R3', 'S3',  # Pivots
-                                   # Example indicators
-                                   f'SMA_{50}', f'SMA_{200}', f'RSI_{14}', f'ATR_{14}']
-                for col in df.columns:
-                    if col in df_decimal_cols:
-                        try:
-                            df[col] = df[col].apply(lambda x: Decimal(
-                                str(x)) if pd.notna(x) else None)
-                            df[col] = df[col].astype(object)
-                        except (InvalidOperation, TypeError, ValueError) as conv_err:
-                            logger.warning(
-                                f"Could not convert col '{col}' back to Decimal in loaded DF: {conv_err}")
-
-                return df
-            except Exception as df_e:
-                logger.error(f"Error restoring DataFrame from dict: {df_e}")
-                return None
-        # --- Process Regular Dict Items ---
-        else:
-            new_dict = {}
-            for k, v in data.items():
-                v_restored = _restore_after_load(v)  # Recurse first
-                # Heuristic conversion based on keys
-                decimal_keys = {'entry_price', 'quantity', 'price', 'origQty',
-                                'executedQty', 'cummulativeQuoteQty', 'balance_base', 'balance_quote'}
-                timestamp_keys = {'entry_time', 'last_state_save_time', 'timestamp',
-                                  'last_processed_timestamp', 'position_entry_timestamp'}
-                # Check for Decimal conversion
-                if k in decimal_keys and isinstance(v_restored, (str, int, float)) and not isinstance(v_restored, bool):
-                    try:
-                        new_dict[k] = Decimal(str(v_restored))
-                    except (InvalidOperation, TypeError):
-                        logger.warning(
-                            f"Failed Decimal restore: k='{k}', v='{v_restored}'")
-                        new_dict[k] = None
-                # Check for Timestamp conversion (ISO format)
-                elif k in timestamp_keys and isinstance(v_restored, str) and 'T' in v_restored and ('Z' in v_restored or '+' in v_restored or '-' in v_restored[11:]):
-                    try:
-                        new_dict[k] = pd.Timestamp(v_restored)
-                    except ValueError:
-                        logger.warning(
-                            f"Failed Timestamp restore: k='{k}', v='{v_restored}'")
-                        new_dict[k] = None
-                else:  # Assign restored value directly
-                    new_dict[k] = v_restored
-            return new_dict
-    elif isinstance(data, list):
-        # Recursively process list items
-        return [_restore_after_load(item) for item in data]
-    # Return data directly if not dict, list (e.g., str, int, float, None)
-    return data
-
 
 class StateManager:
-    """Handles saving/loading of application state via JSON."""
+    """Handles loading and saving the application state."""
 
-    def __init__(self, filepath: str):
+    def __init__(self, filepath: str = "data/state/trader_state.json", backup_count: int = 3):
         self.filepath = Path(filepath)
-        self._temp_filepath = self.filepath.with_suffix(
-            self.filepath.suffix + '.tmp')
-        self._backup_filepath = self.filepath.with_suffix(
-            self.filepath.suffix + '.bak')
+        self.backup_count = backup_count
         self.filepath.parent.mkdir(parents=True, exist_ok=True)
-        self._is_saving = False
         logger.info(f"StateManager initialized. State file: {self.filepath}")
 
-    def save_state(self, state_data: Dict[str, Any], force_save: bool = False):
-        """Saves state dict to JSON atomically. Converts non-serializable types."""
-        if self._is_saving and not force_save:
-            logger.warning("Save already in progress, skipping.")
-            return False
-        self._is_saving = True
-        if not isinstance(state_data, dict):
-            logger.error("save_state: Input must be dict.")
-            self._is_saving = False
-            return False
-        # Create deep copy to avoid modifying original state during preparation
+    def _default_serializer(self, obj):
+        # ... (serializer remains the same as previous version) ...
+        if isinstance(obj, Decimal):
+            return str(obj)
+        if isinstance(obj, pd.Timestamp):
+            return obj.isoformat(timespec='microseconds')
         try:
-            # Using json loads/dumps for a deep copy that handles basic types well
-            state_copy = json.loads(json.dumps(state_data, default=str))
-        except TypeError:
-            # Fallback if basic deepcopy is needed (less safe for nested complex types)
-            import copy
-            state_copy = copy.deepcopy(state_data)
-            logger.warning(
-                "Used copy.deepcopy for state_copy, potential issues with complex types.")
-
-        # Add save timestamp AFTER copy
-        state_copy['last_state_save_time'] = pd.Timestamp.utcnow()
-        logger.debug(f"Preparing state for saving to {self.filepath}...")
-        try:
-            prepared_data = _prepare_for_save(state_copy)  # Prepare the copy
-            if prepared_data is None:
-                raise TypeError("State preparation resulted in None")
-
-            with open(self._temp_filepath, 'w', encoding='utf-8') as f:
-                json.dump(prepared_data, f, indent=4, ensure_ascii=False)
-
-            # Atomic rename / Backup logic
-            backup_made = False
-            if self.filepath.exists():
-                try:
-                    shutil.copy2(str(self.filepath), str(
-                        self._backup_filepath))  # Copy to backup first
-                    backup_made = True
-                except Exception as copy_err:
-                    logger.warning(
-                        f"Could not create backup before saving: {copy_err}")
-            try:
-                # Atomic replace/rename
-                os.replace(self._temp_filepath, self.filepath)
-                logger.info(f"State successfully saved to {self.filepath}")
-                self._is_saving = False
-                return True
-            except OSError as replace_err:
-                # If replace fails, try to restore backup if it was made
-                logger.error(
-                    f"Atomic replace failed: {replace_err}. Attempting recovery.")
-                if backup_made:
-                    try:
-                        shutil.move(str(self._backup_filepath), str(
-                            self.filepath))  # Move backup back
-                        logger.info(
-                            "Recovered original state file from backup after replace failure.")
-                    except Exception as restore_err:
-                        logger.error(
-                            f"CRITICAL: Failed to restore state from backup after replace error: {restore_err}")
-                self._is_saving = False
-                return False
-
+            return json.JSONEncoder().default(obj)
         except TypeError as e:
-            logger.exception(
-                f"Error serializing state to JSON: {e}. State Keys: {list(state_copy.keys())}")
-            self._is_saving = False
-            return False
-        except Exception as e:
-            logger.exception(f"Error saving state to {self.filepath}: {e}")
-            self._is_saving = False
-            return False  # Don't attempt recovery here, rely on load logic
+            logger.error(
+                f"Serialization Error: Type {type(obj)} not serializable: {e}. Value: {repr(obj)[:100]}...")
+            return f"<Unserializable: {type(obj).__name__}>"
 
-    def load_state(self) -> Optional[Dict[str, Any]]:
-        """Loads state from JSON, falls back to backup."""
-        file_to_load = None
-        try:  # Check existence and size
-            if self.filepath.exists() and os.path.getsize(self.filepath) > 2:
-                file_to_load = self.filepath
-            elif self._backup_filepath.exists() and os.path.getsize(self._backup_filepath) > 2:
-                logger.warning(
-                    f"State file {self.filepath} missing/empty. Loading backup.")
-                file_to_load = self._backup_filepath
-            else:
-                logger.warning(
-                    f"State file {self.filepath} missing/empty. No valid backup found. Returning empty state.")
-                return {}
-        except OSError as os_err:
-            logger.error(f"OS Error checking state file: {os_err}")
-            return None
-        logger.info(f"Loading state from {file_to_load}...")
-        try:
-            loaded_state = self._load_from_file(file_to_load)
-            if loaded_state is None:
-                raise ValueError("State loaded as None.")
-            if not isinstance(loaded_state.get('active_grid_orders', []), list):
-                logger.warning(
-                    "Loaded 'active_grid_orders' not list. Resetting.")
-                return {}
-            return loaded_state
-        except Exception as e:
-            logger.exception(f"Error loading state from {file_to_load}.")
-            if file_to_load == self.filepath and self._backup_filepath.exists() and os.path.getsize(self._backup_filepath) > 2:
-                logger.warning("Primary load failed. Attempting backup...")
-                try:
-                    return self._load_from_file(self._backup_filepath)
-                except Exception as backup_e:
-                    logger.error(
-                        f"Failed load backup {self._backup_filepath}: {backup_e}")
-            return None
+    def save_state(self, state: Dict[str, Any]):
+        # ... (save_state method remains the same as previous version - excluding DataFrames) ...
+        if not isinstance(state, dict):
+            logger.error(
+                "Invalid state type provided for saving. Expected dict.")
+            return
+        state_to_save = state.copy()
+        # Ensure all non-serializable / large keys are listed
+        keys_to_exclude = ['historical_klines',
+                           'indicators', 'current_kline', 'sr_zones']
+        removed_keys = []
+        for key in keys_to_exclude:
+            if key in state_to_save:
+                del state_to_save[key]
+                removed_keys.append(key)
+        # Log excluded keys only once after loop
+        if removed_keys:
+            logger.debug(
+                f"Excluded keys from saved state: {', '.join(removed_keys)}")
 
-    def _load_from_file(self, file_path: Path) -> Optional[Dict[str, Any]]:
-        """Internal helper to load/process state from file."""
+        # Add save timestamp AFTER filtering
+        state_to_save['last_state_save_time'] = pd.Timestamp.utcnow()
+
+        # Backup logic
+        if self.filepath.exists():
+            try:
+                for i in range(self.backup_count, 0, -1):
+                    src = self.filepath.with_suffix(
+                        f".json.bak{i}" if i > 1 else ".json.bak")
+                    dst = self.filepath.with_suffix(f".json.bak{i+1}")
+                    if i == self.backup_count and dst.exists():
+                        dst.unlink()
+                    if src.exists():
+                        shutil.move(str(src), str(dst))
+                shutil.copy2(str(self.filepath), str(
+                    self.filepath.with_suffix(".json.bak")))
+                # Reduce log level for backups? Or remove?
+                # logger.debug(f"State file backup created: {self.filepath.with_suffix('.json.bak')}")
+            except Exception as e:
+                # Log full traceback for backup errors
+                logger.error(
+                    f"Error creating state backup: {e}", exc_info=True)
+
+        # Atomic save
+        temp_filepath = self.filepath.with_suffix(".json.tmp")
+        bytes_written = -1  # For logging size
         try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                loaded_data_raw = json.load(f)
-            if not isinstance(loaded_data_raw, dict):
-                logger.error(f"Loaded state not dict: {file_path}.")
-                return None
-            restored_data = _restore_after_load(loaded_data_raw)
+            state_str = json.dumps(
+                state_to_save, indent=4, default=self._default_serializer)
+            bytes_written = len(state_str.encode('utf-8'))  # Calculate bytes
+            with open(temp_filepath, 'w', encoding='utf-8') as f:  # Specify encoding
+                f.write(state_str)
+            shutil.move(str(temp_filepath), str(self.filepath))
+            # Include size and excluded keys in the final log message for clarity
+            excluded_str = f"(excluded: {', '.join(removed_keys)})" if removed_keys else ""
             logger.info(
-                f"State successfully loaded/processed from {file_path}")
-            return restored_data
-        except json.JSONDecodeError as e:
-            logger.error(f"Error decode JSON {file_path}: {e}")
-            return None
+                f"State successfully saved to {self.filepath} ({bytes_written} bytes) {excluded_str}")
+        except TypeError as te:
+            logger.error(
+                f"Serialization Error saving filtered state: {te}. State keys attempted: {list(state_to_save.keys())}", exc_info=True)
+            if temp_filepath.exists():
+                temp_filepath.unlink()
         except Exception as e:
-            logger.exception(f"Unexpected error loading state {file_path}")
-            return None
+            logger.error(
+                f"Error saving filtered state to {self.filepath}: {e}", exc_info=True)
+            if temp_filepath.exists():
+                temp_filepath.unlink()
+
+    # --- START OF NEW _post_load_process ---
+    def _post_load_process(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """Converts specific fields back to appropriate types after loading."""
+        # <<< NO CHANGE NEEDED HERE if load_state handles the initial empty dict case >>>
+        # This function should only operate on a non-empty dict passed from load_state
+        if not isinstance(state, dict):
+            logger.warning(
+                f"Cannot post-process non-dict state: {type(state)}")
+            return {}  # Return empty dict if input invalid
+
+        processed_state = {}  # Start with empty, add processed keys
+
+        # Process known keys, applying defaults *if missing* from the loaded dict
+        # This ensures the structure is consistent even if loading an older state file
+
+        # Numeric fields - Default to Decimal('0') if missing or invalid
+        for key in ['position_size', 'position_entry_price', 'balance_quote', 'balance_base']:
+            # Get value, might be None if key missing
+            value_str = state.get(key)
+            # Use default in to_decimal
+            decimal_value = to_decimal(value_str, Decimal('0'))
+            if decimal_value is None:  # Should not happen if default is provided
+                logger.error(
+                    f"CRITICAL: Failed to convert state key '{key}' to Decimal even with default! Value: {value_str}. Using 0.")
+                decimal_value = Decimal('0')
+            processed_state[key] = decimal_value
+
+        # Timestamp fields - Default to None if missing or invalid
+        # Include last_state_save_time here
+        for key in ['position_entry_timestamp', 'last_processed_timestamp', 'last_state_save_time']:
+            ts_value = state.get(key)
+            processed_ts = None  # Default to None
+            if ts_value is not None:
+                try:
+                    ts = pd.Timestamp(ts_value)
+                    # Assume saved timestamps are UTC or ISO format with offset
+                    if ts.tzinfo is None:
+                        # This case might indicate an older state file or serialization issue
+                        # Assume UTC if naive, but log a warning
+                        logger.warning(
+                            f"Loaded timestamp for '{key}' is timezone naive. Assuming UTC.")
+                        ts = ts.tz_localize('UTC')
+                    else:
+                        # Convert to UTC if it's not already
+                        ts = ts.tz_convert('UTC')
+                    processed_ts = ts
+                except (ValueError, TypeError) as e:
+                    logger.warning(
+                        f"Could not convert state value for '{key}' ('{ts_value}') to Timestamp: {e}. Setting to None.")
+                    # processed_ts remains None
+            processed_state[key] = processed_ts
+
+        # List field - Default to empty list if missing or invalid
+        # Default to [] if key missing
+        grid_orders = state.get('active_grid_orders', [])
+        processed_grid = []
+        if isinstance(grid_orders, list):
+            for order in grid_orders:
+                if isinstance(order, dict):
+                    proc_order = order.copy()
+                    # Ensure essential order keys exist (optional, depends on strictness)
+                    # if 'orderId' not in proc_order or 'price' not in proc_order or 'origQty' not in proc_order:
+                    #    logger.warning(f"Skipping incomplete grid order in state: {proc_order}")
+                    #    continue
+                    for k in ['price', 'origQty', 'executedQty', 'cummulativeQuoteQty']:
+                        if k in proc_order and proc_order[k] is not None:
+                            # Use default=None here, as we want to keep None if conversion fails
+                            dec_val = to_decimal(proc_order[k], default=None)
+                            if dec_val is not None:
+                                proc_order[k] = dec_val
+                            else:
+                                logger.warning(
+                                    f"Could not convert order field '{k}' to Decimal: {proc_order[k]}")
+                    processed_grid.append(proc_order)
+                else:
+                    logger.warning(
+                        f"Skipping non-dict item found in loaded active_grid_orders: {order}")
+        else:
+            logger.warning(
+                f"Loaded 'active_grid_orders' is not a list (type: {type(grid_orders)}). Initializing to empty list.")
+            # processed_grid remains []
+        processed_state['active_grid_orders'] = processed_grid
+
+        # Dict field (optional) - Default to None if missing or invalid
+        # Get value, could be None or dict
+        tp_order = state.get('active_tp_order')
+        processed_tp_order = None  # Default to None
+        if isinstance(tp_order, dict):
+            proc_tp_order = tp_order.copy()
+            # Ensure essential TP order keys exist (optional)
+            # if 'orderId' not in proc_tp_order or 'price' not in proc_tp_order or 'origQty' not in proc_tp_order:
+            #    logger.warning(f"Incomplete TP order found in state: {proc_tp_order}. Setting to None.")
+            # else: # Proceed with conversion only if structure looks valid
+            for k in ['price', 'origQty', 'executedQty', 'cummulativeQuoteQty']:
+                if k in proc_tp_order and proc_tp_order[k] is not None:
+                    dec_val = to_decimal(proc_tp_order[k], default=None)
+                    if dec_val is not None:
+                        proc_tp_order[k] = dec_val
+                    else:
+                        logger.warning(
+                            f"Could not convert TP order field '{k}' to Decimal: {proc_tp_order[k]}")
+            processed_tp_order = proc_tp_order
+        elif tp_order is not None:  # It exists but is not a dict
+            logger.warning(
+                f"Loaded 'active_tp_order' is not a dict (type: {type(tp_order)}). Initializing to None.")
+            # processed_tp_order remains None
+        processed_state['active_tp_order'] = processed_tp_order
+
+        # Process other known keys, providing defaults if necessary
+        # Note: confidence_score is often float, handle conversion if stored as str
+        conf_score_loaded = state.get('confidence_score')
+        if conf_score_loaded is not None:
+            try:
+                processed_state['confidence_score'] = float(conf_score_loaded)
+            except (ValueError, TypeError):
+                logger.warning(
+                    f"Could not convert loaded confidence_score '{conf_score_loaded}' to float. Setting to None.")
+                processed_state['confidence_score'] = None
+        else:
+            processed_state['confidence_score'] = None  # Keep None if missing
+
+        processed_state['planned_grid'] = state.get(
+            'planned_grid', [])  # Default []
+        # Planned TP price needs to be Decimal or None
+        processed_state['planned_tp_price'] = to_decimal(
+            state.get('planned_tp_price'), default=None)
+
+        # --- Ensure essential keys that *must* exist for the bot are present ---
+        # (Belt-and-suspenders check after processing defaults)
+        essential_keys = ['position_size', 'position_entry_price',
+                          'balance_quote', 'balance_base', 'active_grid_orders', 'active_tp_order']
+        for key in essential_keys:
+            if key not in processed_state:
+                # This case should be rare given the default handling above, but log critically if it occurs
+                logger.critical(
+                    f"Essential key '{key}' missing from state after processing! This indicates a logic error.")
+                # Force a default value here to prevent downstream errors
+                if key in ['position_size', 'position_entry_price', 'balance_quote', 'balance_base']:
+                    processed_state[key] = Decimal('0')
+                elif key == 'active_grid_orders':
+                    processed_state[key] = []
+                elif key == 'active_tp_order':
+                    processed_state[key] = None
+
+        # Log keys that were present in loaded file but *not* processed (potential old/new keys)
+        # Only log if there are unprocessed keys to avoid noise
+        processed_keys = set(processed_state.keys())
+        loaded_keys = set(state.keys())
+        unprocessed_keys = loaded_keys - processed_keys
+        if unprocessed_keys:
+            logger.info(
+                f"Unprocessed keys found in loaded state (will be ignored): {unprocessed_keys}")
+            # Optionally copy them over if desired:
+            # for key in unprocessed_keys: processed_state[key] = state[key]
+
+        return processed_state
+    # --- END OF NEW _post_load_process ---
+
+    # --- START OF NEW load_state ---
+    def load_state(self) -> Optional[Dict[str, Any]]:
+        """
+        Loads the state from the JSON file, trying backups if necessary.
+        Returns the processed state dictionary or None if loading fails completely.
+        """
+        files_to_try = [self.filepath] + [self.filepath.with_suffix(f".json.bak{i}" if i > 0 else ".json.bak")
+                                          for i in range(1, self.backup_count + 1)]
+
+        raw_state = None  # <<< Store the raw loaded dict here
+        loaded_file_path = None  # <<< Track which file succeeded
+
+        for file_path in files_to_try:
+            if file_path.exists():
+                logger.info(f"Attempting to load state from {file_path}...")
+                try:
+                    # Check size before reading
+                    if file_path.stat().st_size <= 2:  # Check size > 2 bytes (e.g., '{}')
+                        logger.warning(
+                            f"State file {file_path} is too small or empty ({file_path.stat().st_size} bytes). Trying next backup.")
+                        continue  # Try next backup if too small
+
+                    with open(file_path, 'r', encoding='utf-8') as f:  # Specify encoding
+                        # Basic JSON load first
+                        content = f.read()
+                        # Sanity check content again? Maybe redundant if size check passed
+                        if not content.strip():
+                            logger.warning(
+                                f"State file {file_path} contains only whitespace. Trying next backup.")
+                            continue  # Try next backup if empty
+
+                        # Parse non-empty content
+                        raw_state = json.loads(content)
+                        loaded_file_path = file_path  # Mark success
+                        logger.debug(
+                            f"Successfully parsed JSON from {loaded_file_path}")
+                        break  # Stop trying files once one is loaded successfully
+
+                except json.JSONDecodeError as e:
+                    logger.error(
+                        f"JSON Decode Error loading state from {file_path}: {e}. Trying next backup.")
+                    raw_state = None  # Reset on error
+                    continue  # Try next backup
+                except OSError as os_err:
+                    logger.error(
+                        f"OS Error accessing state file {file_path}: {os_err}. Trying next backup.")
+                    raw_state = None  # Reset on error
+                    continue  # Try next backup
+                except Exception as e:
+                    logger.error(
+                        f"Unexpected Error loading state file {file_path}: {e}. Trying next backup.", exc_info=True)
+                    raw_state = None  # Reset on error
+                    continue  # Try next backup
+            # else: logger.debug(f"State file {file_path} does not exist.")
+
+        # --- Process the loaded state (or handle failure) ---
+        if raw_state is not None and isinstance(raw_state, dict):
+            # <<< Process only if raw_state is a valid dict loaded from a file >>>
+            logger.info(
+                f"Successfully loaded raw state from {loaded_file_path}. Processing...")
+            processed_state = self._post_load_process(raw_state)
+            # Log missing key warnings *after* processing attempts defaults
+            # (These warnings are now mainly for older state files)
+            # Example: Check if a key expected by the current code is missing
+            required_keys = ['position_size',
+                             'balance_quote']  # Add more as needed
+            missing_keys = [
+                k for k in required_keys if k not in processed_state]
+            if missing_keys:
+                logger.warning(
+                    f"Keys missing after processing loaded state (initialized to defaults): {missing_keys}")
+
+            return processed_state
+        elif raw_state is not None and not isinstance(raw_state, dict):
+            # This case means the loaded JSON was valid but not a dictionary
+            logger.error(
+                f"Loaded state from {loaded_file_path} is not a dictionary (type: {type(raw_state)}). Cannot process.")
+            return None  # Indicate failure to load valid state structure
+        else:
+            # This means no file was found or all files were empty/corrupt/inaccessible
+            logger.warning(
+                f"Could not load valid state from {self.filepath} or any backups. Returning None.")
+            return None  # <<< Return None if all attempts failed
+
+    # --- END OF NEW load_state ---
+
+    def clear_state_file(self):
+        # ... (clear_state_file remains the same) ...
+        logger.warning(f"Clearing state file and backups for: {self.filepath}")
+        files_to_delete = [self.filepath] + [self.filepath.with_suffix(f".json.bak{i}" if i > 0 else ".json.bak")
+                                             # Also clear temp
+                                             for i in range(1, self.backup_count + 1)] + [self.filepath.with_suffix(".json.tmp")]
+        deleted_count = 0
+        for file_path in files_to_delete:
+            try:
+                if file_path.exists():
+                    file_path.unlink()
+                    logger.info(f"Deleted state file: {file_path}")
+                    deleted_count += 1
+            except OSError as e:
+                logger.error(f"Error deleting state file {file_path}: {e}")
+        logger.warning(
+            f"State file clearing complete. Deleted {deleted_count} files.")
 
 
-# Example Usage
+# Example Usage (Optional)
 if __name__ == '__main__':
-    logging.basicConfig(level=logging.DEBUG)
-    test_file = 'temp_state_test_df.json'
-    manager = StateManager(test_file)
-    dummy_df_index = pd.to_datetime(
-        ['2023-01-01 10:00', '2023-01-01 11:00'], utc=True)
-    dummy_df = pd.DataFrame(
-        {'A': [Decimal('1.0'), Decimal('2.5')], 'B': [3, 4]}, index=dummy_df_index)
-    dummy_df = dummy_df.astype(object)
-    # Add nested Decimal in a list within the DataFrame dict representation
-    df_as_dict_prepared = {
-        '_is_dataframe': True,
-        'index': [1672567200000, 1672570800000],
-        'columns': ['A', 'B'],
-        # Ensure Decimals are strings here
-        'data': [[str(Decimal('1.0')), 3], [str(Decimal('2.5')), 4]]
+    # ... (Keep existing __main__ block) ...
+    logging.basicConfig(
+        level=logging.DEBUG, format='%(asctime)s | %(levelname)-8s | %(name)-15s | %(message)s')
+    # Example state
+    test_state = {
+        'position_size': Decimal('1.23456789'),
+        'position_entry_price': Decimal('50000.12'),
+        'position_entry_timestamp': pd.Timestamp.utcnow(),
+        'balance_quote': Decimal('12345.67'),
+        'balance_base': Decimal('2.5'),
+        'active_grid_orders': [{'orderId': 1, 'price': Decimal('49000.00'), 'origQty': Decimal('0.1')}],
+        'active_tp_order': {'orderId': 2, 'price': Decimal('51000.00'), 'origQty': Decimal('1.23456789')},
+        'some_other_data': [1, 2, None, "test"],
+        'last_processed_timestamp': pd.Timestamp.utcnow() - pd.Timedelta(hours=1),
+        # --- Add DataFrame to test exclusion ---
+        'historical_klines': pd.DataFrame({'A': [1, 2], 'B': [3, 4]}),
+        'indicators': pd.DataFrame({'C': [5, 6], 'D': [7, 8]})
     }
 
-    state_to_save = {
-        'position': {'symbol': 'BTCUSDT', 'entry_price': Decimal('45000.12'), 'quantity': Decimal('0.001'), 'entry_time': pd.Timestamp.utcnow()},
-        'active_grid_orders': [{'orderId': 123, 'price': '44000.0', 'origQty': '0.001'}],
-        'active_tp_order': {'orderId': 789, 'price': '46000.0', 'origQty': '0.001'},
-        'historical_klines': dummy_df,  # DataFrame object
-        'indicators': df_as_dict_prepared,  # Pre-prepared dict example
-        'last_processed_timestamp': pd.Timestamp('2023-01-01 11:00', tz='UTC'),
-        'balance_quote': Decimal("1234.56"),
-        'current_kline': {'open': Decimal('45100.0'), 'high': Decimal('45200.1'), 'low': Decimal('45050.5'), 'close': Decimal('45150.9'), 'volume': Decimal('12.345'), 'timestamp': pd.Timestamp('2023-01-01 11:00', tz='UTC')},
-        'confidence_score': 0.75
-    }
-    print("\n--- Saving State ---")
-    save_ok = manager.save_state(state_to_save)
-    print(f"Save OK: {save_ok}")
-    # Inspect saved file manually if needed: cat temp_state_test_df.json
-    print("\n--- Loading State ---")
-    loaded_state = manager.load_state()
-    if loaded_state:
-        print("Loaded State OK:")
-        hist_klines = loaded_state.get('historical_klines')
-        if isinstance(hist_klines, pd.DataFrame):
-            print(f"Hist Klines: DataFrame {hist_klines.shape}")
-            hist_klines.info()
-            print(hist_klines.head())
+    # Create manager in a test directory
+    sm = StateManager("data/test_state/test_state.json")
+    sm.clear_state_file()  # Start clean
+
+    # Save state
+    logger.info("\n--- Saving State (Excluding DFs) ---")
+    sm.save_state(test_state)
+
+    # Load state
+    logger.info("\n--- Loading State ---")
+    loaded = sm.load_state()
+
+    if loaded:
+        logger.info("\n--- Verifying Loaded Types ---")
+        # Check which keys were loaded
+        print(f"Loaded Keys: {list(loaded.keys())}")
+        print(
+            f"Position Size: {loaded.get('position_size')} (Type: {type(loaded.get('position_size'))})")
+        print(
+            f"Entry Price: {loaded.get('position_entry_price')} (Type: {type(loaded.get('position_entry_price'))})")
+        print(
+            f"Entry Timestamp: {loaded.get('position_entry_timestamp')} (Type: {type(loaded.get('position_entry_timestamp'))})")
+        print(
+            f"Balance Quote: {loaded.get('balance_quote')} (Type: {type(loaded.get('balance_quote'))})")
+        print(
+            f"Last Proc Timestamp: {loaded.get('last_processed_timestamp')} (Type: {type(loaded.get('last_processed_timestamp'))})")
+        grid_orders = loaded.get('active_grid_orders', [])
+        if grid_orders:
+            print(
+                f"Grid Order Price: {grid_orders[0].get('price')} (Type: {type(grid_orders[0].get('price'))})")
         else:
-            print(f"Hist Klines NOT DF: {type(hist_klines)}")
-        indicators = loaded_state.get('indicators')
-        if isinstance(indicators, pd.DataFrame):
-            print(f"\nIndicators: DataFrame {indicators.shape}")
-            indicators.info()
-            print(indicators.head())
-        else:
-            print(f"Indicators NOT DF: {type(indicators)}")
+            print("Grid Orders: Empty")
+        # Should be False
+        print(f"Historical Klines Present: {'historical_klines' in loaded}")
+        # Should be False
+        print(f"Indicators Present: {'indicators' in loaded}")
         print(
-            f"\nLast TS Type: {type(loaded_state.get('last_processed_timestamp'))}")
-        print(f"Balance Quote Type: {type(loaded_state.get('balance_quote'))}")
-        print(
-            f"Current Kline Close Type: {type(loaded_state.get('current_kline', {}).get('close'))}")
-        # Check restored type
-        print(
-            f"Active Grid Order Price Type: {type(loaded_state.get('active_grid_orders', [{}])[0].get('price'))}")
+            f"Save Timestamp: {loaded.get('last_state_save_time')} (Type: {type(loaded.get('last_state_save_time'))})")
+
     else:
-        print("Load failed.")
-    try:
-        Path(test_file).unlink(missing_ok=True)
-        Path(test_file + '.tmp').unlink(missing_ok=True)
-        Path(test_file + '.bak').unlink(missing_ok=True)
-        print("\nCleaned up.")
-    except OSError:
-        pass
+        print("Failed to load state.")
+
+    # Test loading from empty/corrupt file
+    logger.info("\n--- Testing Load Failure ---")
+    # Create empty file
+    with open(sm.filepath, 'w') as f:
+        f.write("")
+    loaded_empty = sm.load_state()
+    print(
+        f"Load from empty file result: {loaded_empty} (Type: {type(loaded_empty)})")
+    # Create corrupt file
+    with open(sm.filepath, 'w') as f:
+        f.write("{")
+    loaded_corrupt = sm.load_state()
+    print(
+        f"Load from corrupt file result: {loaded_corrupt} (Type: {type(loaded_corrupt)})")
+
+    # Clear state again
+    logger.info("\n--- Clearing State ---")
+    sm.clear_state_file()
 
 
 # END OF FILE: src/core/state_manager.py

@@ -1,11 +1,12 @@
 # START OF FILE: src/strategies/profit_taking.py
 
+# START OF profit_taking.py IMPORTS (Corrected)
 import logging
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional, Dict, Any, List
+import pandas as pd # Keep import
 
 # --- Add project root ---
-import os
 import sys
 from pathlib import Path
 _project_root = Path(__file__).resolve().parent.parent.parent
@@ -13,34 +14,13 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 # --- End ---
 
-# --- Import REAL filter function ---
-try:
-    # Import real function and helper
-    from src.utils.formatting import apply_filter_rules_to_price, to_decimal
-except ImportError:
-    # Attempt to set up logger early if possible, otherwise use basic print/logging
-    try:
-        logger = logging.getLogger(__name__)
-        if not logger.hasHandlers():
-            # Basic config if no handler
-            logging.basicConfig(level=logging.ERROR)
-    except NameError:  # If logging itself failed
-        import logging
-        logging.basicConfig(level=logging.ERROR)
-        logger = logging.getLogger(__name__)
-
-    logger.critical(
-        "CRITICAL: Failed to import 'apply_filter_rules_to_price' or 'to_decimal' from src.utils.formatting.", exc_info=True)
-    # Define dummy only if absolutely necessary to allow script import elsewhere, but it shouldn't run
-
-    def apply_filter_rules_to_price(
-        *args, **kwargs) -> Optional[Decimal]: return None
-    def to_decimal(v, default=None): return Decimal(
-        v) if v is not None else default
-    # Consider raising an error immediately instead of dummies:
-    # raise ImportError("CRITICAL: Failed to import formatting utilities required for profit_taking.")
+# --- Import REAL functions directly ---
+from src.utils.formatting import apply_filter_rules_to_price, to_decimal
+from config.settings import get_config_value # If needed for defaults inside function
 
 logger = logging.getLogger(__name__)
+# --- Constants/Function definition follow ---
+# END OF profit_taking.py IMPORTS
 
 # --- Constants / Configuration Keys ---
 TP_METHOD_KEY = 'tp_method'
@@ -131,21 +111,29 @@ def calculate_dynamic_tp_price(
             CONFIDENCE_MULTIPLIER_MED_KEY, '1.0'), Decimal('1.0'))
         conf_mult_high = to_decimal(tp_config.get(
             CONFIDENCE_MULTIPLIER_HIGH_KEY, '1.2'), Decimal('1.2'))
-        low_thresh, high_thresh = 0.4, 0.7
+
+        # Use confidence thresholds from config if available, else use hardcoded
+        low_thresh = to_decimal(tp_config.get('confidence_threshold_low'), Decimal('0.4'))
+        high_thresh = to_decimal(tp_config.get('confidence_threshold_high'), Decimal('0.7'))
+
         confidence_multiplier = conf_mult_med
         try:
-            score = float(confidence_score)
-            if score < low_thresh:
+            # Convert confidence_score to Decimal for comparison
+            score_decimal = to_decimal(confidence_score)
+            if score_decimal is None:
+                raise ValueError("Confidence score could not be converted to Decimal")
+
+            if score_decimal < low_thresh:
                 confidence_multiplier = conf_mult_low
-            elif score >= high_thresh:
+            elif score_decimal >= high_thresh:
                 confidence_multiplier = conf_mult_high
             original_offset = target_offset
             target_offset *= confidence_multiplier
             logger.debug(
-                f"Applied confidence ({score:.2f}). Multiplier: {confidence_multiplier}. Offset: {original_offset:.4f} -> {target_offset:.4f}")
+                f"Applied confidence ({score_decimal:.2f}). Multiplier: {confidence_multiplier}. Offset: {original_offset:.4f} -> {target_offset:.4f}")
         except (ValueError, TypeError) as e:
             logger.warning(
-                f"Invalid confidence_score ({confidence_score}): {e}. Skip modulation.")
+                f"Invalid confidence_score ({confidence_score}) or threshold config: {e}. Skip modulation.")
 
     # Calculate Target Price
     target_price = entry_price + target_offset
@@ -196,7 +184,11 @@ if __name__ == '__main__':
         'strategies': {
             'profit_taking': {
                 'tp_method': 'atr_multiple', 'tp_value': '1.5',
-                'confidence_multiplier_low': '0.7', 'confidence_multiplier_medium': '1.0', 'confidence_multiplier_high': '1.4'
+                'confidence_multiplier_low': '0.7',
+                'confidence_multiplier_medium': '1.0',
+                'confidence_multiplier_high': '1.4',
+                'confidence_threshold_low': '0.4', # Added explicit thresholds
+                'confidence_threshold_high': '0.7'
             }
         }
     }
@@ -227,9 +219,9 @@ if __name__ == '__main__':
     }
 
     # Test Cases
-    logger.info("\nTest 1: Basic ATR Multiple")
+    logger.info("\nTest 1: Basic ATR Multiple (Medium Confidence implicitly)")
     tp1 = calculate_dynamic_tp_price(
-        mock_entry_price, mock_atr, mock_config, mock_exchange_info, mock_symbol)
+        mock_entry_price, mock_atr, mock_config, mock_exchange_info, mock_symbol, confidence_score=0.5)
     # Expect adjustment to tickSize 0.01 (using ceil)
     logger.info(f"Test 1 Result: {tp1}")
 
@@ -244,31 +236,31 @@ if __name__ == '__main__':
     logger.info(f"Test 3 Result: {tp3}")
 
     logger.info("\nTest 4: Percentage Method (2%)")
-    mock_config['strategies']['profit_taking']['tp_method'] = 'percentage'
-    mock_config['strategies']['profit_taking']['tp_value'] = '0.02'
+    mock_config_perc = mock_config.copy() # Avoid modifying original mock_config
+    mock_config_perc['strategies']['profit_taking']['tp_method'] = 'percentage'
+    mock_config_perc['strategies']['profit_taking']['tp_value'] = '0.02'
     tp4 = calculate_dynamic_tp_price(
-        mock_entry_price, mock_atr, mock_config, mock_exchange_info, mock_symbol, confidence_score=0.6)
+        mock_entry_price, mock_atr, mock_config_perc, mock_exchange_info, mock_symbol, confidence_score=0.6)
     logger.info(f"Test 4 Result: {tp4}")
 
-    logger.info("\nTest 5: Missing ATR")
-    mock_config['strategies']['profit_taking']['tp_method'] = 'atr_multiple'
-    mock_config['strategies']['profit_taking']['tp_value'] = '1.0'
+    logger.info("\nTest 5: Missing ATR for ATR method")
+    # Use original mock_config again
     tp5 = calculate_dynamic_tp_price(
         mock_entry_price, None, mock_config, mock_exchange_info, mock_symbol)
     logger.info(f"Test 5 Result: {tp5}")  # Should be None
 
     logger.info("\nTest 6: Invalid Method")
-    mock_config['strategies']['profit_taking']['tp_method'] = 'magic'
+    mock_config_invalid = mock_config.copy()
+    mock_config_invalid['strategies']['profit_taking']['tp_method'] = 'magic'
     tp6 = calculate_dynamic_tp_price(
-        mock_entry_price, mock_atr, mock_config, mock_exchange_info, mock_symbol)
+        mock_entry_price, mock_atr, mock_config_invalid, mock_exchange_info, mock_symbol)
     logger.info(f"Test 6 Result: {tp6}")  # Should be None
 
     logger.info("\nTest 7: TP near entry (Low Confidence + filter)")
-    mock_config['strategies']['profit_taking']['tp_method'] = 'atr_multiple'
-    # Very small ATR multiple
-    mock_config['strategies']['profit_taking']['tp_value'] = '0.0001'
+    mock_config_near = mock_config.copy()
+    mock_config_near['strategies']['profit_taking']['tp_value'] = '0.0001' # Very small ATR multiple
     tp7 = calculate_dynamic_tp_price(
-        mock_entry_price, mock_atr, mock_config, mock_exchange_info, mock_symbol, confidence_score=0.1)
+        mock_entry_price, mock_atr, mock_config_near, mock_exchange_info, mock_symbol, confidence_score=0.1)
     # Should be adjusted up slightly by ceil
     logger.info(f"Test 7 Result: {tp7}")
 
@@ -276,6 +268,12 @@ if __name__ == '__main__':
     tp8 = calculate_dynamic_tp_price(
         mock_entry_price, mock_atr, mock_config, None, mock_symbol)
     logger.info(f"Test 8 Result: {tp8}")  # Should be None
+
+    logger.info("\nTest 9: Missing Confidence Score (uses Medium Multiplier)")
+    tp9 = calculate_dynamic_tp_price(
+        mock_entry_price, mock_atr, mock_config, mock_exchange_info, mock_symbol, confidence_score=None)
+    logger.info(f"Test 9 Result: {tp9}")
+
 
     logger.info("\n--- Profit Taking Logic Test Complete ---")
 
