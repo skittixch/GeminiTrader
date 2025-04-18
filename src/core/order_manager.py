@@ -1,4 +1,4 @@
-# START OF FILE: src/core/order_manager.py (Corrected Validation Calls - FINAL v2 Merged)
+# START OF FILE: src/core/order_manager.py (Added Reconciliation Logic)
 
 import logging
 import time
@@ -97,14 +97,19 @@ class OrderManager:
                 state['active_grid_orders'] = []
             # Prevent duplicates (optional but good practice)
             cid = order_details.get('clientOrderId')
+            # Check orderId too if available
+            oid = order_details.get('orderId')
             if cid and any(o.get('clientOrderId') == cid for o in state['active_grid_orders']):
                 logger.warning(
                     f"Skipping duplicate grid order CID {cid} in _add_order_to_state.")
-                # Return False as nothing was added, but log as warning not error
+                return False
+            elif oid and any(str(o.get('orderId')) == str(oid) for o in state['active_grid_orders']):
+                logger.warning(
+                    f"Skipping duplicate grid order OID {oid} in _add_order_to_state.")
                 return False
             else:
                 state['active_grid_orders'].append(order_details)
-                logger.debug(f"Added grid order {cid} to state dict.")
+                logger.debug(f"Added grid order {cid or oid} to state dict.")
                 modified = True
         elif order_type == 'tp':
             # Check if overwriting is intended
@@ -379,36 +384,119 @@ class OrderManager:
         # NOTE: Do NOT save state here. Caller (main_trader) will save after processing fills.
         return {'grid_fills': grid_fills, 'tp_fill': tp_fill}
 
-    # <<< MODIFIED: Accepts state dict >>>
+    # <<< MODIFIED: Accepts state dict & ADDED Reconciliation Logic >>>
     def reconcile_and_place_grid(self, state: Dict, planned_grid: List[Dict]) -> Dict[str, List[Dict]]:
         """
-        Compares planned grid with active orders in PASSED state dict.
+        Reconciles internal state with fetched open orders, then compares the
+        reconciled state against the planned grid.
         Cancels outdated orders and places new ones.
         Modifies the PASSED state dict directly for additions/removals.
         Returns dictionary summarizing actions.
         NOTE: Saving the state is handled by the caller.
         """
+        logger.info("--- Entered reconcile_and_place_grid ---")
         if not isinstance(state, dict):
             logger.error("reconcile_and_place_grid: Invalid state dict.")
             return {'placed': [], 'cancelled': [], 'failed_cancel': [], 'failed_place': [], 'unchanged': []}
 
-        # Get active orders from the PASSED state
-        active_grid_orders = state.get('active_grid_orders', [])
-        if not isinstance(active_grid_orders, list):
-            active_grid_orders = []
-        # Keep INFO log for overview
-        logger.info(
-            f"Reconciling Grid Orders: Planned={len(planned_grid)}, Currently Active State={len(active_grid_orders)}")
+        # --- Stage 1: Fetch / Simulate Fetching Open Orders ---
+        fetched_orders: Optional[List[Dict]] = None
+        if self.simulation_mode:
+            logger.debug("Sim Mode: Using current state as 'fetched' orders.")
+            # Combine grid and TP orders from state to simulate the response
+            sim_fetched_grid = state.get('active_grid_orders', [])
+            sim_fetched_tp = state.get('active_tp_order')
+            # Ensure list type safety
+            if not isinstance(sim_fetched_grid, list):
+                sim_fetched_grid = []
+            fetched_orders = list(sim_fetched_grid)  # Make a copy
+            if isinstance(sim_fetched_tp, dict):
+                fetched_orders.append(sim_fetched_tp)
+        else:  # Live Mode
+            logger.info("Live Mode: Fetching open orders from exchange...")
+            try:
+                # Fetch only for the relevant symbol
+                fetched_orders = self.connector.get_open_orders(self.symbol)
+                # Handle None response from connector
+                if fetched_orders is None:
+                    logger.error(
+                        "Failed to fetch open orders from exchange. Aborting reconcile.")
+                    # Return empty results to indicate failure to reconcile
+                    return {'placed': [], 'cancelled': [], 'failed_cancel': [], 'failed_place': [], 'unchanged': []}
+                logger.info(
+                    f"Fetched {len(fetched_orders)} open orders from exchange.")
+            except Exception as e:
+                logger.error(
+                    f"Exception fetching open orders: {e}. Aborting reconcile.", exc_info=True)
+                return {'placed': [], 'cancelled': [], 'failed_cancel': [], 'failed_place': [], 'unchanged': []}
 
-        # Build maps for comparison (logic remains the same)
+        # Ensure fetched_orders is a list, even if empty
+        if fetched_orders is None:
+            fetched_orders = []
+
+        # --- Stage 2: Reconcile Fetched Orders with Internal State ---
+        logger.debug("Reconciling fetched orders with internal state...")
+        state_grid_orders = state.get('active_grid_orders', [])
+        state_tp_order = state.get('active_tp_order')
+        if not isinstance(state_grid_orders, list):
+            state_grid_orders = []
+        if not isinstance(state_tp_order, dict) and state_tp_order is not None:
+            state_tp_order = None
+
+        # Use clientOrderId as the primary key for matching
+        state_cids = set()
+        if state_grid_orders:
+            state_cids.update(o.get('clientOrderId')
+                              for o in state_grid_orders if o.get('clientOrderId'))
+        if state_tp_order and state_tp_order.get('clientOrderId'):
+            state_cids.add(state_tp_order.get('clientOrderId'))
+
+        fetched_cids = set(o.get('clientOrderId')
+                           for o in fetched_orders if o.get('clientOrderId'))
+
+        state_only_cids = state_cids - fetched_cids
+        fetched_only_cids = fetched_cids - state_cids
+
+        recon_removed_count = 0
+        if state_only_cids:
+            logger.warning(
+                f"Reconciliation: Found {len(state_only_cids)} orders in state but not fetched: {state_only_cids}. Removing from state.")
+            for cid_to_remove in state_only_cids:
+                # Call internal remove function, operating on the passed state dict
+                if self._remove_order_from_state(state, client_order_id=cid_to_remove):
+                    recon_removed_count += 1
+
+        if fetched_only_cids:
+            # This shouldn't happen if state saving/loading is robust, but log it.
+            logger.warning(
+                f"Reconciliation: Found {len(fetched_only_cids)} orders fetched but not in state: {fetched_only_cids}. Check state consistency.")
+            # Should we add these to the state? Maybe not automatically, could be stale. Log and monitor.
+
+        if recon_removed_count > 0:
+            logger.info(
+                f"Reconciliation: Removed {recon_removed_count} orders from state that were not found in fetched open orders.")
+        else:
+            logger.debug(
+                "Reconciliation: State matches fetched open orders (based on CIDs).")
+
+        # --- Stage 3: Compare Reconciled State with Planned Grid ---
+        # IMPORTANT: Re-read active grid orders from the potentially modified state dict
+        reconciled_active_grid_orders = state.get('active_grid_orders', [])
+        if not isinstance(reconciled_active_grid_orders, list):
+            reconciled_active_grid_orders = []
+
+        logger.info(
+            f"Planning Comparison: Planned={len(planned_grid)}, Active after reconcile={len(reconciled_active_grid_orders)}")
+
+        # Build maps using reconciled state for comparison
         active_orders_map = {}
-        for o in active_grid_orders:
+        for o in reconciled_active_grid_orders:  # Use reconciled list
             price = to_decimal(o.get('price'))
             if price is not None:
                 active_orders_map[str(price)] = o
             else:
                 logger.warning(
-                    f"Active grid order missing price, cannot reconcile: {o}")
+                    f"Reconciled active grid order missing price: {o}")
 
         planned_orders_map = {}
         for p in planned_grid:
@@ -429,32 +517,29 @@ class OrderManager:
         results: Dict[str, List[Any]] = {'placed': [], 'cancelled': [
         ], 'failed_cancel': [], 'failed_place': [], 'unchanged': []}
 
-        # --- Cancel Outdated ---
+        # --- Cancel Outdated (Based on Price Difference) ---
         if orders_to_cancel_prices_str:
-            # Use INFO log for cancellation intent
             logger.info(
-                f"Cancelling {len(orders_to_cancel_prices_str)} outdated grid orders...")
+                f"Cancelling {len(orders_to_cancel_prices_str)} outdated grid orders (price mismatch)...")
             for price_str in orders_to_cancel_prices_str:
                 order_to_cancel = active_orders_map[price_str]
                 client_order_id = order_to_cancel.get('clientOrderId')
                 order_id = order_to_cancel.get('orderId')
                 # Pass state to cancel_order
-                if self.cancel_order(state, client_order_id, order_id, reason="GridReconcile_Outdated"):
+                if self.cancel_order(state, client_order_id, order_id, reason="GridReconcile_OutdatedPrice"):
                     results['cancelled'].append(order_to_cancel)
+                    # Note: cancel_order already removes from state if successful
                 else:
                     results['failed_cancel'].append(
                         {**order_to_cancel, 'fail_reason': 'Cancellation failed'})
 
-        # --- Place New ---
+        # --- Place New (Based on Price Difference) ---
         if orders_to_place_prices_str:
-            # Use INFO log for placement intent
             logger.info(
-                f"Placing {len(orders_to_place_prices_str)} new grid orders...")
+                f"Placing {len(orders_to_place_prices_str)} new grid orders (price mismatch)...")
             for price_str in orders_to_place_prices_str:
                 order_to_place = planned_orders_map[price_str]
-                price = to_decimal(order_to_place.get(
-                    'price'))  # Original planned price
-                # Original planned quantity
+                price = to_decimal(order_to_place.get('price'))
                 qty = to_decimal(order_to_place.get('quantity'))
 
                 if price is None or qty is None or qty <= Decimal('0'):
@@ -464,11 +549,10 @@ class OrderManager:
                         {**order_to_place, 'fail_reason': 'Invalid original price/qty'})
                     continue
 
-                # Apply filters before validation and placement
                 adj_price = apply_filter_rules_to_price(
                     self.symbol, price, self.exchange_info, operation='adjust')
                 adj_qty = apply_filter_rules_to_qty(
-                    self.symbol, qty, self.exchange_info, operation='floor')  # Floor BUY qty
+                    self.symbol, qty, self.exchange_info, operation='floor')
 
                 if adj_price is None or adj_qty is None or adj_qty <= Decimal('0'):
                     logger.error(
@@ -477,30 +561,25 @@ class OrderManager:
                         {**order_to_place, 'fail_reason': 'Filter application failed'})
                     continue
 
-                # <<< VERIFIED CORRECT VALIDATION CALL >>>
                 if not validate_order_filters(symbol=self.symbol, quantity=adj_qty, price=adj_price, exchange_info=self.exchange_info):
                     logger.error(
                         f"Grid order (AdjQty:{adj_qty}, AdjPx:{adj_price}) failed filter validation. Skipping.")
                     results['failed_place'].append(
                         {**order_to_place, 'fail_reason': 'Filter validation failed'})
                     continue
-                # <<< END VERIFIED CORRECTION >>>
 
-                # Generate Client ID using internal method
                 client_order_id = self._generate_client_order_id("grid")
-                # Log adjusted values with INFO
                 logger.info(
                     f"Placing new grid BUY order: Qty={adj_qty:.8f} @ Price={adj_price:.4f} (Client ID: {client_order_id})")
 
                 if self.simulation_mode:
-                    # Simulate placement using adjusted values
                     sim_order = {
                         'symbol': self.symbol,
                         'orderId': self.sim_order_id_counter,
                         'clientOrderId': client_order_id,
                         'transactTime': int(time.time() * 1000),
-                        'price': str(adj_price),  # Use adjusted price
-                        'origQty': str(adj_qty),  # Use adjusted quantity
+                        'price': str(adj_price),
+                        'origQty': str(adj_qty),
                         'executedQty': '0',
                         'cummulativeQuoteQty': '0',
                         'status': 'NEW',
@@ -517,7 +596,6 @@ class OrderManager:
                             {**order_to_place, 'clientOrderId': client_order_id, 'fail_reason': 'Failed add sim order to state'})
                 else:  # Live placement
                     try:
-                        # Use adjusted price and quantity
                         api_response = self.connector.create_limit_buy(
                             symbol=self.symbol, quantity=adj_qty, price=adj_price, newClientOrderId=client_order_id)
                         if api_response:
@@ -527,32 +605,30 @@ class OrderManager:
                             if self._add_order_to_state(state, 'grid', api_response):
                                 results['placed'].append(api_response)
                             else:
-                                # This case is less likely but possible if state becomes invalid between checks
                                 logger.error(
                                     f"Successfully placed live grid order {api_response.get('clientOrderId')} but FAILED TO ADD TO STATE DICT.")
                                 results['failed_place'].append(
                                     {**order_to_place, 'clientOrderId': client_order_id, 'fail_reason': 'Placed live but failed add to state'})
                         else:
-                            # Handle API rejection not caught by exception
                             logger.error(
                                 f"Failed to place grid order (Client ID: {client_order_id}) - Connector returned None/False.")
                             results['failed_place'].append(
                                 {**order_to_place, 'clientOrderId': client_order_id, 'fail_reason': 'API placement failed (connector returned None)'})
                     except Exception as e:
-                        # Log full traceback for unexpected errors
                         logger.error(
                             f"Exception placing grid order (Client ID: {client_order_id}): {e}", exc_info=True)
                         results['failed_place'].append(
                             {**order_to_place, 'clientOrderId': client_order_id, 'fail_reason': f'API placement exception: {e}'})
 
-        # --- Unchanged ---
+        # --- Unchanged (Orders matching by price) ---
         if orders_unchanged_prices_str:
             logger.debug(
-                f"{len(orders_unchanged_prices_str)} grid orders remain unchanged.")
+                f"{len(orders_unchanged_prices_str)} grid orders remain unchanged by price.")
+            # Should we still check quantity? Maybe later refinement.
             results['unchanged'] = [active_orders_map[p]
                                     for p in orders_unchanged_prices_str]
 
-        # Use INFO for the summary log, as it represents the outcome of the reconciliation step
+        # --- Final Summary Log ---
         log_summary = (
             f"Grid Reconcile Summary: Placed={len(results['placed'])}, Cancelled={len(results['cancelled'])}, "
             f"FailedCancel={len(results['failed_cancel'])}, FailedPlace={len(results['failed_place'])}, Unchanged={len(results['unchanged'])}"
@@ -565,6 +641,7 @@ class OrderManager:
         return results
 
     # <<< MODIFIED: Accepts state dict >>>
+
     def place_or_update_tp_order(self, state: Dict, planned_tp_price: Optional[Decimal], position_size: Decimal) -> bool:
         """
         Places or updates the Take Profit LIMIT SELL order based on the PASSED state.
@@ -684,10 +761,8 @@ class OrderManager:
                         f"Active TP order {active_tp_order.get('clientOrderId')} matches planned TP (PxDiff:{price_diff}, QtyDiff:{qty_diff}). No update needed.")
                     needs_placement = False
                 else:
-                    logger.info(  # Logged below if needs_placement is True
-                        f"Active TP order {active_tp_order.get('clientOrderId')} differs from plan. Price Diff: {price_diff} (Tol: {price_tolerance}), Qty Diff: {qty_diff} (Tol: {qty_tolerance}). Replacing."
-                    )
-                    # Replacement needed (logged below if needs_placement is True)
+                    # Logged below if needs_placement is True
+                    pass  # Avoid double logging
 
             # If replacement is needed (either mismatch or missing data in active)
             if needs_placement:
@@ -966,4 +1041,4 @@ class OrderManager:
                     f"Exception executing market sell: {e}", exc_info=True)
                 return None
 
-# END OF FILE: src/core/order_manager.py (Corrected Validation Calls - FINAL v2 Merged)
+# END OF FILE: src/core/order_manager.py (Added Reconciliation Logic)

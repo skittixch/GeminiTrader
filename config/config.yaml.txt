@@ -1,122 +1,165 @@
-# config/config.yaml
-# Main configuration file for GeminiTrader
+# START OF FILE: config/config.yaml
+# Main configuration file for GeminiTrader - Structure based on user's version + required additions
 
 # --- Binance.US API Settings ---
 # Credentials should be loaded from .env file (via settings.py)
-# Do NOT store keys/secrets directly in this YAML file.
 binance_us:
   # api_key: overridden_by_env
   # api_secret: overridden_by_env
-  # Optional: API request timeouts, etc.
-  # request_timeout: 10
+  tld: 'us' # Specify TLD for python-binance connection
 
 # --- Coinbase API Settings (for funding pipeline) ---
 # Credentials should be loaded from .env file
-coinbase:
-  # api_key: overridden_by_env
-  # api_secret: overridden_by_env
+coinbase: {}
+  # api_key: overridden_by_env (CDP Key Name)
+  # private_key: overridden_by_env (CDP Private Key)
 
 # --- Plaid API Settings (Optional, for bank integration) ---
-# Credentials should be loaded from .env file
-plaid:
+plaid: {}
   # client_id: overridden_by_env
   # secret: overridden_by_env
-  # environment: overridden_by_env (e.g., 'sandbox', 'development', 'production')
+  # environment: overridden_by_env
 
 # --- Database Settings ---
 database:
-  # Path relative to project root
   path: data/db
   filename: geminitrader_log.db
 
 # --- Portfolio Settings ---
 portfolio:
-  # Initial cash balance for backtesting (use Decimal format)
-  initial_cash: '10000.00'
-  # Target quote asset (e.g., USD, USDT) - Used on Binance.US primarily
-  quote_asset: 'USD'
+  initial_cash: '1000.00' # Reduced initial cash for simulation clarity
+  quote_asset: 'USDT'    # Primary quote asset used on the exchange
 
 # --- Fee Settings ---
-# Fees should be represented as decimals (e.g., 0.001 for 0.1%)
-# These are default trading fees, specific pipeline fees might differ.
 fees:
-  # Maker fee for limit orders on Binance.US
-  maker: '0.001'
-  # Taker fee for market orders on Binance.US
-  taker: '0.001'
+  maker: '0.001'  # Default maker fee (0.1%)
+  taker: '0.001'  # Default taker fee (0.1%)
 
 # --- Logging Settings ---
 logging:
-  # Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
-  level: INFO
-  # Path relative to project root for main trader log
+  level: DEBUG
+  console_level: INFO # Set to INFO to see more simulation progress, WARNING for less noise
   trader_log_path: data/logs/trader.log
-  # Path for funding pipeline log
+  error_log_path: data/logs/errors.log
   pipeline_log_path: data/logs/pipeline.log
-  # Max log file size in bytes
   max_bytes: 10485760 # 10 MB
-  # Number of backup log files to keep
   backup_count: 5
 
 # --- Data Paths ---
-# Best Practice: Define standard paths for required data files
 data:
-  # Path to the primary historical data file used by default for backtesting/analysis
-  # Use the fetch_historical_data.py script to create or update this file.
-  primary_kline_csv: data/cache/BTCUSD_1h_MAIN.csv
   # Path for caching exchange info (filters)
   exchange_info_cache: data/cache/exchange_info.json
+  # primary_kline_csv: data/cache/BTCUSD_1h_MAIN.csv # Not actively used by main_trader.py
+
+# --- Trading Parameters ---
+trading:
+  # <<< ADDED simulation_mode FLAG >>>
+  simulation_mode: true # Set to true for simulation, false for live
+
+  symbol: 'BTCUSDT'     # Primary trading pair
+  interval: '1h'        # Kline interval for analysis
+  kline_limit: 200      # Number of candles to fetch for analysis
+  loop_sleep_time: 1    # Sleep time between cycles (reduced for faster sim)
+  # Optional: How long to cache exchange info (used by connector if passed)
+  exchange_info_cache_minutes: 1440
+  # Optional: Cancel open orders on bot shutdown? (Used in main_trader shutdown)
+  cancel_orders_on_exit: false
+
+  # Entry Condition Parameters
+  entry_confidence_threshold: 0.55 # Min confidence score to consider placing grid buys
+  entry_rsi_threshold: 75.0       # Do not enter if RSI is ABOVE this (overbought filter)
 
 # --- Funding Pipeline Settings ---
-# Configuration for transferring funds from Coinbase to Binance.US via a low-fee asset
 funding_pipeline:
-  # Asset to use for low-fee transfers between exchanges (e.g., XLM, ALGO).
-  # NOTE: Dynamic selection based on current fees is a future enhancement (Phase 8+).
-  intermediate_asset: 'XLM' # Example: Stellar Lumens
-  binance_deposit_address: # Destination addresses on Binance.US - NOT secrets.
-    # Address for the INTERMEDIATE asset chosen above
+  intermediate_asset: 'XLM'
+  binance_deposit_address:
     XLM: "GBUTD5DNV43JBJP7AA657H2CYPUCAAFBXCKX7QE4XXGYIYFZZX2EKKVF"
-    # Add other potential intermediate assets if you switch the config later
-    # ALGO: "YOUR_BINANCE_US_ALGO_ADDRESS_HERE"
-    # Add deposit addresses for primary assets if needed elsewhere
-    # BTC: "YOUR_BINANCE_US_BTC_ADDRESS_HERE"
-  binance_deposit_memo: # MEMO required for certain assets (e.g., XLM, EOS, ATOM)
-    # Ensure you have the correct MEMO for the intermediate asset chosen above
-    XLM: "1080077224" # Often a string of numbers
-    # ALGO: "" # ALGO typically doesn't use a memo, but check Binance.US
+  binance_deposit_memo:
+    XLM: "1080077224"
 
 # --- Strategy Settings ---
-# Define parameters for different strategy components here
+# Parameters are typically nested under the strategy name
 strategies:
-  # --- Geometric Grid Strategy (Operates on Binance.US) ---
   geometric_grid:
-    base_order_size_usd: '100.00'
+    base_order_size_usd: '20.00' # Smaller size for simulation
     grid_spacing_atr_multiplier: '0.4'
     grid_spacing_geometric_factor: '1.1'
     order_size_geometric_factor: '1.2'
     max_grid_levels: 5
     max_total_grid_quantity_base: '0.5'
-    atr_length: 14
+    # Indicator periods used by this strategy (or analysis module)
+    atr_period: 14 # Renamed from atr_length for consistency
+    sma_fast_period: 50 # Added example periods if needed by grid logic directly
+    sma_slow_period: 200
+    rsi_period: 14
 
-  # --- Simple Take Profit Strategy (Operates on Binance.US) ---
-  simple_tp:
-    tp_method: 'percentage'
-    tp_value: '0.015'
+  profit_taking:
+    tp_method: 'atr_multiple'
+    tp_value: '1.5'
+    atr_period: 14 # Needs ATR period if using atr_multiple
+    # Confidence multipliers adjust TP distance (optional)
+    confidence_multiplier_low: '0.8'
+    confidence_multiplier_medium: '1.0'
+    confidence_multiplier_high: '1.2'
+    # Confidence thresholds to determine which multiplier to use
+    confidence_threshold_low: 0.4 # Example: Below this, use low multiplier
+    confidence_threshold_high: 0.7 # Example: Above this, use high multiplier
 
-  # --- Dollar Cost Averaging (DCA) Strategy ---
   dca:
-    # Base amount in QUOTE currency (e.g., USD) for each DCA purchase event.
-    # This is the amount intended to be transferred and ultimately used for trading.
     base_amount_usd: '25.00'
-    # Schedule for initiating the DCA funding pipeline.
     schedule: 'bi-weekly'
-    # (target_asset for final purchase on Binance removed - pipeline focuses on transfer)
 
-# --- Feature Flags (Optional) ---
+  # --- Risk Controls need their own top-level section or nested ---
+  # Following original structure, maybe nested under strategies? Or separate?
+  # Let's assume risk controls are accessed directly from config root for now
+  # risk_controls: # Defined below as top-level based on original reference
+
+# --- Risk Controls Settings --- # Added as separate section based on risk_controls.py usage
+risk_controls:
+  time_stop:
+    enabled: true
+    duration_hours: 168 # Time in hours to evaluate exit
+    min_profit_pct: 0.001 # Only exit if PnL is below this threshold
+
+# --- Analysis Parameter Overrides ---
+# Optional: Override default indicator periods if needed globally
+# If not present, defaults in indicator modules or strategy settings will be used.
+# analysis:
+#   min_candles_for_analysis: 100
+#   max_historical_candles: 500
+#   price_column_name: 'close' # Default column for indicators if not specified elsewhere
+#   # S/R Zone Params (if used directly by analysis modules)
+#   pivot_window: 10
+#   zone_proximity_factor: '0.005'
+#   min_zone_touches: 2
+#   # Confidence Params (if used directly by analysis modules)
+#   confidence_rsi_low: 35
+#   confidence_rsi_high: 70
+#   confidence_weights: { rsi: 0.25, macd: 0.35, trend: 0.40 }
+
+# --- Simulation Settings ---
+simulation:
+  # Data file relative to project root
+  data_file: "data/simulation/BTCUSDT_1h_2024-01-01_2024-03-31.csv"
+  # Name of the timestamp column in the CSV (must match header exactly)
+  timestamp_column: "Timestamp" # <<< Set explicitly based on user CSV sample >>>
+  # Initial balance for simulation if state file is missing/empty (in quote_asset)
+  initial_balance: 1000.0
+  # Optional: Required columns check (can be handled in code)
+  # required_columns: ["Timestamp", "Open", "High", "Low", "Close", "Volume"]
+  # Optional: Delay between steps
+  # step_delay_seconds: 0.01
+
+# --- State Manager Settings --- # Added section based on main_trader.py logic
+state_manager:
+  filepath: data/state/trader_state.json
+
+# --- Feature Flags ---
+# Kept as per original config structure
 feature_flags:
-  enable_live_trading: false
+  # enable_live_trading: false # Redundant now with trading.simulation_mode
   enable_dca_pipeline: false
   enable_db_logging: true
-  use_confidence_scaling: false
+  use_confidence_scaling: true # Let's assume we want this logic enabled
 
-# File path: config/config.yaml
+# END OF FILE: config/config.yaml
