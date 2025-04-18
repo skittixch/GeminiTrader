@@ -1,5 +1,3 @@
-# START OF FILE: src/core/state_manager.py
-
 import logging
 import json
 import shutil
@@ -31,20 +29,23 @@ class StateManager:
         logger.info(f"StateManager initialized. State file: {self.filepath}")
 
     def _default_serializer(self, obj):
-        # ... (serializer remains the same as previous version) ...
+        # --- Serializer remains unchanged ---
         if isinstance(obj, Decimal):
             return str(obj)
         if isinstance(obj, pd.Timestamp):
+            # Ensure timezone info is included (ISO format does this)
             return obj.isoformat(timespec='microseconds')
         try:
+            # Standard JSON encoder handles bool, str, int, float, list, dict, None
             return json.JSONEncoder().default(obj)
         except TypeError as e:
             logger.error(
                 f"Serialization Error: Type {type(obj)} not serializable: {e}. Value: {repr(obj)[:100]}...")
             return f"<Unserializable: {type(obj).__name__}>"
+        # --- End Serializer ---
 
     def save_state(self, state: Dict[str, Any]):
-        # ... (save_state method remains the same as previous version - excluding DataFrames) ...
+        # --- save_state remains unchanged - Cascade keys are serializable ---
         if not isinstance(state, dict):
             logger.error(
                 "Invalid state type provided for saving. Expected dict.")
@@ -110,12 +111,11 @@ class StateManager:
                 f"Error saving filtered state to {self.filepath}: {e}", exc_info=True)
             if temp_filepath.exists():
                 temp_filepath.unlink()
+        # --- End save_state ---
 
-    # --- START OF NEW _post_load_process ---
+    # --- START OF _post_load_process (Handle Cascade Keys) ---
     def _post_load_process(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """Converts specific fields back to appropriate types after loading."""
-        # <<< NO CHANGE NEEDED HERE if load_state handles the initial empty dict case >>>
-        # This function should only operate on a non-empty dict passed from load_state
         if not isinstance(state, dict):
             logger.warning(
                 f"Cannot post-process non-dict state: {type(state)}")
@@ -127,20 +127,22 @@ class StateManager:
         # This ensures the structure is consistent even if loading an older state file
 
         # Numeric fields - Default to Decimal('0') if missing or invalid
-        for key in ['position_size', 'position_entry_price', 'balance_quote', 'balance_base']:
+        # Includes ts_exit_trigger_price
+        for key in ['position_size', 'position_entry_price', 'balance_quote', 'balance_base', 'ts_exit_trigger_price']:
             # Get value, might be None if key missing
             value_str = state.get(key)
-            # Use default in to_decimal
-            decimal_value = to_decimal(value_str, Decimal('0'))
-            if decimal_value is None:  # Should not happen if default is provided
+            # Use appropriate default
+            default_val = Decimal('0') if key != 'ts_exit_trigger_price' else None
+            decimal_value = to_decimal(value_str, default_val)
+            if decimal_value is None and default_val is not None:
                 logger.error(
-                    f"CRITICAL: Failed to convert state key '{key}' to Decimal even with default! Value: {value_str}. Using 0.")
-                decimal_value = Decimal('0')
+                    f"CRITICAL: Failed to convert state key '{key}' to Decimal even with default! Value: {value_str}. Using default.")
+                decimal_value = default_val
             processed_state[key] = decimal_value
 
         # Timestamp fields - Default to None if missing or invalid
-        # Include last_state_save_time here
-        for key in ['position_entry_timestamp', 'last_processed_timestamp', 'last_state_save_time']:
+        # Include last_state_save_time and ts_exit_timer_start here
+        for key in ['position_entry_timestamp', 'last_processed_timestamp', 'last_state_save_time', 'ts_exit_timer_start']:
             ts_value = state.get(key)
             processed_ts = None  # Default to None
             if ts_value is not None:
@@ -163,6 +165,21 @@ class StateManager:
                     # processed_ts remains None
             processed_state[key] = processed_ts
 
+        # Boolean field - Default to False if missing or invalid
+        # Use standard bool conversion which handles None, 0, "", False etc.
+        processed_state['ts_exit_active'] = bool(state.get('ts_exit_active', False))
+
+        # String fields (Optional) - Default to None if missing
+        # Ensure they are strings or None
+        for key in ['ts_exit_step', 'ts_exit_active_order_id']:
+            value = state.get(key)
+            if value is None or isinstance(value, str):
+                 processed_state[key] = value
+            else:
+                 logger.warning(f"Loaded value for '{key}' is not a string or None (type: {type(value)}). Setting to None.")
+                 processed_state[key] = None
+
+
         # List field - Default to empty list if missing or invalid
         # Default to [] if key missing
         grid_orders = state.get('active_grid_orders', [])
@@ -171,10 +188,6 @@ class StateManager:
             for order in grid_orders:
                 if isinstance(order, dict):
                     proc_order = order.copy()
-                    # Ensure essential order keys exist (optional, depends on strictness)
-                    # if 'orderId' not in proc_order or 'price' not in proc_order or 'origQty' not in proc_order:
-                    #    logger.warning(f"Skipping incomplete grid order in state: {proc_order}")
-                    #    continue
                     for k in ['price', 'origQty', 'executedQty', 'cummulativeQuoteQty']:
                         if k in proc_order and proc_order[k] is not None:
                             # Use default=None here, as we want to keep None if conversion fails
@@ -200,10 +213,6 @@ class StateManager:
         processed_tp_order = None  # Default to None
         if isinstance(tp_order, dict):
             proc_tp_order = tp_order.copy()
-            # Ensure essential TP order keys exist (optional)
-            # if 'orderId' not in proc_tp_order or 'price' not in proc_tp_order or 'origQty' not in proc_tp_order:
-            #    logger.warning(f"Incomplete TP order found in state: {proc_tp_order}. Setting to None.")
-            # else: # Proceed with conversion only if structure looks valid
             for k in ['price', 'origQty', 'executedQty', 'cummulativeQuoteQty']:
                 if k in proc_tp_order and proc_tp_order[k] is not None:
                     dec_val = to_decimal(proc_tp_order[k], default=None)
@@ -240,8 +249,10 @@ class StateManager:
 
         # --- Ensure essential keys that *must* exist for the bot are present ---
         # (Belt-and-suspenders check after processing defaults)
+        # Add cascade keys that might be needed downstream even if None/False
         essential_keys = ['position_size', 'position_entry_price',
-                          'balance_quote', 'balance_base', 'active_grid_orders', 'active_tp_order']
+                          'balance_quote', 'balance_base', 'active_grid_orders', 'active_tp_order',
+                          'ts_exit_active', 'ts_exit_step', 'ts_exit_timer_start', 'ts_exit_trigger_price', 'ts_exit_active_order_id']
         for key in essential_keys:
             if key not in processed_state:
                 # This case should be rare given the default handling above, but log critically if it occurs
@@ -252,7 +263,9 @@ class StateManager:
                     processed_state[key] = Decimal('0')
                 elif key == 'active_grid_orders':
                     processed_state[key] = []
-                elif key == 'active_tp_order':
+                elif key == 'ts_exit_active':
+                    processed_state[key] = False
+                else: # Default to None for others
                     processed_state[key] = None
 
         # Log keys that were present in loaded file but *not* processed (potential old/new keys)
@@ -267,9 +280,9 @@ class StateManager:
             # for key in unprocessed_keys: processed_state[key] = state[key]
 
         return processed_state
-    # --- END OF NEW _post_load_process ---
+    # --- END OF _post_load_process ---
 
-    # --- START OF NEW load_state ---
+    # START OF METHOD: src/core/state_manager.py -> load_state (Unchanged)
     def load_state(self) -> Optional[Dict[str, Any]]:
         """
         Loads the state from the JSON file, trying backups if necessary.
@@ -352,9 +365,9 @@ class StateManager:
             logger.warning(
                 f"Could not load valid state from {self.filepath} or any backups. Returning None.")
             return None  # <<< Return None if all attempts failed
+    # END OF METHOD: src/core/state_manager.py -> load_state
 
-    # --- END OF NEW load_state ---
-
+    # START OF METHOD: src/core/state_manager.py -> clear_state_file (Unchanged)
     def clear_state_file(self):
         # ... (clear_state_file remains the same) ...
         logger.warning(f"Clearing state file and backups for: {self.filepath}")
@@ -372,14 +385,15 @@ class StateManager:
                 logger.error(f"Error deleting state file {file_path}: {e}")
         logger.warning(
             f"State file clearing complete. Deleted {deleted_count} files.")
+    # END OF METHOD: src/core/state_manager.py -> clear_state_file
 
 
 # Example Usage (Optional)
 if __name__ == '__main__':
-    # ... (Keep existing __main__ block) ...
+    # --- Example Usage remains unchanged ---
     logging.basicConfig(
         level=logging.DEBUG, format='%(asctime)s | %(levelname)-8s | %(name)-15s | %(message)s')
-    # Example state
+    # Example state including new keys
     test_state = {
         'position_size': Decimal('1.23456789'),
         'position_entry_price': Decimal('50000.12'),
@@ -390,7 +404,13 @@ if __name__ == '__main__':
         'active_tp_order': {'orderId': 2, 'price': Decimal('51000.00'), 'origQty': Decimal('1.23456789')},
         'some_other_data': [1, 2, None, "test"],
         'last_processed_timestamp': pd.Timestamp.utcnow() - pd.Timedelta(hours=1),
-        # --- Add DataFrame to test exclusion ---
+        # Add Cascade keys
+        'ts_exit_active': True,
+        'ts_exit_step': 'INITIAL_MAKER',
+        'ts_exit_timer_start': pd.Timestamp.utcnow() - pd.Timedelta(seconds=30),
+        'ts_exit_trigger_price': Decimal('50100.00'),
+        'ts_exit_active_order_id': 'ts_order_123',
+        # Add DataFrame to test exclusion
         'historical_klines': pd.DataFrame({'A': [1, 2], 'B': [3, 4]}),
         'indicators': pd.DataFrame({'C': [5, 6], 'D': [7, 8]})
     }
@@ -400,7 +420,7 @@ if __name__ == '__main__':
     sm.clear_state_file()  # Start clean
 
     # Save state
-    logger.info("\n--- Saving State (Excluding DFs) ---")
+    logger.info("\n--- Saving State (Including Cascade Keys) ---")
     sm.save_state(test_state)
 
     # Load state
@@ -411,50 +431,35 @@ if __name__ == '__main__':
         logger.info("\n--- Verifying Loaded Types ---")
         # Check which keys were loaded
         print(f"Loaded Keys: {list(loaded.keys())}")
-        print(
-            f"Position Size: {loaded.get('position_size')} (Type: {type(loaded.get('position_size'))})")
-        print(
-            f"Entry Price: {loaded.get('position_entry_price')} (Type: {type(loaded.get('position_entry_price'))})")
-        print(
-            f"Entry Timestamp: {loaded.get('position_entry_timestamp')} (Type: {type(loaded.get('position_entry_timestamp'))})")
-        print(
-            f"Balance Quote: {loaded.get('balance_quote')} (Type: {type(loaded.get('balance_quote'))})")
-        print(
-            f"Last Proc Timestamp: {loaded.get('last_processed_timestamp')} (Type: {type(loaded.get('last_processed_timestamp'))})")
-        grid_orders = loaded.get('active_grid_orders', [])
-        if grid_orders:
-            print(
-                f"Grid Order Price: {grid_orders[0].get('price')} (Type: {type(grid_orders[0].get('price'))})")
-        else:
-            print("Grid Orders: Empty")
-        # Should be False
+        print(f"TS Exit Active: {loaded.get('ts_exit_active')} (Type: {type(loaded.get('ts_exit_active'))})")
+        print(f"TS Exit Step: {loaded.get('ts_exit_step')} (Type: {type(loaded.get('ts_exit_step'))})")
+        print(f"TS Exit Timer Start: {loaded.get('ts_exit_timer_start')} (Type: {type(loaded.get('ts_exit_timer_start'))})")
+        print(f"TS Exit Trigger Price: {loaded.get('ts_exit_trigger_price')} (Type: {type(loaded.get('ts_exit_trigger_price'))})")
+        print(f"TS Exit Active Order ID: {loaded.get('ts_exit_active_order_id')} (Type: {type(loaded.get('ts_exit_active_order_id'))})")
+        # Should be False (still excluded)
         print(f"Historical Klines Present: {'historical_klines' in loaded}")
-        # Should be False
+        # Should be False (still excluded)
         print(f"Indicators Present: {'indicators' in loaded}")
-        print(
-            f"Save Timestamp: {loaded.get('last_state_save_time')} (Type: {type(loaded.get('last_state_save_time'))})")
-
     else:
         print("Failed to load state.")
 
-    # Test loading from empty/corrupt file
-    logger.info("\n--- Testing Load Failure ---")
-    # Create empty file
-    with open(sm.filepath, 'w') as f:
-        f.write("")
-    loaded_empty = sm.load_state()
-    print(
-        f"Load from empty file result: {loaded_empty} (Type: {type(loaded_empty)})")
-    # Create corrupt file
-    with open(sm.filepath, 'w') as f:
-        f.write("{")
-    loaded_corrupt = sm.load_state()
-    print(
-        f"Load from corrupt file result: {loaded_corrupt} (Type: {type(loaded_corrupt)})")
+    # Test loading missing cascade keys (should default correctly)
+    logger.info("\n--- Testing Load Missing Cascade Keys ---")
+    test_state_old = { k: v for k, v in test_state.items() if not k.startswith('ts_exit_') and k not in ['historical_klines', 'indicators']}
+    sm.save_state(test_state_old)
+    loaded_old = sm.load_state()
+    if loaded_old:
+        print(f"TS Exit Active (loaded old): {loaded_old.get('ts_exit_active')} (Type: {type(loaded_old.get('ts_exit_active'))}) - Expected: False")
+        print(f"TS Exit Step (loaded old): {loaded_old.get('ts_exit_step')} (Type: {type(loaded_old.get('ts_exit_step'))}) - Expected: None")
+        print(f"TS Exit Timer Start (loaded old): {loaded_old.get('ts_exit_timer_start')} (Type: {type(loaded_old.get('ts_exit_timer_start'))}) - Expected: None")
+        print(f"TS Exit Trigger Price (loaded old): {loaded_old.get('ts_exit_trigger_price')} (Type: {type(loaded_old.get('ts_exit_trigger_price'))}) - Expected: None")
+        print(f"TS Exit Active Order ID (loaded old): {loaded_old.get('ts_exit_active_order_id')} (Type: {type(loaded_old.get('ts_exit_active_order_id'))}) - Expected: None")
+    else:
+        print("Failed to load old state.")
 
     # Clear state again
     logger.info("\n--- Clearing State ---")
     sm.clear_state_file()
 
 
-# END OF FILE: src/core/state_manager.py
+# END OF FILE: src/core/state_manager.py (Add Cascade State Keys)
