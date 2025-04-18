@@ -1,4 +1,4 @@
-# START OF FILE: src/core/order_manager.py (Added Reconciliation Logic)
+# START OF FILE: src/core/order_manager.py (Fixed Client Order ID Generation)
 
 import logging
 import time
@@ -56,7 +56,10 @@ class OrderManager:
             config_dict, ('trading', 'simulation_mode'), False)
 
         # Counters
+        # Initialize with current time to make somewhat unique across restarts
         self.sim_order_id_counter = int(time.time() * 1000)
+        # <<< Add a separate counter for unique Client Order IDs >>>
+        self._client_id_counter = 0
         self.sim_filled_buy_count = 0
         self.sim_filled_sell_count = 0
 
@@ -73,11 +76,15 @@ class OrderManager:
                     "OrderManager failed to initialize: Could not load Exchange Info.")
         logger.info("OrderManager initialized. Exchange Info loaded.")
 
+    # <<< MODIFIED: Added counter for uniqueness >>>
     def _generate_client_order_id(self, prefix: str = "gt") -> str:
         """Generates a unique client order ID."""
         ts_part = int(time.time() * 1000)
+        self._client_id_counter += 1  # Increment counter
+        # Combine prefix, timestamp, and counter
         # Ensure length constraint (e.g., max 36 for Binance API)
-        return f"{prefix}_{ts_part}"[-36:]
+        return f"{prefix}_{ts_part}_{self._client_id_counter}"[-36:]
+    # <<< END MODIFICATION >>>
 
     # <<< MODIFIED: Accepts state dict >>>
     def _add_order_to_state(self, state: Dict, order_type: str, order_details: Dict) -> bool:
@@ -100,6 +107,7 @@ class OrderManager:
             # Check orderId too if available
             oid = order_details.get('orderId')
             if cid and any(o.get('clientOrderId') == cid for o in state['active_grid_orders']):
+                # This warning should no longer trigger with the fixed CID generation
                 logger.warning(
                     f"Skipping duplicate grid order CID {cid} in _add_order_to_state.")
                 return False
@@ -193,6 +201,7 @@ class OrderManager:
         Returns dictionary containing lists of filled orders.
         NOTE: Saving the state after processing fills is handled by the caller.
         """
+        # --- Function body remains unchanged ---
         logger.info(
             "--- Entered check_orders ---")  # Keep INFO log for cycle demarcation
         if not isinstance(state, dict):
@@ -568,7 +577,8 @@ class OrderManager:
                         {**order_to_place, 'fail_reason': 'Filter validation failed'})
                     continue
 
-                client_order_id = self._generate_client_order_id("grid")
+                client_order_id = self._generate_client_order_id(
+                    "grid")  # Uses the fixed generator
                 logger.info(
                     f"Placing new grid BUY order: Qty={adj_qty:.8f} @ Price={adj_price:.4f} (Client ID: {client_order_id})")
 
@@ -592,8 +602,9 @@ class OrderManager:
                     if self._add_order_to_state(state, 'grid', sim_order):
                         results['placed'].append(sim_order)
                     else:
+                        # This warning should now be much rarer
                         results['failed_place'].append(
-                            {**order_to_place, 'clientOrderId': client_order_id, 'fail_reason': 'Failed add sim order to state'})
+                            {**order_to_place, 'clientOrderId': client_order_id, 'fail_reason': 'Failed add sim order to state (Duplicate CID?)'})
                 else:  # Live placement
                     try:
                         api_response = self.connector.create_limit_buy(
@@ -649,6 +660,7 @@ class OrderManager:
         Returns True on success, False on failure.
         NOTE: Saving the state is handled by the caller.
         """
+        # --- Function body remains unchanged ---
         if not isinstance(state, dict):
             logger.error("place_or_update_tp_order: Invalid state dict.")
             return False
@@ -779,7 +791,8 @@ class OrderManager:
         # --- Place New TP Order if needed ---
         if needs_placement:
             # Generate Client ID using internal method
-            client_order_id = self._generate_client_order_id("tp")
+            client_order_id = self._generate_client_order_id(
+                "tp")  # Uses fixed generator
             # Use INFO log for placement intent
             logger.info(
                 f"Placing new TP SELL order: Qty={adj_tp_qty:.8f} @ Price={adj_tp_price:.4f} (Client ID: {client_order_id})")
@@ -833,6 +846,7 @@ class OrderManager:
         Returns True on successful cancellation/removal, False otherwise.
         NOTE: Saving the state is handled by the caller.
         """
+        # --- Function body remains unchanged ---
         if not isinstance(state, dict):
             logger.error("cancel_order: Invalid state dict provided.")
             return False
@@ -902,6 +916,7 @@ class OrderManager:
         Returns the order response/simulated details on success, None on failure.
         NOTE: Saving the state is handled by the caller.
         """
+        # --- Function body remains unchanged ---
         if not isinstance(state, dict):
             logger.error(
                 "execute_market_sell: Invalid state dictionary provided.")
@@ -976,7 +991,8 @@ class OrderManager:
                 return None
 
             # Generate Client ID using internal method
-            client_order_id = self._generate_client_order_id("mkt_sell")
+            client_order_id = self._generate_client_order_id(
+                "mkt_sell")  # Uses fixed generator
             sim_fill_details = {
                 'symbol': self.symbol,
                 'orderId': self.sim_order_id_counter,
@@ -1041,4 +1057,4 @@ class OrderManager:
                     f"Exception executing market sell: {e}", exc_info=True)
                 return None
 
-# END OF FILE: src/core/order_manager.py (Added Reconciliation Logic)
+# END OF FILE: src/core/order_manager.py (Fixed Client Order ID Generation)
