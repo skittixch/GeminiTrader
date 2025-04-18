@@ -1,10 +1,16 @@
-# src/utils/logging_setup.py
+# START OF FILE: src/utils/logging_setup.py (Fixed Config Loading)
 
 import logging
 import logging.handlers
 from pathlib import Path
 import sys
+# <<< ADDED import >>>
+from config.settings import load_config, get_config_value
 
+DEFAULT_LOG_LEVEL = logging.INFO
+DEFAULT_CONSOLE_LEVEL = logging.INFO
+DEFAULT_LOG_FILE = 'data/logs/app.log'  # Fallback default
+DEFAULT_ERROR_FILE = 'data/logs/errors.log'  # Fallback default
 DEFAULT_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
 DEFAULT_BACKUP_COUNT = 5
 
@@ -29,39 +35,77 @@ class ColorFormatter(logging.Formatter):
         formatter = logging.Formatter(log_fmt, datefmt=self.datefmt)
         return formatter.format(record)
 
+# <<< MODIFIED: Removed default args, load config inside >>>
 
-def setup_logging(
-    log_level=logging.INFO,  # Default level for the main log file
-    log_file='data/logs/app.log',
-    max_bytes=DEFAULT_MAX_BYTES,
-    backup_count=DEFAULT_BACKUP_COUNT,
-    console_logging=True,
-    console_log_level=logging.INFO,  # Default level for console
-    error_log_file='data/logs/errors.log'  # New parameter for error file
-):
+
+def setup_logging(config_override: dict = None):
     """
-    Configures logging with handlers for console, main file, and error file.
+    Configures logging using parameters from the loaded configuration file.
     """
     try:
-        log_file_path = Path(log_file)
-        error_log_file_path = Path(error_log_file)  # New error file path
+        # --- Load Configuration ---
+        # Use override if provided (for testing), otherwise load default config
+        config = config_override if config_override is not None else load_config()
+        if not config:
+            # Basic fallback if config loading fails entirely
+            logging.basicConfig(level=logging.WARNING)
+            logging.critical("Failed to load configuration for logging setup.")
+            print(
+                "CRITICAL: Failed to load configuration for logging setup.", file=sys.stderr)
+            return
+
+        # --- Get Logging Parameters from Config ---
+        log_level_str = get_config_value(config, ('logging', 'level'), 'INFO')
+        log_level = getattr(logging, log_level_str.upper(), DEFAULT_LOG_LEVEL)
+
+        console_level_str = get_config_value(
+            config, ('logging', 'console_level'), 'INFO')
+        console_log_level = getattr(
+            logging, console_level_str.upper(), DEFAULT_CONSOLE_LEVEL)
+
+        log_file_rel = get_config_value(
+            config, ('logging', 'trader_log_path'), DEFAULT_LOG_FILE)
+        error_log_file_rel = get_config_value(
+            config, ('logging', 'error_log_path'), DEFAULT_ERROR_FILE)
+
+        max_bytes = int(get_config_value(
+            config, ('logging', 'max_bytes'), DEFAULT_MAX_BYTES))
+        backup_count = int(get_config_value(
+            config, ('logging', 'backup_count'), DEFAULT_BACKUP_COUNT))
+
+        # Assume console logging is always wanted unless explicitly configured otherwise
+        console_logging = True
+
+        # --- Resolve Paths (relative to project root) ---
+        # Find project root relative to this file's location
+        project_root = Path(__file__).resolve().parent.parent.parent
+        log_file_path = project_root / log_file_rel
+        error_log_file_path = project_root / error_log_file_rel
 
         # Ensure directories exist
         log_file_path.parent.mkdir(parents=True, exist_ok=True)
-        # Ensure error log dir exists (might be the same or different)
         error_log_file_path.parent.mkdir(parents=True, exist_ok=True)
 
+        # --- Configure Root Logger ---
         root_logger = logging.getLogger()
         # Set root logger low to allow handlers to filter up
         root_logger.setLevel(logging.DEBUG)
 
         # Prevent multiple handlers if called again
         if root_logger.hasHandlers():
-            root_logger.handlers.clear()
+            # Check if handlers are already configured to avoid duplicate setup messages
+            # This check might be basic, could refine if needed
+            if any(isinstance(h, logging.handlers.RotatingFileHandler) for h in root_logger.handlers):
+                # logging.debug("Logging handlers already seem to be configured. Skipping setup.")
+                # return # Exit if already set up? Or clear and re-setup? Clearing is safer.
+                root_logger.handlers.clear()
+                logging.debug(
+                    "Cleared existing logging handlers before re-setup.")
+            else:
+                root_logger.handlers.clear()
 
-        # --- Formatter for Files (More Detail) ---
+        # --- Formatter for Files ---
         file_formatter = logging.Formatter(
-            # Adjusted name width
             '%(asctime)s.%(msecs)03d | %(levelname)-8s | %(name)-20s:%(lineno)4d | %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
         )
@@ -71,47 +115,54 @@ def setup_logging(
             log_file_path, maxBytes=max_bytes, backupCount=backup_count, encoding='utf-8'
         )
         main_file_handler.setFormatter(file_formatter)
-        main_file_handler.setLevel(log_level)  # Level for the main file
+        main_file_handler.setLevel(log_level)  # Use level from config
         root_logger.addHandler(main_file_handler)
 
         # --- 2. Error File Handler (Rotating) ---
-        # Only logs WARNING and above
         error_file_handler = logging.handlers.RotatingFileHandler(
             error_log_file_path, maxBytes=max_bytes, backupCount=backup_count, encoding='utf-8'
         )
-        # Use the same detailed format
         error_file_handler.setFormatter(file_formatter)
-        # <<< Set level to WARNING
+        # Only WARNING+ to error log
         error_file_handler.setLevel(logging.WARNING)
         root_logger.addHandler(error_file_handler)
 
-        # --- 3. Console Handler (Optional) ---
+        # --- 3. Console Handler ---
         if console_logging:
             console_formatter = ColorFormatter()
             console_handler = logging.StreamHandler(sys.stdout)
             console_handler.setFormatter(console_formatter)
-            # Use specified console level
+            # Use console level from config
             console_handler.setLevel(console_log_level)
             root_logger.addHandler(console_handler)
 
-        root_logger.info(
-            f"Logging initialized. Main file: {log_file_path}, Error file: {error_log_file_path}")
+        # Use the logger *after* handlers are added
+        logging.getLogger(__name__).info(  # Log from this module's logger
+            f"Logging initialized. Root Level: DEBUG. Main File ({log_level_str}): {log_file_path}, Error File (WARNING+): {error_log_file_path}, Console Level: {console_level_str}")
 
     except Exception as e:
+        # Basic fallback if anything goes wrong during setup
         logging.basicConfig(level=logging.WARNING)
         logging.critical(f"Failed to configure logging: {e}", exc_info=True)
         print(f"CRITICAL: Failed to set up logging: {e}", file=sys.stderr)
 
 
-# Example usage
+# Example usage / Test block
 if __name__ == '__main__':
-    setup_logging(
-        log_level=logging.DEBUG,        # Main file gets DEBUG+
-        log_file='temp_main.log',
-        console_logging=True,
-        console_log_level=logging.INFO,  # Console gets INFO+
-        error_log_file='temp_error.log'  # Error file gets WARNING+
-    )
+    # Example of using override for testing
+    test_config = {
+        'logging': {
+            'level': 'DEBUG',
+            'console_level': 'INFO',
+            'trader_log_path': 'temp_main.log',
+            'error_log_path': 'temp_error.log',
+            'max_bytes': 1024,  # Small size for testing rotation
+            'backup_count': 1
+        }
+        # Add other sections if needed by get_config_value fallbacks
+    }
+    setup_logging(config_override=test_config)
+
     test_logger = logging.getLogger("TestModule")
     test_logger.debug("Debug msg - MAIN LOG ONLY")
     test_logger.info("Info msg - MAIN LOG + CONSOLE")
@@ -121,8 +172,17 @@ if __name__ == '__main__':
     print("\nCheck 'temp_main.log' (DEBUG+)")
     print("Check 'temp_error.log' (WARNING+)")
     print("Check console output (INFO+)")
+    # Try rotating
+    for i in range(5):
+        test_logger.warning(
+            f"This is a long message to test rotation padding {i}................................................................................................................................................................................................................................................")
+    print("Check log rotation (temp_main.log.1, temp_error.log.1)")
+
     try:
-        Path('temp_main.log').unlink()
-        Path('temp_error.log').unlink()
+        Path('temp_main.log').unlink(missing_ok=True)
+        Path('temp_main.log.1').unlink(missing_ok=True)
+        Path('temp_error.log').unlink(missing_ok=True)
+        Path('temp_error.log.1').unlink(missing_ok=True)
     except OSError:
         pass
+# EOF src/utils/logging_setup.py

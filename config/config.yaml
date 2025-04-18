@@ -121,6 +121,40 @@ risk_controls:
     duration_hours: 168 # Time in hours to evaluate exit
     min_profit_pct: 0.001 # Only exit if PnL is below this threshold
 
+        # --- NEW: Cascading Exit Configuration ---
+    cascade:
+      # Explicitly enable/disable the cascading exit behavior.
+      # If false, the old behavior (immediate market sell if time stop triggers) might apply,
+      # or we could make it mandatory if time_stop.enabled is true. Let's assume true enables cascade.
+      enabled: true
+
+      # Type of the *first* limit order placed when the cascade starts.
+      # Options:
+      # 'MAKER': Place a limit sell slightly *above* the current best bid (aiming for maker fees).
+      # 'TAKER': Place a limit sell *at* the current best bid (aiming for faster fill, likely taker fees).
+      # 'OFFSET': Place a limit sell N ticks *above* the current best bid (more passive maker).
+      initial_order_type: 'MAKER'
+
+      # How many price ticks *above* the best bid to place the initial MAKER or OFFSET order.
+      # e.g., 1 means place 1 tick better than the best bid for the seller.
+      # Ignored if initial_order_type is 'TAKER' (which uses the best bid directly).
+      initial_maker_offset_ticks: 1
+
+      # How long (in seconds) to wait for the *initial* limit order to fill.
+      # If it doesn't fill within this time, it will be cancelled, and we move to the next step.
+      initial_timeout_seconds: 60
+
+      # How long (in seconds) to wait for the *aggressive taker* limit order to fill.
+      # This is the second attempt after the initial order timed out.
+      # If it doesn't fill, it will be cancelled, and we fall back to a market order.
+      aggressive_timeout_seconds: 30
+
+      # How many price ticks *below* the best bid to place the aggressive TAKER limit order.
+      # e.g., 1 means place 1 tick worse than the best bid to increase fill chance (acting as taker).
+      aggressive_taker_offset_ticks: 1
+      # --- End Cascading Exit Configuration ---
+
+
 # --- Analysis Parameter Overrides ---
 # Optional: Override default indicator periods if needed globally
 # If not present, defaults in indicator modules or strategy settings will be used.

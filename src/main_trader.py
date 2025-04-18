@@ -1,4 +1,4 @@
-# START OF FILE: src/main_trader.py (Updated based on recommendations)
+# START OF FILE: src/main_trader.py (Pass Correct Time to Time Stop)
 
 import logging
 import logging.config
@@ -46,7 +46,8 @@ REPORT_FIELDNAMES = [
 class GeminiTrader:
     """Main autonomous trading bot class."""
 
-    # START OF METHOD: src/main_trader.py -> __init__ (Updated OM instantiation)
+    # --- __init__ and other methods remain unchanged ---
+    # START OF METHOD: src/main_trader.py -> __init__ (Added Cascade State Keys)
     def __init__(self):
         logger.info("Initializing GeminiTrader...")
         self.report_writer: Optional[csv.DictWriter] = None
@@ -78,7 +79,7 @@ class GeminiTrader:
             logger.info(f"Attempting to load state from {state_file_abs}...")
             loaded_state = self.state_manager.load_state()
             # Optionally force a clean state for testing
-            FORCE_CLEAN_STATE = False
+            FORCE_CLEAN_STATE = False  # Set to True to force a clean start
 
             if not loaded_state or FORCE_CLEAN_STATE:
                 if FORCE_CLEAN_STATE:
@@ -97,28 +98,44 @@ class GeminiTrader:
                     initial_sim_balance_dec = Decimal('1000.0')
 
                 self.state: Dict[str, Any] = {
+                    # Core Position/Balance
                     'position_size': Decimal('0'),
                     'position_entry_price': Decimal('0'),
                     'position_entry_timestamp': None,
                     'balance_quote': initial_sim_balance_dec,
                     'balance_base': Decimal('0'),
+                    # Active Orders
                     'active_grid_orders': [],
                     'active_tp_order': None,
+                    # Market Data (not saved)
                     'historical_klines': None,
                     'current_kline': None,
                     'last_processed_timestamp': None,
+                    # Analysis (not saved)
                     'indicators': None,
                     'sr_zones': None,
                     'confidence_score': None,
+                    # Planning (not saved, except maybe TP)
+                    # Potentially save? No, re-plan needed.
                     'planned_grid': [],
-                    'planned_tp_price': None
+                    # Potentially save? No, re-plan needed.
+                    'planned_tp_price': None,
+                    # <<< NEW: Cascading Time Stop State >>>
+                    'ts_exit_active': False,       # Is the cascade currently running?
+                    # Current step ('INITIAL_MAKER', 'AGGRESSIVE_TAKER', 'MARKET_FALLBACK')
+                    'ts_exit_step': None,
+                    'ts_exit_timer_start': None,   # Timestamp when the current step's timer began
+                    # Market price when TS was first triggered (for PnL reporting)
+                    'ts_exit_trigger_price': None,
+                    'ts_exit_active_order_id': None  # clientOrderId of the active cascade limit order
+                    # <<< END NEW >>>
                 }
                 logger.info(
                     f"Initialized fresh state. Quote Balance: {self.state['balance_quote']:.4f}")
             else:
                 logger.info("Successfully loaded existing state from file.")
                 self.state = loaded_state
-                # State manager's _post_load_process ensures types are correct
+                # State manager's _post_load_process ensures types are correct and adds defaults if missing
 
                 # Debug logging for loaded balance
                 balance_value = self.state.get('balance_quote')
@@ -135,6 +152,15 @@ class GeminiTrader:
                         logger.warning(
                             "Correcting loaded state: Position size is zero but entry timestamp was set. Clearing timestamp.")
                         self.state['position_entry_timestamp'] = None
+                    # Also clear cascade state if position is zero
+                    if self.state.get('ts_exit_active', False):
+                        logger.warning(
+                            "Correcting loaded state: Position size is zero but cascade exit was active. Resetting cascade state.")
+                        self.state['ts_exit_active'] = False
+                        self.state['ts_exit_step'] = None
+                        self.state['ts_exit_timer_start'] = None
+                        self.state['ts_exit_trigger_price'] = None
+                        self.state['ts_exit_active_order_id'] = None
 
             # --- Initialize Report Writer (Only in Simulation Mode) ---
             self.simulation_mode = get_config_value(
@@ -142,7 +168,8 @@ class GeminiTrader:
             if self.simulation_mode:
                 self._initialize_report_writer()
                 # Save initial state *after* report is initialized (and initial balance written)
-                logger.info("Saving initial state...")
+                # Also save if we just loaded and corrected state
+                logger.info("Saving initial/loaded state...")
                 self.state_manager.save_state(self.state)
 
             # --- Order Manager Initialization ---
@@ -925,7 +952,7 @@ class GeminiTrader:
             logger.error(f"Error during TP place/update: {e}", exc_info=True)
     # END OF METHOD: src/main_trader.py -> _execute_trades
 
-    # START OF METHOD: src/main_trader.py -> _apply_risk_controls (Updated OM call)
+    # START OF METHOD: src/main_trader.py -> _apply_risk_controls (Pass Correct Time)
     def _apply_risk_controls(self):
         logger.debug("Applying risk controls...")
         pos_size = to_decimal(self.state.get('position_size', '0'))
@@ -933,31 +960,65 @@ class GeminiTrader:
         px_entry = to_decimal(self.state.get('position_entry_price', '0'))
         klines_hist = self.state.get('historical_klines')
         conf = self.state.get('confidence_score')
+        # <<< Get the current time from the state >>>
+        current_time = self.state.get('last_processed_timestamp')
+
         if pos_size <= Decimal('0'):
             return
-        if not ts_entry or px_entry <= Decimal('0') or klines_hist is None or klines_hist.empty:
+        # Add check for current_time
+        if not ts_entry or px_entry <= Decimal('0') or klines_hist is None or klines_hist.empty or current_time is None:
+            logger.debug(
+                "Skipping risk controls: Missing required data (pos/entry/klines/current_time).")
             return
+
         try:
             ts_entry_ts = None
             if isinstance(ts_entry, str):
                 try:
                     ts_entry_ts = pd.Timestamp(ts_entry)
-                    ts_entry_ts = ts_entry_ts.tz_localize(
-                        'UTC') if ts_entry_ts.tzinfo is None else ts_entry_ts
+                    # Ensure timezone aware (should match current_time's timezone)
+                    if ts_entry_ts.tzinfo is None and current_time.tzinfo is not None:
+                        ts_entry_ts = ts_entry_ts.tz_localize(
+                            current_time.tzinfo)
+                    elif ts_entry_ts.tzinfo is not None and current_time.tzinfo is not None and ts_entry_ts.tzinfo != current_time.tzinfo:
+                        ts_entry_ts = ts_entry_ts.tz_convert(
+                            current_time.tzinfo)
                 except ValueError:
+                    logger.warning(
+                        f"Could not parse entry timestamp '{ts_entry}'")
                     return
             elif isinstance(ts_entry, pd.Timestamp):
                 ts_entry_ts = ts_entry
-                ts_entry_ts = ts_entry_ts.tz_localize(
-                    'UTC') if ts_entry_ts.tzinfo is None else ts_entry_ts
+                # Ensure timezone aware
+                if ts_entry_ts.tzinfo is None and current_time.tzinfo is not None:
+                    ts_entry_ts = ts_entry_ts.tz_localize(current_time.tzinfo)
+                elif ts_entry_ts.tzinfo is not None and current_time.tzinfo is not None and ts_entry_ts.tzinfo != current_time.tzinfo:
+                    ts_entry_ts = ts_entry_ts.tz_convert(current_time.tzinfo)
             else:
+                logger.warning(
+                    f"Invalid entry timestamp type: {type(ts_entry)}")
                 return
 
-            # Time Stop Check
+            # --- Check Time Stop ---
+            # Ensure current_time is valid before passing
+            if not isinstance(current_time, pd.Timestamp):
+                logger.error(
+                    f"Cannot check time stop: Invalid current_time in state ({type(current_time)})")
+                return
+
             position_dict_for_ts = {
                 'entry_time': ts_entry_ts, 'entry_price': px_entry}
-            time_stop_triggered = check_time_stop(position=position_dict_for_ts, current_klines=klines_hist,
-                                                  config=self.config, confidence_score=conf if isinstance(conf, (float, Decimal)) else None)
+
+            # <<< Pass current_time to check_time_stop >>>
+            time_stop_triggered = check_time_stop(
+                position=position_dict_for_ts,
+                current_klines=klines_hist,
+                config=self.config,
+                current_time=current_time,  # Pass the simulation time
+                confidence_score=conf if isinstance(
+                    conf, (float, Decimal)) else None
+            )
+            # <<< END Pass current_time >>>
 
             if time_stop_triggered:
                 logger.info(
@@ -976,10 +1037,15 @@ class GeminiTrader:
                         sell_qty = to_decimal(sell_result.get('executedQty'))
                         cumm_quote = to_decimal(
                             sell_result.get('cummulativeQuoteQty'))
+                        # <<< Use current_time (sim time) for report timestamp >>>
+                        report_time = current_time
+                        # <<< END >>>
+
                         if cumm_quote is not None and sell_qty is not None and sell_qty > 0:
                             effective_sell_price = cumm_quote / sell_qty
                         else:
                             # Fallback if fill info incomplete (less likely with market sell)
+                            # Use the close price from the *current* kline for the report
                             kline_close = to_decimal(self.state.get(
                                 'current_kline', {}).get('close'))
                             effective_sell_price = kline_close if kline_close else Decimal(
@@ -995,6 +1061,7 @@ class GeminiTrader:
                             logger.warning(
                                 "Could not calc P/L for TS Exit report.")
 
+                        # <<< Pass report_time to _write_report_row ??? -> No, _write_report_row uses state timestamp already >>>
                         self._write_report_row(
                             event_type="TS_EXIT",
                             quantity=-sell_qty if sell_qty else None,
@@ -1003,17 +1070,21 @@ class GeminiTrader:
                             pnl=realized_pnl,
                             notes=f"Time Stop Triggered (Order {sell_result.get('orderId', 'N/A')})"
                         )
+                        # <<< END Report Time >>>
                     # --- End Reporting ---
+
                     # Position state (size, entry price, timestamp) already updated by execute_market_sell
                     # Balance state already updated by execute_market_sell
                     # Active orders already updated by execute_market_sell (cancels TP)
 
-                    # No need for separate state updates here
                     logger.info(
                         "Position and balance state updated by market sell execution.")
                     # Save state immediately after critical risk action (handled in run loop)
                 else:
                     logger.error("Time stop market sell FAILED.")
+
+            # --- Other risk controls could go here (e.g., max drawdown) ---
+
         except Exception as e:
             logger.error(f"Error during risk control: {e}", exc_info=True)
     # END OF METHOD: src/main_trader.py -> _apply_risk_controls
@@ -1331,4 +1402,4 @@ if __name__ == "__main__":
         logger.error("Initialization failed. App did not run.")
         print("Exiting: Init failed.")
 
-# END OF FILE: src/main_trader.py
+# END OF FILE: src/main_trader.py (Pass Correct Time to Time Stop)
