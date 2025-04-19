@@ -1,4 +1,4 @@
-# START OF FILE: src/main_trader.py (Initiate Cascade State)
+# START OF FILE: src/main_trader.py (Corrected Cascade Management, Revised Sim Logic)
 
 import logging
 import logging.config
@@ -6,7 +6,7 @@ import time
 import sys
 import signal
 import csv
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal, getcontext, InvalidOperation
 from typing import Dict, Any, Optional, List
 from pathlib import Path
@@ -46,6 +46,7 @@ REPORT_FIELDNAMES = [
 class GeminiTrader:
     """Main autonomous trading bot class."""
 
+    # --- __init__ remains unchanged from previous version ---
     # START OF METHOD: src/main_trader.py -> __init__ (Added Cascade State Keys)
     def __init__(self):
         logger.info("Initializing GeminiTrader...")
@@ -115,18 +116,15 @@ class GeminiTrader:
                     'sr_zones': None,
                     'confidence_score': None,
                     # Planning (not saved, except maybe TP)
-                    # Potentially save? No, re-plan needed.
                     'planned_grid': [],
-                    # Potentially save? No, re-plan needed.
                     'planned_tp_price': None,
                     # <<< NEW: Cascading Time Stop State >>>
-                    'ts_exit_active': False,       # Is the cascade currently running?
-                    # Current step ('INITIAL_MAKER', 'AGGRESSIVE_TAKER', 'MARKET_FALLBACK')
-                    'ts_exit_step': None,
-                    'ts_exit_timer_start': None,   # Timestamp when the current step's timer began
-                    # Market price when TS was first triggered (for PnL reporting)
+                    'ts_exit_active': False,
+                    'ts_exit_step': None,  # 1: Initial, 2: Aggressive, 3: Market
+                    'ts_exit_timer_start': None,
                     'ts_exit_trigger_price': None,
-                    'ts_exit_active_order_id': None  # clientOrderId of the active cascade limit order
+                    'ts_exit_active_order_id': None, # Stores clientOrderId (will be None in sim until market sell)
+                    'ts_exit_active_order_details': None  # Store the full order dict (will be None in sim until market sell)
                     # <<< END NEW >>>
                 }
                 logger.info(
@@ -155,11 +153,7 @@ class GeminiTrader:
                     if self.state.get('ts_exit_active', False):
                         logger.warning(
                             "Correcting loaded state: Position size is zero but cascade exit was active. Resetting cascade state.")
-                        self.state['ts_exit_active'] = False
-                        self.state['ts_exit_step'] = None
-                        self.state['ts_exit_timer_start'] = None
-                        self.state['ts_exit_trigger_price'] = None
-                        self.state['ts_exit_active_order_id'] = None
+                        self._reset_cascade_state()  # Use helper
 
             # --- Initialize Report Writer (Only in Simulation Mode) ---
             self.simulation_mode = get_config_value(
@@ -210,6 +204,18 @@ class GeminiTrader:
             print(f"Exiting due to initialization error: {e}")
             sys.exit(1)
     # END OF METHOD: src/main_trader.py -> __init__
+
+    # START OF METHOD: src/main_trader.py -> _reset_cascade_state (Unchanged)
+    def _reset_cascade_state(self):
+        """Helper to reset cascade-related state variables."""
+        self.state['ts_exit_active'] = False
+        self.state['ts_exit_step'] = None
+        self.state['ts_exit_timer_start'] = None
+        self.state['ts_exit_trigger_price'] = None
+        self.state['ts_exit_active_order_id'] = None
+        self.state['ts_exit_active_order_details'] = None
+        logger.debug("Reset cascade state variables.")
+    # END OF METHOD: src/main_trader.py -> _reset_cascade_state
 
     # START OF METHOD: src/main_trader.py -> _initialize_report_writer (Unchanged)
     def _initialize_report_writer(self):
@@ -647,56 +653,85 @@ class GeminiTrader:
                 return False
     # END OF METHOD: src/main_trader.py -> _update_balances
 
-    # START OF METHOD: src/main_trader.py -> _process_fills (Unchanged - state updated directly)
-    def _process_fills(self, fills: Dict):
+    # START OF METHOD: src/main_trader.py -> _process_fills (Unchanged)
+    def _process_fills(self, fills: Dict, is_cascade_fill: bool = False, trigger_price_override: Optional[Decimal] = None):
+        """Processes fills from OrderManager, updating state and logging reports."""
         grid_fills = fills.get('grid_fills', [])
         tp_fill = fills.get('tp_fill', None)
-        if not grid_fills and not tp_fill:
+        # Check for cascade fill info
+        cascade_fill = fills.get('cascade_fill', None)
+
+        if not grid_fills and not tp_fill and not cascade_fill:
             return
+
+        log_prefix = "Cascade Fill Processing:" if is_cascade_fill else "Fill Processing:"
         logger.info(
-            f"Processing Fills - Grid: {len(grid_fills)}, TP: {'Yes' if tp_fill else 'No'}")
+            f"{log_prefix} Grid: {len(grid_fills)}, TP: {'Yes' if tp_fill else 'No'}, Cascade: {'Yes' if cascade_fill else 'No'}")
+
         pos_size = to_decimal(self.state.get('position_size', '0'))
         entry_px = to_decimal(self.state.get('position_entry_price', '0'))
-        initial_entry_px = entry_px  # Store entry before modification for TP P/L
+        initial_entry_px = entry_px  # Store entry before modification for TP/Cascade P/L
+
+        # Process Grid Fills (Entry)
         for fill in grid_fills:
             try:
                 qty_str = fill.get('executedQty') or fill.get('origQty')
                 qty = to_decimal(qty_str)
                 cumm_quote_str = fill.get('cummulativeQuoteQty')
                 price_str = fill.get('price')
+
                 if cumm_quote_str is not None and qty is not None and qty > 0:
                     px = to_decimal(cumm_quote_str) / qty
                 elif price_str is not None:
                     px = to_decimal(price_str)
                 else:
-                    continue
+                    continue  # Skip if no price info
+
                 if qty is None or px is None or qty <= 0 or px <= 0:
                     continue
+
                 cost = px * qty
                 logger.info(
                     f"Grid Fill: +{qty:.8f} {self.base_asset} @ {px:.4f} (Cost: {cost:.4f})")
+
+                # Update Position Average Entry Price
                 current_value = pos_size * entry_px
                 new_total_value = current_value + cost
                 new_total_size = pos_size + qty
                 new_entry_px = new_total_value / \
                     new_total_size if new_total_size > Decimal(
                         '0') else Decimal('0')
-                pos_size = new_total_size
-                entry_px = new_entry_px
+
+                # Update State Directly
+                self.state['position_size'] = new_total_size
+                self.state['position_entry_price'] = new_entry_px
                 self.state['balance_quote'] = to_decimal(
                     self.state.get('balance_quote', '0')) - cost
                 self.state['balance_base'] = to_decimal(
                     self.state.get('balance_base', '0')) + qty
-                # --- Update main state directly ---
-                self.state['position_size'] = pos_size
-                self.state['position_entry_price'] = entry_px
-                # ---------------------------------
+
+                # Set entry timestamp if position just opened
+                if self.state['position_entry_timestamp'] is None and new_total_size > Decimal('0'):
+                    ts_last_kline = self.state.get('last_processed_timestamp')
+                    if ts_last_kline:
+                        self.state['position_entry_timestamp'] = ts_last_kline
+                        logger.info(
+                            f"Position opened. Entry TS set: {ts_last_kline}")
+                    else:
+                        logger.error(
+                            "Cannot set entry TS: Last kline TS missing!")
+
                 self._write_report_row(event_type="GRID_ENTRY", quantity=qty, price=px,
                                        cost_or_proceeds=-cost, notes=f"Grid Fill (Order {fill.get('orderId', 'N/A')})")
+                pos_size = new_total_size  # Update local var for next fill in batch
+                entry_px = new_entry_px   # Update local var
+
             except Exception as e:
                 order_id = fill.get('orderId', 'N/A')
                 logger.error(
                     f"Error processing grid fill {order_id}: {e}. Data: {fill}", exc_info=True)
+
+        # Process TP Fill (Exit)
         if tp_fill:
             try:
                 qty_str = tp_fill.get('executedQty') or tp_fill.get('origQty')
@@ -709,30 +744,38 @@ class GeminiTrader:
                     px = to_decimal(price_str)
                 else:
                     px = None
+
                 if qty is not None and px is not None and qty > 0 and px > 0:
                     proceeds = px * qty
                     logger.info(
                         f"TP Fill: -{qty:.8f} {self.base_asset} @ {px:.4f} (Proceeds: {proceeds:.4f})")
+
+                    # Calculate PnL using the entry price *before* potential grid fills in the same cycle
                     realized_pnl = None
-                    # Use the entry price *before* it might have been reset by grid fills in the same batch
                     if initial_entry_px > 0:
                         realized_pnl = (px - initial_entry_px) * qty
                         logger.info(
                             f"Realized P/L from TP: {realized_pnl:.4f}")
                     else:
-                        logger.warning("Could not calc P/L for TP fill.")
-                    pos_size = Decimal('0')
-                    entry_px = Decimal('0')
+                        logger.warning(
+                            "Could not calc P/L for TP fill (missing initial entry).")
+
+                    # Update State Directly
+                    self.state['position_size'] = Decimal('0')
+                    self.state['position_entry_price'] = Decimal('0')
+                    # Clear timestamp on exit
+                    self.state['position_entry_timestamp'] = None
                     self.state['balance_quote'] = to_decimal(
                         self.state.get('balance_quote', '0')) + proceeds
                     self.state['balance_base'] = max(Decimal('0'), to_decimal(
                         self.state.get('balance_base', '0')) - qty)
-                    # --- Update main state directly ---
-                    self.state['position_size'] = pos_size
-                    self.state['position_entry_price'] = entry_px
-                    # ---------------------------------
+                    # Reset cascade state (belt and suspenders, should be inactive anyway)
+                    self._reset_cascade_state()
+
                     self._write_report_row(event_type="TP_EXIT", quantity=-qty, price=px, cost_or_proceeds=proceeds,
                                            pnl=realized_pnl, notes=f"TP Fill (Order {tp_fill.get('orderId', 'N/A')})")
+                    pos_size = Decimal('0')  # Update local var
+                    entry_px = Decimal('0')  # Update local var
                 else:
                     logger.warning(
                         f"Skipping invalid TP fill: Qty={qty}, Px={px}.")
@@ -740,12 +783,114 @@ class GeminiTrader:
                 order_id = tp_fill.get('orderId', 'N/A')
                 logger.error(
                     f"Error processing TP fill {order_id}: {e}. Data: {tp_fill}", exc_info=True)
+
+        # --- Process Cascade Fill (Exit) ---
+        if cascade_fill:
+            try:
+                qty_str = cascade_fill.get(
+                    'executedQty') or cascade_fill.get('origQty')
+                qty = to_decimal(qty_str)
+                cumm_quote_str = cascade_fill.get('cummulativeQuoteQty')
+                price_str = cascade_fill.get('price')
+                order_type = cascade_fill.get(
+                    'type', 'UNKNOWN').upper()  # LIMIT or MARKET
+                client_order_id = cascade_fill.get('clientOrderId', 'N/A')
+                order_id_filled = cascade_fill.get('orderId', 'N/A')
+
+                # Determine fill price
+                if cumm_quote_str is not None and qty is not None and qty > 0:
+                    px = to_decimal(cumm_quote_str) / qty
+                # Use order price for limit if no cumm_quote (Less likely in sim cascade)
+                elif price_str is not None and qty is not None and qty > 0 and order_type == 'LIMIT':
+                    px = to_decimal(price_str)
+                # Use trigger price override if available (Specifically passed for cascade market sells)
+                elif trigger_price_override is not None:
+                    px = trigger_price_override
+                    logger.warning(
+                        f"Using trigger price override {px:.4f} for cascade fill price calc.")
+                else:
+                    # Last resort fallback - use current market price if available
+                    current_kline_data = self.state.get('current_kline', {})
+                    px = current_kline_data.get('close')
+                    if px:
+                        logger.warning(
+                            f"Using current kline close {px:.4f} as last resort for cascade fill price.")
+                    else:
+                        px = None  # Give up
+
+                if qty is not None and px is not None and qty > 0 and px > 0:
+                    proceeds = px * qty
+                    logger.info(
+                        f"Cascade Exit Fill: -{qty:.8f} {self.base_asset} @ {px:.4f} (Proceeds: {proceeds:.4f})")
+
+                    # Calculate PnL using the STORED trigger price from the cascade state
+                    realized_pnl = None
+                    trigger_px_for_pnl = self.state.get(
+                        'ts_exit_trigger_price')  # Use the stored trigger price!
+                    if trigger_px_for_pnl is not None and trigger_px_for_pnl > 0:
+                        # Use fill price 'px' and trigger price for PnL calc
+                        realized_pnl = (px - trigger_px_for_pnl) * qty
+                        logger.info(
+                            f"Realized P/L from TS Exit (based on trigger {trigger_px_for_pnl:.4f}): {realized_pnl:.4f}")
+                    else:
+                        logger.warning(
+                            "Could not calc P/L for TS Exit fill (missing trigger price).")
+
+                    # Determine Event Type for Report BEFORE resetting state
+                    cascade_step = self.state.get('ts_exit_step', 'UNKNOWN') # Get step *before* reset
+                    # Adjust event types based on Sim strategy - it should always be MARKET by the time it fills
+                    if client_order_id and client_order_id.startswith("ts_market_fallback"):
+                        event_type = "TS_EXIT_MARKET"
+                    elif is_cascade_fill: # Generic fallback if CID isn't set/matched
+                         event_type = "TS_EXIT_MARKET"
+                    else: # Should not happen if is_cascade_fill is True
+                        event_type = "TS_EXIT_UNKNOWN"
+
+                    # Update State Directly
+                    self.state['position_size'] = Decimal('0')
+                    self.state['position_entry_price'] = Decimal('0')
+                    # Clear timestamp on exit
+                    self.state['position_entry_timestamp'] = None
+                    self.state['balance_quote'] = to_decimal(
+                        self.state.get('balance_quote', '0')) + proceeds
+                    self.state['balance_base'] = max(Decimal('0'), to_decimal(
+                        self.state.get('balance_base', '0')) - qty)
+                    # Reset cascade state as it's now completed
+                    self._reset_cascade_state()
+
+                    self._write_report_row(event_type=event_type, quantity=-qty, price=px, cost_or_proceeds=proceeds,
+                                           pnl=realized_pnl, notes=f"Cascade Fill (Order {order_id_filled}) CID: {client_order_id}")
+                    pos_size = Decimal('0')  # Update local var
+                    entry_px = Decimal('0')  # Update local var
+                else:
+                    logger.warning(
+                        f"Skipping invalid Cascade fill: Qty={qty}, Px={px}.")
+            except Exception as e:
+                order_id = cascade_fill.get(
+                    'orderId', 'N/A') if cascade_fill else 'N/A'
+                logger.error(
+                    f"Error processing Cascade fill {order_id}: {e}. Data: {cascade_fill}", exc_info=True)
+                # Attempt to reset cascade state even on error to prevent getting stuck
+                if self.state.get('ts_exit_active', False):
+                    logger.warning(
+                        "Resetting cascade state due to processing error.")
+                    self._reset_cascade_state()
+
+        # Log final state after all fills in the batch
         logger.info(
             f"State after fills batch: Pos={self.state['position_size']:.8f}, Entry={self.state['position_entry_price']:.4f}, BalQ={self.state['balance_quote']:.4f}, BalB={self.state['balance_base']:.8f}")
     # END OF METHOD: src/main_trader.py -> _process_fills
 
     # START OF METHOD: src/main_trader.py -> _plan_trades (Unchanged)
     def _plan_trades(self):
+        """Plans grid buy orders and take profit orders based on current state and analysis."""
+        # Skip planning entirely if cascade exit is active
+        if self.state.get('ts_exit_active', False):
+            logger.debug("Skipping trade planning: Cascade exit is active.")
+            self.state['planned_grid'] = []
+            self.state['planned_tp_price'] = None
+            return
+
         logger.debug("Planning trades for the next cycle...")
         current_kline_data = self.state.get('current_kline', {})
         curr_px = current_kline_data.get('close')
@@ -755,14 +900,16 @@ class GeminiTrader:
         available_quote_balance = to_decimal(
             self.state.get('balance_quote', '0'))
         indicators_df = self.state.get('indicators')
-        sr_zones = self.state.get('sr_zones', [])
+        # sr_zones = self.state.get('sr_zones', []) # S/R not currently used in planning logic shown
         self.state['planned_grid'] = []
         self.state['planned_tp_price'] = None
+
         if curr_px is None or conf is None:
-            logger.warning("Skipping plan: Missing price/confidence.")
+            logger.warning(
+                "Skipping plan: Missing current price or confidence score.")
             return
 
-        # Grid Planning (Entry Conditions)
+        # --- Grid Planning (Entry Conditions) ---
         entry_conf = to_decimal(get_config_value(
             self.config, ('trading', 'entry_confidence_threshold'), 0.6))
         entry_rsi_thresh = to_decimal(get_config_value(
@@ -779,12 +926,14 @@ class GeminiTrader:
             self.config, ('strategies', 'geometric_grid', 'rsi_period'), 14)
         latest_indicators = indicators_df.iloc[-1] if isinstance(
             indicators_df, pd.DataFrame) and not indicators_df.empty else None
+
         should_plan_grid = False
         reason_skip = ""
         log_prefix = "Entry Check:"
         conf_ok = conf >= entry_conf
         logger.debug(
             f"{log_prefix} Conf={conf:.2f}, Threshold={entry_conf:.2f}, OK={conf_ok}")
+
         trend_ok = True
         if use_trend_filter:
             if latest_indicators is not None:
@@ -807,6 +956,7 @@ class GeminiTrader:
                     f"{log_prefix} Trend Filter enabled but indicators missing. Trend OK=False")
         else:
             logger.debug(f"{log_prefix} Trend Filter disabled.")
+
         rsi_ok = True
         if use_rsi_filter:
             if latest_indicators is not None:
@@ -824,10 +974,11 @@ class GeminiTrader:
                 rsi_ok = False
                 if "[Indicators Missing]" not in reason_skip:
                     reason_skip += "[Indicators Missing]"
-                    logger.debug(
-                        f"{log_prefix} RSI Filter enabled but indicators missing. RSI OK=False")
+                logger.debug(
+                    f"{log_prefix} RSI Filter enabled but indicators missing. RSI OK=False")
         else:
             logger.debug(f"{log_prefix} RSI Filter disabled.")
+
         if conf_ok and trend_ok and rsi_ok:
             should_plan_grid = True
             logger.info(f"*** ENTRY CONDITIONS MET *** -> Planning Grid")
@@ -851,23 +1002,33 @@ class GeminiTrader:
                     atr_col_name = f'ATR_{atr_period}'
                     current_atr = latest_indicators.get(atr_col_name)
                     current_atr = to_decimal(current_atr)
+
                 exchange_info = self.connector.get_exchange_info_cached()
                 if not exchange_info:
                     raise ValueError(
                         "Exchange info not available for grid plan.")
+
                 logger.info(
                     f"Calling plan_buy_grid_v1. Avail Quote: {available_quote_balance:.4f}")
-                # Planned grid is stored in self.state directly now
-                self.state['planned_grid'] = plan_buy_grid_v1(symbol=self.symbol, current_price=curr_px, current_atr=current_atr,
-                                                              available_quote_balance=available_quote_balance, exchange_info=exchange_info, config_dict=self.config, confidence_score=conf)
+                self.state['planned_grid'] = plan_buy_grid_v1(
+                    symbol=self.symbol,
+                    current_price=curr_px,
+                    current_atr=current_atr,
+                    available_quote_balance=available_quote_balance,
+                    exchange_info=exchange_info,
+                    config_dict=self.config,
+                    confidence_score=conf
+                )
                 if self.state['planned_grid']:
                     logger.info(
                         f"Planned Grid: {len(self.state['planned_grid'])} levels")
+                else:
+                    logger.info("Grid planning resulted in no levels.")
             except Exception as e:
                 logger.error(f"Error during grid plan: {e}", exc_info=True)
                 self.state['planned_grid'] = []  # Ensure cleared on error
 
-        # Take Profit Planning
+        # --- Take Profit Planning ---
         if pos_size > Decimal('0'):
             logger.debug("Planning Take Profit...")
             try:
@@ -878,29 +1039,43 @@ class GeminiTrader:
                     atr_col_name = f'ATR_{tp_atr_period}'
                     current_atr_for_tp = latest_indicators.get(atr_col_name)
                     current_atr_for_tp = to_decimal(current_atr_for_tp)
+
                 exchange_info_for_tp = self.connector.get_exchange_info_cached()
                 if not exchange_info_for_tp:
                     logger.error("Cannot plan TP: Exchange info missing.")
                     self.state['planned_tp_price'] = None
                 else:
-                    # Planned TP is stored in self.state directly now
                     self.state['planned_tp_price'] = calculate_dynamic_tp_price(
-                        entry_price=entry_px, current_atr=current_atr_for_tp, config=self.config, exchange_info=exchange_info_for_tp, symbol=self.symbol, confidence_score=conf)
+                        entry_price=entry_px,
+                        current_atr=current_atr_for_tp,
+                        config=self.config,
+                        exchange_info=exchange_info_for_tp,
+                        symbol=self.symbol,
+                        confidence_score=conf
+                    )
                     if self.state['planned_tp_price'] is not None:
                         logger.info(
                             f"Planned TP Price: {self.state['planned_tp_price']:.4f}")
                     else:
-                        logger.info("TP calc resulted in no TP level.")
+                        logger.info(
+                            "TP calculation resulted in no valid TP level.")
             except Exception as e:
                 logger.error(f"Error during TP plan: {e}", exc_info=True)
                 # Ensure cleared on error
                 self.state['planned_tp_price'] = None
         else:
             logger.debug("No active position, skipping TP plan.")
+            self.state['planned_tp_price'] = None
     # END OF METHOD: src/main_trader.py -> _plan_trades
 
     # START OF METHOD: src/main_trader.py -> _execute_trades (Unchanged)
     def _execute_trades(self):
+        """Executes planned grid and TP orders via OrderManager."""
+        # Skip execution entirely if cascade exit is active
+        if self.state.get('ts_exit_active', False):
+            logger.debug("Skipping trade execution: Cascade exit is active.")
+            return
+
         logger.debug("Executing planned trades...")
         planned_grid = self.state.get('planned_grid', [])
         planned_tp = self.state.get('planned_tp_price')
@@ -908,11 +1083,8 @@ class GeminiTrader:
 
         # --- Execute Grid Orders ---
         try:
-            # Pass self.state to the OrderManager method
             reconciliation_result = self.order_manager.reconcile_and_place_grid(
                 self.state, planned_grid)
-            # OrderManager modifies self.state['active_grid_orders'] directly
-
             placed = len(reconciliation_result.get('placed', []))
             cancelled = len(reconciliation_result.get('cancelled', []))
             failed = len(reconciliation_result.get('failed', []))
@@ -932,262 +1104,259 @@ class GeminiTrader:
                 if planned_tp is not None:
                     logger.debug(
                         f"Attempt place/update TP @ {planned_tp:.4f} for size {current_pos_size:.8f}")
-                    # Pass self.state to the OrderManager method
                     tp_result = self.order_manager.place_or_update_tp_order(
                         self.state, planned_tp, current_pos_size)
-                    # OrderManager modifies self.state['active_tp_order'] directly
+                    # Log result if needed based on tp_result content
                 else:
-                    logger.info("No TP planned. Ensuring existing cancelled.")
-                    # Pass self.state to the OrderManager method
+                    logger.info(
+                        "No TP planned. Ensuring existing TP is cancelled.")
                     self.order_manager.place_or_update_tp_order(
-                        self.state, None, Decimal('0'))
+                        self.state, None, Decimal('0'))  # Cancel existing
             else:
                 logger.debug(
-                    "No active position. Ensuring existing TP cancelled.")
-                # Pass self.state to the OrderManager method
+                    "No active position. Ensuring existing TP is cancelled.")
                 self.order_manager.place_or_update_tp_order(
-                    self.state, None, Decimal('0'))
+                    self.state, None, Decimal('0'))  # Cancel existing
         except Exception as e:
             logger.error(f"Error during TP place/update: {e}", exc_info=True)
     # END OF METHOD: src/main_trader.py -> _execute_trades
 
-    # START OF METHOD: src/main_trader.py -> _apply_risk_controls (Initiate Cascade)
+    # START OF METHOD: src/main_trader.py -> _apply_risk_controls (Revised Cascade Init)
     def _apply_risk_controls(self):
-        logger.debug("Applying risk controls...")
+        """Applies risk controls, primarily checking for Time Stop initiation."""
+        # Skip if cascade exit is already active
+        if self.state.get('ts_exit_active', False):
+            # Log only if cascade just became active in previous cycle to avoid spam
+            # if self.state.get('ts_exit_step') == 1: # Or check if timer just started?
+            #     logger.debug("Skipping risk controls check: Cascade exit is active.")
+            return # Skip check entirely if cascade running
+
+        logger.debug("Applying risk controls (checking for Time Stop trigger)...")
         pos_size = to_decimal(self.state.get('position_size', '0'))
         ts_entry = self.state.get('position_entry_timestamp')
         px_entry = to_decimal(self.state.get('position_entry_price', '0'))
         klines_hist = self.state.get('historical_klines')
         conf = self.state.get('confidence_score')
-        # <<< Get the current time from the state >>>
         current_time = self.state.get('last_processed_timestamp')
-        # Get current price for trigger price storage
-        current_kline_data = self.state.get('current_kline', {})
-        current_price = to_decimal(current_kline_data.get('close'))
-
-        # <<< Check if cascade exit is already active >>>
-        is_cascade_active = self.state.get('ts_exit_active', False)
-        if is_cascade_active:
-            logger.debug("Cascade exit is already active, skipping standard risk control checks.")
-            # Cascade management logic will happen elsewhere (likely in run loop)
-            return
 
         if pos_size <= Decimal('0'):
+            # logger.debug("Skipping risk controls: No active position.") # Can be verbose
             return
-        # Add check for current_time AND current_price
-        if not ts_entry or px_entry <= Decimal('0') or klines_hist is None or klines_hist.empty or current_time is None or current_price is None:
-            logger.debug(
-                "Skipping risk controls: Missing required data (pos/entry/klines/current_time/current_price).")
+        if not ts_entry or px_entry <= Decimal('0') or klines_hist is None or klines_hist.empty or current_time is None:
+            logger.debug("Skipping risk controls: Missing required data (pos/entry/klines/current_time).")
             return
 
         try:
+            # --- Timestamp Conversion (No change needed here) ---
             ts_entry_ts = None
-            if isinstance(ts_entry, str):
+            if isinstance(ts_entry, (str, pd.Timestamp)):
                 try:
                     ts_entry_ts = pd.Timestamp(ts_entry)
-                    # Ensure timezone aware (should match current_time's timezone)
-                    if ts_entry_ts.tzinfo is None and current_time.tzinfo is not None:
-                        ts_entry_ts = ts_entry_ts.tz_localize(
-                            current_time.tzinfo)
-                    elif ts_entry_ts.tzinfo is not None and current_time.tzinfo is not None and ts_entry_ts.tzinfo != current_time.tzinfo:
-                        ts_entry_ts = ts_entry_ts.tz_convert(
-                            current_time.tzinfo)
-                except ValueError:
-                    logger.warning(
-                        f"Could not parse entry timestamp '{ts_entry}'")
-                    return
-            elif isinstance(ts_entry, pd.Timestamp):
-                ts_entry_ts = ts_entry
-                # Ensure timezone aware
-                if ts_entry_ts.tzinfo is None and current_time.tzinfo is not None:
-                    ts_entry_ts = ts_entry_ts.tz_localize(current_time.tzinfo)
-                elif ts_entry_ts.tzinfo is not None and current_time.tzinfo is not None and ts_entry_ts.tzinfo != current_time.tzinfo:
-                    ts_entry_ts = ts_entry_ts.tz_convert(current_time.tzinfo)
-            else:
-                logger.warning(
-                    f"Invalid entry timestamp type: {type(ts_entry)}")
-                return
+                    if ts_entry_ts.tzinfo is None and current_time.tzinfo is not None: ts_entry_ts = ts_entry_ts.tz_localize(current_time.tzinfo)
+                    elif ts_entry_ts.tzinfo is not None and current_time.tzinfo is not None and ts_entry_ts.tzinfo != current_time.tzinfo: ts_entry_ts = ts_entry_ts.tz_convert(current_time.tzinfo)
+                except Exception as ts_err: logger.warning(f"Could not parse entry TS '{ts_entry}': {ts_err}"); return
+            else: logger.warning(f"Invalid entry TS type: {type(ts_entry)}"); return
+            if not isinstance(current_time, pd.Timestamp): logger.error(f"Cannot check time stop: Invalid current_time ({type(current_time)})"); return
 
-            # --- Check Time Stop ---
-            # Ensure current_time is valid before passing
-            if not isinstance(current_time, pd.Timestamp):
-                logger.error(
-                    f"Cannot check time stop: Invalid current_time in state ({type(current_time)})")
-                return
-
-            position_dict_for_ts = {
-                'entry_time': ts_entry_ts, 'entry_price': px_entry}
-
-            # <<< Pass current_time to check_time_stop >>>
+            # --- Check Time Stop (No change needed here) ---
+            position_dict_for_ts = {'entry_time': ts_entry_ts, 'entry_price': px_entry}
             time_stop_triggered = check_time_stop(
-                position=position_dict_for_ts,
-                current_klines=klines_hist,
-                config=self.config,
-                current_time=current_time,  # Pass the simulation time
-                confidence_score=conf if isinstance(
-                    conf, (float, Decimal)) else None
+                position=position_dict_for_ts, current_klines=klines_hist, config=self.config,
+                current_time=current_time, confidence_score=conf if isinstance(conf, (float, Decimal)) else None
             )
-            # <<< END Pass current_time >>>
-
-            # --- Cascade Time Stop Logic ---
-            # Check if cascade behavior is enabled in config
-            cascade_enabled = get_config_value(
-                self.config, ('risk_controls', 'time_stop', 'cascade', 'enabled'), False)
 
             if time_stop_triggered:
-                if cascade_enabled:
-                    # --- Initiate Cascade Exit ---
-                    initial_step_type = get_config_value(self.config,
-                                                         ('risk_controls', 'time_stop', 'cascade', 'initial_order_type'), 'MAKER').upper()
+                # --- REVISED Cascade Initiation (Flags Only) ---
+                current_price_for_trigger = to_decimal(self.state.get('current_kline', {}).get('close'))
+                if current_price_for_trigger is None or current_price_for_trigger <= Decimal('0'):
+                    logger.error("Cannot initiate TS Cascade: Invalid current price for trigger.")
+                    return
 
-                    logger.warning(
-                        f"*** TIME STOP TRIGGERED @ {current_price:.4f}. Initiating CASCADE EXIT (Step 1: {initial_step_type}) ***")
+                logger.warning(f"TIME STOP TRIGGERED at price {current_price_for_trigger:.4f}. Initiating Cascade Exit (Sim: Timers Only).")
 
-                    # Set cascade state variables
-                    self.state['ts_exit_active'] = True
-                    self.state['ts_exit_step'] = initial_step_type # Store the string like 'MAKER'
-                    self.state['ts_exit_timer_start'] = current_time
-                    self.state['ts_exit_trigger_price'] = current_price # Store trigger price for PnL
-                    self.state['ts_exit_active_order_id'] = None # Will be set by OrderManager
+                # Set initial cascade state flags ONLY
+                self.state['ts_exit_active'] = True
+                self.state['ts_exit_step'] = 1 # Start timer for step 1
+                self.state['ts_exit_timer_start'] = current_time
+                self.state['ts_exit_trigger_price'] = current_price_for_trigger
+                self.state['ts_exit_active_order_id'] = None # No order placed
+                self.state['ts_exit_active_order_details'] = None # No order placed
 
-                    # --- Place First Cascade Order ---
-                    # This logic will be fully implemented in the next step involving OrderManager modifications.
-                    # For now, we just log and set the state.
-                    logger.info(" Cascade Step 1: Placing initial order (Logic TBD in OrderManager)...")
-                    # TODO: Call OrderManager method to place the initial limit order (Maker/Taker/Offset based on config)
-                    #       e.g., self.order_manager.place_ts_exit_limit_maker(self.state, pos_size)
-                    #       The OrderManager method should return the clientOrderId and update self.state['ts_exit_active_order_id']
-
-                    # --- REPORTING ---
-                    # Write a report row indicating the cascade has started
-                    self._write_report_row(
-                        event_type="TS_CASCADE_START",
-                        price=current_price, # Price that triggered the cascade
-                        notes=f"Time Stop Triggered. Cascade Initiated ({initial_step_type}). Trigger Px: {current_price:.4f}"
-                    )
-                    # --- END REPORTING ---
-
-                    # Save state immediately after initiating critical risk action (handled in run loop)
-
-                else: # Cascade disabled - fallback to old market sell behavior
-                    logger.info(
-                        f"Executing IMMEDIATE market sell {pos_size:.8f} due to time stop (Cascade Disabled)...")
-                    entry_price_for_pnl = px_entry  # Store before state might be modified
-                    # Pass self.state to the OrderManager method
-                    sell_result = self.order_manager.execute_market_sell(
-                        self.state, pos_size, reason="time_stop")
-                    # OrderManager modifies self.state balance, position, orders directly
-
-                    if sell_result:
-                        logger.info(
-                            f"Time stop market sell successful. Response: {sell_result}")
-                        # --- Reporting ---
-                        if self.simulation_mode:
-                            sell_qty = to_decimal(sell_result.get('executedQty'))
-                            cumm_quote = to_decimal(
-                                sell_result.get('cummulativeQuoteQty'))
-                            report_time = current_time
-
-                            if cumm_quote is not None and sell_qty is not None and sell_qty > 0:
-                                effective_sell_price = cumm_quote / sell_qty
-                            else:
-                                effective_sell_price = current_price # Fallback to current close
-
-                            # Get cost/proceeds directly from fill if possible
-                            sell_proceeds = cumm_quote if cumm_quote is not None else effective_sell_price * sell_qty
-                            realized_pnl = None
-                            if entry_price_for_pnl > 0 and effective_sell_price > 0 and sell_qty is not None:
-                                realized_pnl = (
-                                    effective_sell_price - entry_price_for_pnl) * sell_qty
-                            else:
-                                logger.warning(
-                                    "Could not calc P/L for TS Exit report.")
-
-                            self._write_report_row(
-                                event_type="TS_EXIT",
-                                quantity=-sell_qty if sell_qty else None,
-                                price=effective_sell_price,
-                                cost_or_proceeds=sell_proceeds if sell_proceeds else None,
-                                pnl=realized_pnl,
-                                notes=f"Time Stop Triggered (Immediate Market Sell - Order {sell_result.get('orderId', 'N/A')})"
-                            )
-                        # --- End Reporting ---
-                        logger.info(
-                            "Position and balance state updated by market sell execution.")
-                    else:
-                        logger.error("Time stop market sell FAILED.")
-            # --- End Cascade Time Stop Logic ---
-
-            # --- Other risk controls could go here (e.g., max drawdown) ---
+                logger.info("Cascade Step 1 initiated (timer started). No initial order placed in sim.")
+                # Do NOT place any orders here in simulation mode for the revised strategy
+                # --- END REVISED Cascade Initiation ---
 
         except Exception as e:
-            logger.error(f"Error during risk control: {e}", exc_info=True)
-    # END OF METHOD: src/main_trader.py -> _apply_risk_controls
+            logger.error(f"Error during risk control check: {e}", exc_info=True)
+    # END OF METHOD: src/main_trader.py -> _apply_risk_controls (Revised Cascade Init)
+
 
     # START OF METHOD: src/main_trader.py -> _check_orders_and_update_state (Unchanged)
     def _check_orders_and_update_state(self):
+        """Checks status of all active orders (grid, TP, cascade) via OrderManager and processes fills."""
         logger.debug("Checking status of active orders...")
         current_kline_data = self.state.get('current_kline', {})
         px_curr = current_kline_data.get('close')
-        price_for_check = px_curr if self.simulation_mode else None
-        if self.simulation_mode and price_for_check is None:
-            logger.warning("Cannot check sim orders: Current price missing.")
+        price_for_check = px_curr if self.simulation_mode else None  # Only needed for sim
+
+        # If cascade is active in Sim, we might only have a market order at step 3.
+        # Check_orders might not be able to check market orders reliably by ID after submission.
+        # The market order fill is handled directly within _manage_active_cascade for Sim.
+        # So, we skip the order check if cascade is active AND in sim mode.
+        if self.simulation_mode and self.state.get('ts_exit_active', False):
+            logger.debug("Skipping check_orders in Sim mode while cascade is active (market fill handled in manage_cascade).")
             return
+
+        if self.simulation_mode and price_for_check is None and self.state.get('position_size', Decimal('0')) > 0:
+             logger.warning("Cannot check sim orders: Current price missing.")
+             return
+
+
         try:
-            # Pass self.state to the OrderManager method
-            # This method checks Grid, TP, AND potentially the active TS_EXIT order
+            # OrderManager needs the current state to know which orders to check
             fill_results = self.order_manager.check_orders(
                 self.state, price_for_check)
-            # OrderManager modifies self.state['active_grid_orders'] / ['active_tp_order'] / ['ts_exit_active_order_id'] directly
 
-            if fill_results.get('grid_fills') or fill_results.get('tp_fill') or fill_results.get('ts_exit_fill'):
+            # Check if any fills occurred (grid, TP, or cascade - cascade less likely here in sim now)
+            if fill_results.get('grid_fills') or fill_results.get('tp_fill') or fill_results.get('cascade_fill'):
                 logger.info("Fills detected, processing state updates...")
-                # _process_fills updates position size, entry price, balances directly in self.state
-                # It also handles writing the GRID_ENTRY and TP_EXIT report rows
-                # Note: _process_fills needs update to handle 'ts_exit_fill' reporting
-                self._process_fills(fill_results) # TODO: Update _process_fills for TS_EXIT
+                trigger_price_override = self.state.get(
+                    'ts_exit_trigger_price') if fill_results.get('cascade_fill') else None
+                # Pass trigger price override only if it's a cascade fill
+                self._process_fills(
+                    fills=fill_results,
+                    is_cascade_fill=bool(fill_results.get('cascade_fill')),
+                    trigger_price_override=trigger_price_override
+                )
+                # _process_fills updates state (pos size, entry, balance, timestamps, cascade flags)
+                # and writes report rows.
 
-                # --- Update Entry Timestamp (logic remains the same for grid/tp) ---
-                pos_size_after_fill = to_decimal(
-                    self.state.get('position_size', '0'))
-                ts_entry_after_fill = self.state.get(
-                    'position_entry_timestamp')
-                ts_last_kline = self.state.get('last_processed_timestamp')
-
-                if fill_results.get('grid_fills') and pos_size_after_fill > Decimal('0') and ts_entry_after_fill is None:
-                    if ts_last_kline:
-                        self.state['position_entry_timestamp'] = ts_last_kline
-                        logger.info(
-                            f"Position opened. Entry TS set: {ts_last_kline}")
-                    else:
-                        logger.error(
-                            "Cannot set entry TS: Last kline TS missing!")
-                elif (fill_results.get('tp_fill') or fill_results.get('ts_exit_fill')) and pos_size_after_fill == Decimal('0'):
-                    if ts_entry_after_fill is not None:
-                        self.state['position_entry_timestamp'] = None
-                        logger.info("Position closed by TP/TS_Exit. Entry TS cleared.")
-                     # Also ensure cascade state is fully reset after a successful exit fill
-                    if fill_results.get('ts_exit_fill') and self.state.get('ts_exit_active', False):
-                        logger.info("Resetting cascade state after successful TS Exit fill.")
-                        self.state['ts_exit_active'] = False
-                        self.state['ts_exit_step'] = None
-                        self.state['ts_exit_timer_start'] = None
-                        self.state['ts_exit_trigger_price'] = None
-                        self.state['ts_exit_active_order_id'] = None
-                # --- End Timestamp Logic ---
-
+                # Re-fetch live balance after processing fills if not in simulation
                 if not self.simulation_mode:
-                    self._update_balances()  # Re-fetch live balance after fills
+                    self._update_balances()
 
-                # Saving state is handled in the run loop after this method returns
+                # State saving is handled in the run loop after this method returns.
                 logger.debug("State updated after processing fills.")
             # else: logger.debug("No new fills detected.") # Can be verbose
+
         except Exception as e:
             logger.error(
                 f"Error during order check/fill process: {e}", exc_info=True)
     # END OF METHOD: src/main_trader.py -> _check_orders_and_update_state
 
-    # START OF METHOD: src/main_trader.py -> _shutdown (Unchanged)
+    # START OF METHOD: src/main_trader.py -> _manage_active_cascade (Revised Sim Logic)
+    def _manage_active_cascade(self, now: pd.Timestamp):
+        """
+        Manages the active Time Stop Cascade Exit process.
+        Revised for Simulation: Only handles timeouts and final market sell.
+        """
+        # This method should only be called if self.state['ts_exit_active'] is True
+        logger.info("--- Managing Active Cascade Exit (Simulation Logic) ---")
+        current_step = self.state.get('ts_exit_step')
+        timer_start = self.state.get('ts_exit_timer_start')
+        # active_order_id = self.state.get('ts_exit_active_order_id') # No active order in sim until step 3
+        trigger_price = self.state.get('ts_exit_trigger_price') # Price at time of TS trigger
+        pos_size = to_decimal(self.state.get('position_size', '0')) # Get current pos size
+
+        # Basic state validation
+        if not isinstance(timer_start, pd.Timestamp) or current_step is None:
+            logger.warning(f"Cascade state invalid (step={current_step}, timer={timer_start}). Resetting cascade.")
+            self._reset_cascade_state()
+            return
+        # If position somehow got closed elsewhere (e.g., external manual intervention simulation?)
+        if pos_size <= Decimal('0'):
+             logger.warning(f"Cascade active but position closed (pos={pos_size}). Resetting cascade.")
+             self._reset_cascade_state()
+             return
+
+        # --- Check for Timeout ---
+        try:
+            if not isinstance(now, pd.Timestamp):
+                logger.error("Cannot check cascade timeout, invalid 'now' timestamp.")
+                return
+
+            cascade_config = get_config_value(self.config, ('risk_controls', 'time_stop', 'cascade'), default={})
+            if not cascade_config:
+                logger.error("Cascade config missing! Cannot proceed. Resetting.")
+                self._reset_cascade_state()
+                return
+
+            elapsed_seconds = (now - timer_start).total_seconds()
+            timeout_seconds = None
+            next_step = None
+
+            if current_step == 1: # Waiting for initial "limit" timeout
+                timeout_seconds = cascade_config.get('initial_timeout_seconds', 60)
+                next_step = 2
+            elif current_step == 2: # Waiting for aggressive "limit" timeout
+                timeout_seconds = cascade_config.get('aggressive_timeout_seconds', 30)
+                next_step = 3 # Next step is market fallback
+            # elif current_step == 3: # Market sell initiated, no further timeout here, handled by fill check below (removed)
+
+            if timeout_seconds is not None and elapsed_seconds > timeout_seconds:
+                logger.warning(f"Cascade step {current_step} TIMED OUT (Sim) after {elapsed_seconds:.1f}s (Limit: {timeout_seconds}s).")
+
+                # --- Advance to Next Step (or Market Sell) ---
+                if next_step == 2: # Initial timeout -> Move to aggressive timer
+                    logger.info("Advancing to Cascade Step 2 (Aggressive Timer).")
+                    self.state['ts_exit_step'] = 2
+                    self.state['ts_exit_timer_start'] = now # Reset timer
+
+                elif next_step == 3: # Aggressive timeout -> Execute Market Fallback
+                    logger.info("Advancing to Cascade Step 3 (Market Fallback).")
+                    self.state['ts_exit_step'] = 3
+                    self.state['ts_exit_timer_start'] = now # Reset timer (though market is ~instant)
+
+                    logger.warning("Executing simulated MARKET SELL fallback...")
+                    market_fallback_result = self.order_manager.execute_market_sell(
+                        state=self.state,
+                        quantity=pos_size, # Use current pos size
+                        reason="cascade_market_fallback"
+                    )
+
+                    # OrderManager's execute_market_sell updates state directly in sim
+                    if market_fallback_result and market_fallback_result.get('status') == 'FILLED':
+                        logger.info("Simulated market fallback successful.")
+                        # Process the fill for reporting IMMEDIATELY
+                        # Use trigger_price from state for PnL calc reference
+                        # _process_fills uses the fill price for proceeds calc, and trigger_price for PnL calc
+                        self._process_fills(
+                             fills={'cascade_fill': market_fallback_result},
+                             is_cascade_fill=True,
+                             trigger_price_override=trigger_price # Pass stored trigger price for PnL calc
+                        )
+                        # _process_fills should reset the cascade state now
+                        # Log just to confirm reset occurred
+                        if not self.state.get('ts_exit_active', False):
+                            logger.info("Cascade finished via market fallback.")
+                        else:
+                            logger.error("Cascade state still active after market fallback fill processing!")
+                            self._reset_cascade_state() # Force reset
+
+                    elif market_fallback_result: # Submitted but maybe not instantly filled? (Should not happen in sim)
+                         logger.warning("Market fallback submitted but status not FILLED? Check OrderManager sim logic.")
+                         # Store order details if needed
+                         self.state['ts_exit_active_order_id'] = market_fallback_result.get('clientOrderId')
+                         self.state['ts_exit_active_order_details'] = market_fallback_result
+
+                    else: # Market sell failed entirely
+                        logger.critical("CASCADE MARKET FALLBACK FAILED! Manual intervention likely required.")
+                        self._reset_cascade_state() # Reset to stop trying
+
+                else: # Should not happen (e.g., if current_step was already 3)
+                     logger.error(f"Invalid cascade step ({current_step}) or next step ({next_step}) in timeout logic.")
+                     self._reset_cascade_state()
+
+            elif timeout_seconds is not None: # Timeout not reached
+                logger.debug(f"Cascade step {current_step} - timeout not reached ({elapsed_seconds:.1f}s / {timeout_seconds}s). Waiting...")
+            # else: current_step == 3, no specific timeout action needed here, waiting for fill processing if market sell happened
+
+        except Exception as e:
+            logger.error(f"Error managing cascade step {current_step}: {e}", exc_info=True)
+            self._reset_cascade_state() # Attempt to reset on error
+    # END OF METHOD: src/main_trader.py -> _manage_active_cascade (Revised Sim Logic)
+
+    # START OF METHOD: src/main_trader.py -> _shutdown (Unchanged - Sim cascade doesn't place orders until market sell)
     def _shutdown(self, signum=None, frame=None):
         if self.is_shutting_down:
             logger.info("Shutdown already in progress.")
@@ -1203,64 +1372,62 @@ class GeminiTrader:
             if hasattr(self, 'order_manager') and self.order_manager:
                 logger.info("Attempting cancel open orders...")
                 try:
-                    current_state = self.state  # Use current state dictionary
-                    active_grid = current_state.get('active_grid_orders', [])
-                    active_tp = current_state.get('active_tp_order')
-                    active_ts_exit_order_id = current_state.get('ts_exit_active_order_id')
+                    # Get orders directly from state
+                    orders_to_cancel_info = []
+                    grid_orders = self.state.get('active_grid_orders', [])
+                    tp_order = self.state.get('active_tp_order')
+                    # Use ts_exit_active_order_details which should hold the dict (only populated for market sell in sim)
+                    cascade_order = self.state.get(
+                        'ts_exit_active_order_details')
 
-                    if not isinstance(active_grid, list):
-                        active_grid = []
-                    orders_to_cancel = list(active_grid)
-                    if active_tp is not None:
-                        if isinstance(active_tp, dict):
-                            orders_to_cancel.append(active_tp)
+                    if isinstance(grid_orders, list):
+                        for order in grid_orders:
+                            if isinstance(order, dict):
+                                orders_to_cancel_info.append(order)
+                    if isinstance(tp_order, dict):
+                        orders_to_cancel_info.append(tp_order)
+                    if isinstance(cascade_order, dict):
+                         # Make sure it's not already filled/cancelled before attempting cancel
+                         # Market orders might be PENDING briefly even in sim if logic changes
+                        if cascade_order.get('status') in ['NEW', 'PARTIALLY_FILLED', 'PENDING']:
+                           orders_to_cancel_info.append(cascade_order)
                         else:
-                            logger.warning(
-                                f"State TP order not dict: {type(active_tp)}. Skip cancel.")
-                    # Also add the active cascade order if it exists
-                    if active_ts_exit_order_id:
-                        # Need order details? For now, just cancel by ID if possible
-                        orders_to_cancel.append({'clientOrderId': active_ts_exit_order_id, 'side': 'SELL', 'type': 'TS_EXIT_LIMIT'}) # Fake details for logging
+                           logger.debug(f"Skipping cancel for cascade order {cascade_order.get('clientOrderId')} - Status: {cascade_order.get('status')}")
+
 
                     logger.info(
-                        f"Found {len(orders_to_cancel)} potential orders to cancel.")
+                        f"Found {len(orders_to_cancel_info)} potential orders to cancel.")
                     cancelled_count, failed_count = 0, 0
-                    for order in orders_to_cancel:
-                        if not isinstance(order, dict):
-                            logger.warning(
-                                f"Non-dict item in cancel list: {order}. Skip.")
-                            failed_count += 1
-                            continue
-                        client_order_id = order.get('clientOrderId')
-                        order_id = order.get('orderId')
-                        side = order.get('side')
-                        order_type = order.get('type', 'UNKNOWN') # Get type for label
+                    for order_info in orders_to_cancel_info:
+                        # Get BOTH IDs if available
+                        client_order_id = order_info.get('clientOrderId')
+                        order_id_str = str(order_info.get('orderId')) if order_info.get('orderId') else None # Ensure string or None
 
-                        label = "TP" if side == 'SELL' and order_type != 'TS_EXIT_LIMIT' else \
-                                "TS_Exit" if order_type == 'TS_EXIT_LIMIT' else "Grid"
+                        side = order_info.get('side', 'UNKNOWN').upper()
+                        label = "Cascade" if client_order_id and client_order_id.startswith(
+                            "ts_") else ("TP" if side == 'SELL' else "Grid")
 
-                        if order_id or client_order_id:
+                        if order_id_str or client_order_id:
                             logger.debug(
-                                f"Requesting cancel for {label}: ID={order_id}, ClientID={client_order_id}")
+                                f"Requesting cancel for {label}: ID={order_id_str}, ClientID={client_order_id}")
                             try:
-                                # Pass self.state to the OrderManager method
+                                # Pass both IDs to cancel_order - it handles which one to use
                                 success = self.order_manager.cancel_order(
-                                    self.state, client_order_id, order_id, f"{label} (Shutdown)")
-                                # OrderManager modifies self.state['active_grid_orders'] / ['active_tp_order'] / ['ts_exit_active_order_id'] directly
+                                    self.state, client_order_id, order_id_str, f"{label} (Shutdown)")
                                 if success:
                                     cancelled_count += 1
                                 else:
                                     failed_count += 1
                             except Exception as cancel_err:
                                 logger.error(
-                                    f"Error cancelling order {order_id or client_order_id}: {cancel_err}", exc_info=False)
+                                    f"Error cancelling order {order_id_str or client_order_id}: {cancel_err}", exc_info=False)
                                 failed_count += 1
                         else:
                             logger.warning(
-                                f"Cannot cancel, missing IDs: {order}")
+                                f"Cannot cancel {label}, missing IDs: {order_info}")
                             failed_count += 1
                     logger.info(
-                        f"Order cancel requests: Attempt={len(orders_to_cancel)}, Success={cancelled_count}, Fail/Skip={failed_count}")
+                        f"Order cancel requests: Attempt={len(orders_to_cancel_info)}, Success={cancelled_count}, Fail/Skip={failed_count}")
                 except Exception as e:
                     logger.error(
                         f"Error during order cancel process: {e}", exc_info=True)
@@ -1276,7 +1443,6 @@ class GeminiTrader:
             if isinstance(final_state, dict):
                 logger.info("Saving final application state...")
                 try:
-                    # Save the final state dictionary
                     self.state_manager.save_state(final_state)
                     logger.info("Final state saved.")
                 except Exception as e:
@@ -1292,18 +1458,19 @@ class GeminiTrader:
         # --- Reporting ---
         if self.simulation_mode:
             logger.info("Writing final balance to sim report...")
+            final_bal = self.state.get('balance_quote', 'N/A')
+            final_bal_str = f"{final_bal:.8f}" if isinstance(
+                final_bal, Decimal) else str(final_bal)
             self._write_report_row(
-                event_type="FINAL_BALANCE",
-                notes=f"Final Balance: {self.state.get('balance_quote', 'N/A')}"
-            )
-            self._close_report_file()  # Close report file
+                event_type="FINAL_BALANCE", notes=f"Final Balance: {final_bal_str}")
+            self._close_report_file()
 
         logger.warning("Shutdown sequence complete. Exiting.")
         print("\nGeminiTrader stopped.")
         sys.exit(0)
     # END OF METHOD: src/main_trader.py -> _shutdown
 
-    # START OF METHOD: src/main_trader.py -> run (Unchanged - Cascade logic TBD)
+    # START OF METHOD: src/main_trader.py -> run (Restructured Loop - Unchanged)
     def run(self):
         logger.info("Starting main trading loop...")
         signal.signal(signal.SIGINT, self._shutdown)
@@ -1332,7 +1499,7 @@ class GeminiTrader:
                 logger.debug(
                     f"------ New Cycle: {pd.Timestamp.now(tz='UTC')} ------")
 
-                # 1. Update Market Data
+                # 1. Update Market Data (Get 'now' timestamp)
                 market_data_ok = self._update_market_data()
                 if not market_data_ok:
                     if not self.running:
@@ -1341,7 +1508,14 @@ class GeminiTrader:
                         "Failed update market data. Skipping cycle.")
                     if not self.simulation_mode:
                         time.sleep(loop_interval_seconds)
-                    continue
+                    continue  # Skip rest of cycle
+
+                now = self.state.get('last_processed_timestamp')
+                if now is None:  # Critical check
+                    logger.critical(
+                        "FATAL: last_processed_timestamp missing from state after market data update! Shutdown.")
+                    self._shutdown(signal.SIGABRT)
+                    break  # Exit loop
 
                 # 2. Update Sim Progress Bar
                 if self.simulation_mode:
@@ -1357,126 +1531,92 @@ class GeminiTrader:
                         grid_list, list) else "N/A"
                     tp_order = self.state.get('active_tp_order')
                     tp_str = "Y" if isinstance(tp_order, dict) else "N"
-                    # <<< Add Cascade Status to Progress Bar >>>
-                    ts_active = self.state.get('ts_exit_active', False)
-                    ts_step = self.state.get('ts_exit_step', None)
-                    ts_str = f"TS:{ts_step}" if ts_active else "TS:N"
-                    # <<< End Add Cascade Status >>>
+                    cascade_active = self.state.get('ts_exit_active', False)
+                    cascade_step = self.state.get('ts_exit_step', '')
+                    cascade_str = f"Y({cascade_step})" if cascade_active else "N" # Show step
                     bal_q_str = f"{to_decimal(self.state.get('balance_quote', '0')):.2f}"
-                    pfix = {"Conf": conf_str, "Pos": pos_str,
-                            "Grid": grid_count, "TP": tp_str, "Bal": bal_q_str, "Risk": ts_str}
+                    pfix = {"Conf": conf_str, "Pos": pos_str, "Grid": grid_count,
+                            "TP": tp_str, "Casc": cascade_str, "Bal": bal_q_str}
                     pbar.set_postfix(pfix, refresh=False)
 
+                # --- RESTRUCTURED LOGIC ---
 
-                # 3. Calculate Analysis
-                analysis_ok = self._calculate_analysis()
-
-                # 4. Check Orders & Process Fills
-                # Includes check for active cascade order fill
-                # Modifies self.state via _process_fills if fills occur
-                self._check_orders_and_update_state()
-                # Save state after potential updates from fills
-                if self.running and self.state_manager:
-                    try:
-                        self.state_manager.save_state(self.state)
-                    except Exception as save_err:
-                        logger.error(
-                            f"Save Error (after check_orders): {save_err}", exc_info=False)
-                if not self.running: break
-
-
-                # --- 4.5 Manage Active Cascade Exit (NEW LOGIC BLOCK) ---
+                # 3. Check and Manage Active Cascade Exit FIRST
                 if self.state.get('ts_exit_active', False):
-                    logger.debug("Managing active time stop cascade...")
-                    # TODO: Add cascade management logic here:
-                    # 1. Check if the active TS exit order (`ts_exit_active_order_id`) was filled (handled by `_check_orders_...` above).
-                    #    If filled, the state should have been reset already.
-                    # 2. If NOT filled:
-                    #    a. Get `current_time` from `self.state['last_processed_timestamp']`.
-                    #    b. Get `timer_start` from `self.state['ts_exit_timer_start']`.
-                    #    c. Get current `step` from `self.state['ts_exit_step']`.
-                    #    d. Get relevant `timeout` from config based on `step`.
-                    #    e. If `current_time - timer_start > timeout`:
-                    #       i. Log timeout for current step.
-                    #       ii. Cancel the current order using `self.order_manager.cancel_order(...)`.
-                    #       iii. Determine the next step (e.g., 'AGGRESSIVE_TAKER' or 'MARKET_FALLBACK').
-                    #       iv. Update `self.state['ts_exit_step']` to the next step.
-                    #       v. Reset `self.state['ts_exit_timer_start'] = current_time`.
-                    #       vi. Call the appropriate next placement method in `OrderManager`.
-                    #           (e.g., `self.order_manager.place_ts_exit_limit_taker(...)` or `self.order_manager.execute_market_sell(...)`).
-                    #           Update `self.state['ts_exit_active_order_id']` with the new order ID (or None if market sell).
-                    #       vii. If the next step is MARKET_FALLBACK and the market sell is successful, reset the cascade state immediately.
-                    #    f. Else (timeout not reached):
-                    #       i. Log that the current cascade order is still pending.
-                    # Save state after cascade management actions
+                    logger.debug("Cascade exit is active. Managing step...")
+                    self._manage_active_cascade(now)  # Pass current time
+
+                    # In sim mode, market sell fill is processed *inside* _manage_active_cascade
+                    # No need for separate check_orders here for the cascade part.
+
+                    # Save state after potential cascade actions/fills
                     if self.running and self.state_manager:
                         try:
                             self.state_manager.save_state(self.state)
                         except Exception as save_err:
-                            logger.error(f"Save Error (after cascade management): {save_err}", exc_info=False)
+                            logger.error(
+                                f"Save Error (during cascade mgmt): {save_err}", exc_info=False)
+
+                    # Skip the rest of the normal cycle if cascade was active
+                    logger.debug(
+                        "Cascade was active, skipping normal trading logic for this cycle.")
+                    # Cycle end & sleep logic moved below
+                else:
+                    # --- If Cascade is NOT Active, proceed with normal cycle ---
+
+                    # 4. Calculate Analysis
+                    analysis_ok = self._calculate_analysis() # Needed for normal planning/risk
+
+                    # 5. Check Orders & Process Fills (Normal Grid/TP fills)
+                    # This now skips if cascade is active in sim mode anyway
+                    self._check_orders_and_update_state()
+                    if not self.running: break # Check running flag after potential state changes
+
+                    # 6. Apply Risk Controls (Checks for *initiation* of Time Stop)
+                    # Skips internally if cascade is already active.
+                    self._apply_risk_controls()
+                    if not self.running: break # Check running flag after potential state changes
+
+                    # 7. Plan Trades (Grid/TP) - Only if cascade is NOT active
+                    if not self.state.get('ts_exit_active', False): # Redundant check, but safe
+                        if analysis_ok:
+                            self._plan_trades()
+                        else:
+                            self.state['planned_grid'] = []
+                            self.state['planned_tp_price'] = None
                     if not self.running: break
-                # --- END CASCADE MANAGEMENT BLOCK ---
 
+                    # 8. Execute Trades (Grid/TP) - Only if cascade is NOT active
+                    if not self.state.get('ts_exit_active', False): # Redundant check, but safe
+                        self._execute_trades()
+                    if not self.running: break
 
-                # 5. Apply Risk Controls (Initiates cascade if conditions met and not already active)
-                # Modifies self.state via OM.execute_market_sell if stop triggered AND cascade disabled
-                # OR modifies self.state to initiate cascade if triggered and cascade enabled
-                self._apply_risk_controls()
-                # Save state after potential updates from risk controls
-                if self.running and self.state_manager:
-                    try:
-                        self.state_manager.save_state(self.state)
-                    except Exception as save_err:
-                        logger.error(
-                            f"Save Error (after risk_controls): {save_err}", exc_info=False)
-                if not self.running: break
+                    # 9. Save State at end of NORMAL cycle
+                    # State is saved within the cascade block if that path is taken
+                    if self.running and self.state_manager:
+                        try:
+                            self.state_manager.save_state(self.state)
+                        except Exception as save_err:
+                            logger.error(
+                                f"Save Error (end of normal cycle): {save_err}", exc_info=False)
 
+                # --- END RESTRUCTURED LOGIC ---
 
-                # 6. Plan Trades (Only if cascade is NOT active)
-                if not self.state.get('ts_exit_active', False):
-                    if analysis_ok:
-                        self._plan_trades()  # Stores plans in self.state
-                    else:
-                        self.state['planned_grid'] = []
-                        self.state['planned_tp_price'] = None
-                else:
-                    logger.debug("Cascade exit active, skipping trade planning.")
-                    self.state['planned_grid'] = [] # Ensure no grid planned during exit
-                    self.state['planned_tp_price'] = None # Ensure no TP planned during exit
-                if not self.running: break
-
-
-                # 7. Execute Trades (Only if cascade is NOT active)
-                if not self.state.get('ts_exit_active', False):
-                    # Modifies self.state's active orders via OM methods
-                    self._execute_trades()
-                else:
-                     logger.debug("Cascade exit active, skipping trade execution.")
-                     # Ensure any lingering TP is cancelled if cascade just started
-                     if self.state.get('active_tp_order') is not None:
-                         logger.warning("Cancelling active TP order as cascade exit has started.")
-                         self.order_manager.place_or_update_tp_order(self.state, None, Decimal('0'))
-
-                # Save state after potential order placement/cancellation
-                if self.running and self.state_manager:
-                    try:
-                        self.state_manager.save_state(self.state)
-                    except Exception as save_err:
-                        logger.error(
-                            f"Save Error (after execute_trades): {save_err}", exc_info=False)
-                if not self.running: break
-
-
-                # --- Cycle End ---
+                # --- Cycle End & Sleep (Common to both cascade and normal path) ---
                 cycle_end_time = time.monotonic()
                 cycle_duration = cycle_end_time - cycle_start_time
                 logger.debug(
                     f"Trading cycle completed in {cycle_duration:.2f} seconds.")
 
-                sleep_time = max(0, loop_interval_seconds - cycle_duration)
-                if self.running and sleep_time > 0 and not self.simulation_mode:
-                    time.sleep(sleep_time)
-                # elif ... # Cycle overrun log
+                # Only sleep in live mode
+                if not self.simulation_mode:
+                    sleep_time = max(0, loop_interval_seconds - cycle_duration)
+                    if self.running and sleep_time > 0:
+                        logger.debug(f"Sleeping for {sleep_time:.2f} seconds...")
+                        time.sleep(sleep_time)
+                    elif self.running and cycle_duration > loop_interval_seconds:
+                        logger.warning(
+                            f"Cycle duration ({cycle_duration:.2f}s) exceeded target interval ({loop_interval_seconds}s).")
 
             # --- Loop End ---
             if self.simulation_mode:
@@ -1493,11 +1633,13 @@ class GeminiTrader:
                 f"CRITICAL Connection Error: {ce}. Shutdown.", exc_info=True)
             self._shutdown(signal.SIGABRT)
         except Exception as e:
-            logger.critical(f"CRITICAL UNHANDLED ERROR: {e}", exc_info=True)
+            logger.critical(
+                f"CRITICAL UNHANDLED ERROR in run loop: {e}", exc_info=True)
             self._shutdown(signal.SIGABRT)
         finally:
             if not self.is_shutting_down:
-                logger.warning("Main loop exited unexpectedly. Shutdown.")
+                logger.warning(
+                    "Main loop exited unexpectedly. Initiating shutdown.")
                 self._shutdown()
     # END OF METHOD: src/main_trader.py -> run
 
@@ -1512,4 +1654,4 @@ if __name__ == "__main__":
         logger.error("Initialization failed. App did not run.")
         print("Exiting: Init failed.")
 
-# END OF FILE: src/main_trader.py (Initiate Cascade State)
+# END OF FILE: src/main_trader.py (Corrected Cascade Management, Revised Sim Logic)

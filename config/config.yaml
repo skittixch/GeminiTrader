@@ -81,7 +81,7 @@ funding_pipeline:
 # Parameters are typically nested under the strategy name
 strategies:
   geometric_grid:
-    base_order_size_usd: '20.00' # Smaller size for simulation
+    base_order_size_usd: '2.00' # Smaller size for simulation
     grid_spacing_atr_multiplier: '0.4'
     grid_spacing_geometric_factor: '1.1'
     order_size_geometric_factor: '1.2'
@@ -118,10 +118,9 @@ strategies:
 risk_controls:
   time_stop:
     enabled: true
-    duration_hours: 168 # Time in hours to evaluate exit
-    min_profit_pct: 0.001 # Only exit if PnL is below this threshold
-
-        # --- NEW: Cascading Exit Configuration ---
+    duration_hours: 168  # <<< RESTORED: e.g., 7 days
+    min_profit_pct: .001 # <<< RESTORED: e.g., 0.1% profit target for exit
+      # --- NEW: Cascading Exit Configuration ---
     cascade:
       # Explicitly enable/disable the cascading exit behavior.
       # If false, the old behavior (immediate market sell if time stop triggers) might apply,
@@ -142,12 +141,12 @@ risk_controls:
 
       # How long (in seconds) to wait for the *initial* limit order to fill.
       # If it doesn't fill within this time, it will be cancelled, and we move to the next step.
-      initial_timeout_seconds: 60
+      initial_timeout_seconds: 7200 # was 60
 
       # How long (in seconds) to wait for the *aggressive taker* limit order to fill.
       # This is the second attempt after the initial order timed out.
       # If it doesn't fill, it will be cancelled, and we fall back to a market order.
-      aggressive_timeout_seconds: 30
+      aggressive_timeout_seconds: 3600 # was 30
 
       # How many price ticks *below* the best bid to place the aggressive TAKER limit order.
       # e.g., 1 means place 1 tick worse than the best bid to increase fill chance (acting as taker).
